@@ -42,8 +42,12 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  fixture.projects.push({id:'desktop-empty',name:'桌面空项目',roots:[{path:emptyRoot}]},
    {id:'desktop-b',name:'桌面工程 B',roots:[{path:roots[0]+'-worktree'},{path:roots[1]}]});
  fixture.threads.set(recentId,{id:recentId,projectId:null,cwd:roots[1],model:'offline-codex',historyMode:'paginated',name:'同目录的未分组会话',updatedAt:1710000001,running:false,items:[]});
+ const picture=path.join(roots[1],'native-preview.png');
+  const pixels=Buffer.alloc(240*320*4);
+ for(let i=0;i<pixels.length;i+=4){pixels[i]=80;pixels[i+1]=160;pixels[i+2]=55;pixels[i+3]=255;}
+ fs.writeFileSync(picture,nativeImage.createFromBitmap(pixels,{width:240,height:320}).toPNG());
  fixture.threads.set(externalId,{id:externalId,projectId:null,cwd:roots[1],model:'offline-codex',historyMode:'paginated',name:'桌面 Codex 外部会话',updatedAt:1710000000,running:false,queueListUnavailable:true,
-  items:[{type:'userMessage',content:[{type:'text',text:'CODEX_PREVIOUS_QUESTION'}]},{type:'agentMessage',text:'CODEX_PREVIOUS_ANSWER'}]});
+  items:[{type:'userMessage',content:[{type:'text',text:'CODEX_PREVIOUS_QUESTION'}]},{type:'agentMessage',text:'CODEX_PREVIOUS_ANSWER'},{type:'userMessage',content:[{type:'text',text:'带图片的历史消息'},{type:'localImage',path:picture}]}]});
  const earlierTurns=fixture.requests.filter(r=>r.method==='turn/start').length;
  await js(()=>App.showTool('sessions'));
  await until(()=>js(()=>[...document.querySelectorAll('.ai-hist-nm')].some(node=>node.textContent==='桌面 Codex 外部会话')),'external catalog');
@@ -81,10 +85,47 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  check('switching projects keeps the Codex session catalog available',await js(()=>!document.querySelector('[data-hist-refresh]').disabled&&!!document.querySelector('[data-codex-project="desktop-b"]')));
  await capture('codex-history-sidebar');
  const original=fixture.threads.get(externalId);
- const picture=path.join(roots[1],'native-preview.png');
-  const pixels=Buffer.alloc(240*320*4);
- for(let i=0;i<pixels.length;i+=4){pixels[i]=80;pixels[i+1]=160;pixels[i+2]=55;pixels[i+3]=255;}
- fs.writeFileSync(picture,nativeImage.createFromBitmap(pixels,{width:240,height:320}).toPNG());
+ const historyImageSelector='#ai-msgs .ai-user .ai-image-preview';
+ const draftImageSelector='#ai-images .ai-image-preview';
+ await until(()=>js(selector=>document.querySelector(selector+' img')?.naturalWidth===240,historyImageSelector),'loaded image from Codex history');
+ await js(base64=>{
+   const bytes=Uint8Array.from(atob(base64),char=>char.charCodeAt(0));
+   const data=new DataTransfer();
+   data.items.add(new File([bytes],'draft.png',{type:'image/png'}));
+   document.getElementById('ai-input').dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));
+ },fs.readFileSync(picture).toString('base64'));
+ await until(()=>js(selector=>document.querySelector(selector+' img')?.naturalWidth===240,draftImageSelector),'loaded image pasted into Codex composer');
+ const copyPoints=[], originalCopy=win.webContents.copyImageAt;
+ // Keep the real clipboard untouched while verifying the exact Chromium copy target.
+ win.webContents.copyImageAt=(x,y)=>copyPoints.push([x,y]);
+ try {
+   for(const [label,selector] of [['sent message',historyImageSelector],['draft attachment',draftImageSelector]]) {
+     const thumbHeight=await js(selector=>{
+       const button=document.querySelector(selector), image=button.querySelector('img');
+       button.scrollIntoView({block:'nearest'});
+       button.focus();
+       button.click();
+       return image.getBoundingClientRect().height;
+     },selector);
+     await until(()=>js(height=>document.querySelector('.img-lightbox[open] img')?.getBoundingClientRect().height>height,thumbHeight),label+' opens an enlarged preview');
+     await capture(label==='sent message'?'codex-message-image-preview':'codex-draft-image-preview');
+     const expectedPoint=await js(selector=>{
+       document.querySelector('.img-lightbox').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+       const image=document.querySelector(selector+' img'), rect=image.getBoundingClientRect();
+       const point=[Math.floor(rect.x+rect.width/2),Math.floor(rect.y+rect.height/2)];
+       if(document.elementFromPoint(...point)!==image)throw Error('Thumbnail is obscured');
+       image.dispatchEvent(new MouseEvent('contextmenu',{clientX:point[0],clientY:point[1],button:2,bubbles:true,cancelable:true}));
+       [...document.querySelectorAll('#ctx-menu:not(.hidden) button')].find(item=>item.textContent==='复制图片').click();
+       return point;
+     },selector);
+     await until(()=>copyPoints.length>0,label+' reaches clipboard IPC');
+     check(label+' sends the original image to Chromium copy',JSON.stringify(copyPoints.shift())===JSON.stringify(expectedPoint));
+   }
+ } finally { win.webContents.copyImageAt=originalCopy; }
+ check('Removing a draft attachment does not open the image preview',await js(()=>{
+   document.querySelector('#ai-images .ai-img-x').click();
+   return document.getElementById('ai-images').classList.contains('hidden')&&!document.querySelector('.img-lightbox');
+ }));
  await js(()=>{window.__codexHistoryRow=document.querySelector('#ai-msgs .ai-msg');});
  original.desktopRunning=true;
  const late={...original,id:'019caa00-0000-7000-8000-000000000007',projectId:'desktop-b',name:'桌面刚建的会话',desktopRunning:false};

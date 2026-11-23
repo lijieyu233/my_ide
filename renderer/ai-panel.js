@@ -1171,7 +1171,7 @@ const AiPanel = (() => {
     const data = toolGroups.get(group);
     if (data.total === 1) data.mediaSummary = label;
     body.classList.add('ai-tool-images');
-    appendMessageImages(body, images, label, true);
+    appendMessageImages(body, images, label);
     setDshToolState(row, 'completed');
     scrollBottom();
     return row;
@@ -1665,23 +1665,51 @@ const AiPanel = (() => {
     return div.innerHTML;
   }
 
-  function appendMessageImages(container, images, label, zoomable = false) {
+  function createImagePreview(source, label) {
+    const img = document.createElement('img');
+    img.src = source;
+    img.alt = label;
+    img.draggable = false;
+    const preview = document.createElement('button');
+    preview.type = 'button';
+    preview.className = 'ai-image-preview';
+    preview.title = '放大图片';
+    preview.setAttribute('aria-label', '放大' + label);
+    preview.appendChild(img);
+    preview.addEventListener('click', () => {
+      if (img.naturalWidth) MI.showImgLightbox(img.currentSrc || img.src, img.alt);
+    });
+    function imageMenu(event, x, y) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!img.naturalWidth) return;
+      const isCurrent = () => preview.isConnected && !!img.naturalWidth;
+      showAiContextMenu(preview, x, y, {
+        kind: 'image', label: '图片操作', isCurrent,
+        actions: [{ label: '复制图片', run: async () => {
+          await new Promise(resolve => requestAnimationFrame(resolve));
+          if (!isCurrent()) return;
+          const px = Math.floor(x), py = Math.floor(y);
+          if (document.elementFromPoint(px, py) !== img) throw Error('图片已移出可见区域，请重新右键复制');
+          const result = await window.myIDE.clip.copyImageAt(px, py);
+          if (!result?.ok) throw Error(result?.error || '复制图片失败');
+          MI.toast('已复制图片', 'ok');
+        } }],
+      });
+    }
+    preview.addEventListener('contextmenu', event => imageMenu(event, event.clientX, event.clientY));
+    preview.addEventListener('keydown', event => {
+      if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return;
+      const bounds = img.getBoundingClientRect();
+      imageMenu(event, bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+    });
+    return preview;
+  }
+
+  function appendMessageImages(container, images, label) {
     for (const source of images || []) {
-      const img = document.createElement('img');
-      img.className = 'ai-msg-img';
-      img.src = source;
-      img.alt = label;
-      if (!zoomable) {
-        container.appendChild(img);
-        continue;
-      }
-      const preview = document.createElement('button');
-      preview.type = 'button';
-      preview.className = 'ai-image-preview';
-      preview.title = '放大图片';
-      preview.setAttribute('aria-label', '放大图片');
-      preview.addEventListener('click', () => MI.showImgLightbox(img.src, img.alt));
-      preview.appendChild(img);
+      const preview = createImagePreview(source, label);
+      preview.firstElementChild.className = 'ai-msg-img';
       container.appendChild(preview);
     }
   }
@@ -1857,15 +1885,14 @@ const AiPanel = (() => {
     pendingImages.forEach((u, i) => {
       const d = document.createElement('span');
       d.className = 'ai-img-thumb';
-      const im = document.createElement('img');
-      im.src = u;
-      im.alt = '待发送图片';
+      const preview = createImagePreview(u, '待发送图片');
       const x = document.createElement('button');
+      x.type = 'button';
       x.className = 'ai-img-x';
       x.textContent = '\u2715';
       x.title = '移除这张图';
       x.onclick = (e) => { e.stopPropagation(); pendingImages.splice(i, 1); renderImages(); };
-      d.appendChild(im);
+      d.appendChild(preview);
       d.appendChild(x);
       box.appendChild(d);
     });
