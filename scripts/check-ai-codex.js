@@ -59,6 +59,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  check('switching projects keeps the Codex session catalog available',await js(()=>!document.querySelector('[data-hist-refresh]').disabled&&!!document.querySelector('[data-codex-project="desktop-b"]')));
  await capture('codex-history-sidebar');
  const original=fixture.threads.get(externalId);
+ await js(()=>{window.__codexHistoryRow=document.querySelector('#ai-msgs .ai-msg');});
  original.desktopRunning=true;
  const late={...original,id:'019caa00-0000-7000-8000-000000000007',projectId:'desktop-b',name:'桌面刚建的会话',desktopRunning:false};
  fixture.threads.set(late.id,late);
@@ -77,9 +78,20 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  });
  check('Codex external activity keeps unsent drafts',fixture.requests.filter(r=>r.method==='turn/start').length===beforeDesktopTurn&&
    await js(()=>document.getElementById('ai-input').value==='等待桌面完成的草稿'));
+ original.items.push({id:'desktop-progress',type:'agentMessage',text:'CODEX_DESKTOP_PROGRESS'});
+ await until(()=>js(()=>document.getElementById('ai-msgs').textContent.includes('CODEX_DESKTOP_PROGRESS')),'external commentary appears');
+ check('Codex desktop commentary appends in place while the composer waits',await js(()=>
+   document.querySelector('#ai-msgs .ai-msg')===window.__codexHistoryRow &&
+   document.getElementById('ai-send').classList.contains('ai-codex-observing') &&
+   document.getElementById('ai-input').value==='等待桌面完成的草稿'));
  await capture('codex-desktop-running');
+ original.items.push({id:'desktop-final',type:'agentMessage',text:'CODEX_DESKTOP_FINAL'});
  original.desktopRunning=false;
- await until(()=>js(()=>!document.getElementById('ai-send').disabled&&!document.querySelector('.ai-hist-row.cur.running')),'desktop turn finished');
+ await until(()=>js(()=>!document.getElementById('ai-send').disabled&&!document.querySelector('.ai-hist-row.cur.running')&&
+   document.getElementById('ai-msgs').textContent.includes('CODEX_DESKTOP_FINAL')),'desktop turn finished');
+ check('Codex desktop completion syncs exactly once without another turn',
+   fixture.requests.filter(r=>r.method==='turn/start').length===beforeDesktopTurn && await js(()=>
+     [...document.querySelectorAll('#ai-msgs .ai-msg')].filter(node=>node.textContent.includes('CODEX_DESKTOP_FINAL')).length===1));
  check('Codex desktop completion unlocks sending',await js(()=>document.getElementById('ai-input').value==='等待桌面完成的草稿'));
  original.writerLocked=true;
  await js(()=>AiPanel.ask('HOLD_CODEX 续接桌面会话'));

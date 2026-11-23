@@ -2381,12 +2381,14 @@ const AiPanel = (() => {
     renderSessionOrigin();
     const external = !b && dshObservedRunning(), stopping = !!dshWatch?.stopping;
     const codexExternal = !b && codexObservedRunning(), codexArchived = !b && codexSelectedHistoryItem()?.archived;
+    if (b && getConfig().engine === 'codex') codexLiveView = null;
     if(getConfig().engine==='codex')for(const id of ['ai-model','ai-dsh-reasoning']){const control=document.getElementById(id);if(control)control.disabled=b||dshOptionsState!=='ready';}
     const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect){reconnect.disabled=b||dshOptionsState==='loading';reconnect.setAttribute('aria-label','重新连接 '+nativeLabel());reconnect.title='重新连接 '+nativeLabel()+'，保留会话，不重发任务';}
     if (sendBtn) {
       sendBtn.disabled = codexExternal || codexArchived || stopping || !b && !external && !dshCanSend();
+      sendBtn.classList.toggle('ai-codex-observing', codexExternal);
       if (codexExternal) {
-        sendBtn.innerHTML = '<span class="ai-hist-run" aria-hidden="true"></span>';
+        sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5a5.5 5.5 0 1 1-5.5 5.5"/></svg>';
         sendBtn.title = '此会话正在 Codex 中运行';
         sendBtn.setAttribute('aria-label', sendBtn.title);
       } else {
@@ -2462,7 +2464,7 @@ const AiPanel = (() => {
     rememberSession();
     if(backgroundView||nativeEngine())localStorage.removeItem(sessKey()+':draft');
   }
-  function replayMsgs(preserveToolGroups = false) {
+  function replayMsgs(preserveToolGroups = false, follow = true) {
     const previousChoices = replayToolGroupChoices, previousPosition = replayActivityPosition;
     // 一次扫描接回本地选择；折叠details只取滚动缓存，测量其scrollTop会逐组强制布局。
     replayToolGroupChoices = preserveToolGroups ? new Map() : null;
@@ -2502,14 +2504,14 @@ const AiPanel = (() => {
       if (lastUserAt != null) markRegen();
     } finally {
       replayToolGroupChoices = previousChoices; replayActivityPosition = previousPosition;
-      if (!--replayDepth) scrollBottom();
+      if (!--replayDepth && follow) scrollBottom();
     }
   }
   const historyNeedsYield=list=>list.length>80||list.some(m=>(m._dshTimeline?.length||0)>80||String(m.content||'').length>64000);
-  async function replayHistory(wanted, preserveToolGroups = false, appendFrom = 0) {
+  async function replayHistory(wanted, preserveToolGroups = false, appendFrom = 0, follow = true) {
     if(!wanted())return false;
     const list=msgs,container=msgsEl;
-    if(!historyNeedsYield(list)){replayMsgs(preserveToolGroups);return wanted();}
+    if(!appendFrom&&!historyNeedsYield(list)){replayMsgs(preserveToolGroups,follow);return wanted();}
     const choices=preserveToolGroups&&!appendFrom?new Map():null;
     if(choices)for(const node of container.querySelectorAll('.ai-tool-group, details[data-activity-key], .ai-dsh-output')){
       const group=node.classList.contains('ai-tool-group');
@@ -2534,7 +2536,7 @@ const AiPanel = (() => {
             if(part){replayActivityPosition=[i,j];if(part.kind==='text')addMsg('assistant',part.text||'');else if(part.kind==='tool'&&part.call)renderDshActivity(part);else if(['thought','reasoning','projection'].includes(part.kind))renderDshThought(part);}
             else if(!m._dshTool&&m.role!=='tool'&&!m.tool_calls){
               if(m.role==='user'){const row=addMsg('user',m._text||(typeof m.content==='string'?m.content:'（含图片的消息）'),{imgs:m._imgs||[]});if(m._ui)row.dataset.mid=m._ui;lastUserAt=i;}
-              else if(m.role==='assistant')addMsg('assistant',m.content||'');
+              else if(m.role==='assistant')decorateCodeBlocks(addMsg('assistant',m.content||''));
             }
             if(performance.now()-start>=8)break;
           }
@@ -2542,7 +2544,7 @@ const AiPanel = (() => {
         if(!done)await new Promise(resolve=>setTimeout(resolve,0));
       }
       if(!valid())return false;
-      if(lastUserAt!=null)markRegen();scrollBottom();return true;
+      if(lastUserAt!=null)markRegen();if(follow)scrollBottom();return true;
     }finally{if(historyReplayJob===job){historyReplayJob=null;setBusyUI(busy);}}
   }
   let histSidebar = null, histSidebarVisible = false;
@@ -2607,7 +2609,7 @@ const AiPanel = (() => {
     return null;
   }
   let codexCatalog = null, codexCatalogRequest = null, codexCatalogError = null;
-  let codexOpenIntent = 0;
+  let codexOpenIntent = 0, codexLiveView = null;
   const codexForksInFlight = new Set(), codexArchiveRequests = new Set();
   let codexArchiveOnly = false;
   const codexProjectHistory = () => getConfig().engine === 'codex' && dshScope() !== 'reader';
@@ -2620,6 +2622,49 @@ const AiPanel = (() => {
 
   function codexObservedRunning() {
     return codexSelectedHistoryItem()?.running === true;
+  }
+
+  async function syncCodexLiveHistory(selected, config) {
+    if (!selected || selected.archived || busy || !panel || panel.classList.contains('hidden')) return;
+    const ticket = sessionLoadTicket, scope = sessKey(), threadId = selected.threadId;
+    const launcher = config.codexPath || '';
+    if (codexLiveView?.ticket !== ticket || codexLiveView.scope !== scope ||
+        codexLiveView.threadId !== threadId || codexLiveView.launcher !== launcher) {
+      codexLiveView = { ticket, scope, threadId, launcher, observed: false };
+    }
+    const view = codexLiveView;
+    const running = selected.running === true;
+    if (view.pending || historyReplayJob || !running && !view.observed ||
+        running && view.observed && selected.revision && view.revision === selected.revision) return;
+    const wanted = () => codexLiveView === view && !busy && sessionLoadTicket === ticket &&
+      sessKey() === scope && currentCodexCatalog()?.launcher === launcher &&
+      codexSelectedHistoryItem()?.threadId === threadId && !codexSelectedHistoryItem()?.archived;
+    view.pending = true;
+    // Keep observing through one final read after the external turn completes.
+    view.observed ||= running;
+    try {
+      const result = await window.myIDE.ai.codexHistory(config, threadId);
+      if (!result?.ok || result.threadId !== threadId || result.localId !== curSessionId ||
+          pathKey(result.rootDir) !== pathKey(window.App?.root) || !wanted()) return;
+      const next = result.messages;
+      const samePrefix = msgs.length <= next.length && msgs.every((message, index) =>
+        message.role === next[index].role && message.content === next[index].content);
+      if (!samePrefix || msgs.length !== next.length) {
+        const appendFrom = samePrefix ? msgs.length : 0;
+        const container = msgsEl, top = container.scrollTop;
+        const follow = container.scrollHeight - container.clientHeight - top < 36;
+        msgs = appendFrom ? msgs.concat(next.slice(appendFrom)) : next;
+        if (!await replayHistory(wanted, false, appendFrom, follow)) return;
+        if (!follow && !appendFrom) container.scrollTop = top;
+        // Updating an observed history must not clear the user's unsent input or change the active session.
+        saveSessions(loadSessions().map(session => session.id === result.localId
+          ? { ...session, msgs: msgs.slice() } : session));
+      }
+      view.revision = selected.revision;
+      view.observed = running;
+    } catch {
+      // Retry on the next catalog poll without interrupting input or replacing the current history.
+    } finally { view.pending = false; }
   }
 
   function refreshCodexCatalog({ background = false } = {}) {
@@ -2640,6 +2685,7 @@ const AiPanel = (() => {
         codexCatalog = { launcher: codexPath, items: result.items, projects: result.projects || [] };
         const selected = codexSelectedHistoryItem();
         if (previous?.running !== selected?.running || previous?.archived !== selected?.archived) setBusyUI(busy);
+        void syncCodexLiveHistory(selected, config);
       } catch (error) {
         if (!background && codexCatalogRequest === request) codexCatalogError = { launcher: codexPath, message: error.message };
       } finally {

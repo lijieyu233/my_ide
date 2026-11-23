@@ -1,10 +1,15 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const runFile = promisify(execFile);
 
 const stateLimit = 8 * 1024 * 1024;
 const scanLimit = 16 * 1024 * 1024;
 const scanChunk = 256 * 1024;
 const activeWindowMs = 5 * 60 * 1000;
+const ownerWindowMs = 24 * 60 * 60 * 1000;
+const nativeId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 const lifecycle = [
   { code: Buffer.from('"type":"event_msg","payload":{"type":"task_started"'), running: true },
   { code: Buffer.from('"type":"event_msg","payload":{"type":"task_complete"'), running: false },
@@ -61,38 +66,61 @@ async function scanLifecycle(file, size, floor) {
   return undefined;
 }
 
-function createDesktopStatusReader() {
+// Desktop can buffer an active turn's rollout while it continues writing engine diagnostics.
+async function hasLiveOwner(home, threadId, modifiedAt) {
+  if (!nativeId.test(threadId)) return false;
+  try {
+    const file = path.join(home, 'logs_2.sqlite');
+    await fs.access(file);
+    const since = Math.floor((modifiedAt - 120000) / 1000);
+    // Read only the process identity from the latest engine activity. The log body is never queried.
+    const query = "SELECT process_uuid FROM logs WHERE thread_id='" + threadId + "' AND ts >= " + since +
+      " AND target IN ('codex_core::stream_events_utils','codex_core::session::turn')" +
+      ' ORDER BY ts DESC, ts_nanos DESC, id DESC LIMIT 1';
+    const { stdout } = await runFile('sqlite3', ['-readonly', '-batch', '-noheader', file, query], {
+      encoding: 'utf8', timeout: 1500, windowsHide: true, maxBuffer: 4096,
+    });
+    const owner = /^pid:([1-9]\d*):/.exec(stdout.trim());
+    if (!owner) return false;
+    process.kill(Number(owner[1]), 0);
+    return true;
+  } catch { return false; }
+}
+
+function createDesktopStatusReader({ liveOwner = hasLiveOwner } = {}) {
   const cache = new Map();
 
-  async function running(home, { threadId, rolloutPath, running: hostRunning }) {
-    if (hostRunning) return true;
-    if (typeof rolloutPath !== 'string' || !path.isAbsolute(rolloutPath)) return false;
+  async function observe(home, { threadId, rolloutPath, running: hostRunning }) {
+    const unavailable = { running: hostRunning === true };
+    if (typeof rolloutPath !== 'string' || !path.isAbsolute(rolloutPath)) return unavailable;
     try {
       // Windows may report a volume-qualified path for the same indexed rollout.
       const [actualRoot, actualFile] = await Promise.all([fs.realpath(home), fs.realpath(rolloutPath)]);
-      if (!isSessionLog(actualRoot, actualFile, threadId)) return false;
+      if (!isSessionLog(actualRoot, actualFile, threadId)) return unavailable;
       const stat = await fs.stat(actualFile);
-      if (!stat.isFile() || Date.now() - stat.mtimeMs > activeWindowMs) {
-        cache.delete(rolloutPath);
-        return false;
+      if (!stat.isFile()) return unavailable;
+      const revision = stat.mtimeMs + ':' + stat.size;
+      const age = Date.now() - stat.mtimeMs;
+      if (hostRunning || age > ownerWindowMs) return { ...unavailable, revision };
+      const previous = cache.get(actualFile);
+      let marker = previous?.running;
+      if (previous?.revision !== revision) {
+        const oldest = Math.max(0, stat.size - scanLimit);
+        const incremental = previous && previous.size > oldest && previous.size < stat.size;
+        // Recheck the boundary so a marker split across two writes is still detected.
+        const floor = incremental ? Math.max(0, previous.size - overlapSize) : oldest;
+        const file = await fs.open(actualFile, 'r');
+        try { marker = (await scanLifecycle(file, stat.size, floor)) ?? (incremental ? marker : undefined); }
+        finally { await file.close(); }
+        if (cache.size >= 1000 && !cache.has(actualFile)) cache.delete(cache.keys().next().value);
+        cache.set(actualFile, { size: stat.size, revision, running: marker });
       }
-      const previous = cache.get(rolloutPath);
-      if (previous?.size === stat.size && previous.mtimeMs === stat.mtimeMs) return previous.running === true;
-      const oldest = Math.max(0, stat.size - scanLimit);
-      const incremental = previous && previous.size > oldest && previous.size < stat.size;
-      // Recheck the boundary so a marker split across two writes is still detected.
-      const floor = incremental ? Math.max(0, previous.size - overlapSize) : oldest;
-      const file = await fs.open(actualFile, 'r');
-      try {
-        const running = (await scanLifecycle(file, stat.size, floor)) ?? (incremental ? previous.running : undefined);
-        if (cache.size >= 1000 && !cache.has(rolloutPath)) cache.delete(cache.keys().next().value);
-        cache.set(rolloutPath, { size: stat.size, mtimeMs: stat.mtimeMs, running });
-        return running === true;
-      } finally { await file.close(); }
-    } catch { return false; }
+      const running = marker === true && (age <= activeWindowMs || await liveOwner(actualRoot, threadId, stat.mtimeMs));
+      return { running, revision };
+    } catch { return unavailable; }
   }
 
-  return running;
+  return observe;
 }
 
 module.exports = { readDesktopState, projectAssignments, createDesktopStatusReader };

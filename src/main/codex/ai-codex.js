@@ -48,7 +48,7 @@ function createService(options={}){
   const runs=new Map(),sessions=new Map(),saved=new Map(),locks=new Map(),pendingChoices=new Map();
   let connection=null,starting=null,loaded=false,loading=null,disposed=false,saving=Promise.resolve();
   const mapping=()=>valueOf(options.mappingFile),explicitHome=()=>valueOf(options.homeDir)||options.home;
-  const desktopRunning=desktopState.createDesktopStatusReader();
+  const observeDesktop=desktopState.createDesktopStatusReader();
   const codexHome = () => explicitHome() || process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
   const workspace=()=>path.join(mapping()?path.dirname(mapping()):path.join(os.tmpdir(),'myide-codex'),'myide-codex-detached');
   const emit=(run,event)=>{if(!disposed&&!run.aborted&&!run.expired)run.onEvent({...event,context:run.context});};
@@ -222,9 +222,10 @@ function createService(options={}){
     const visible = items.map(item => ({ ...item, localId: 'codex:' + item.threadId, ...projectBindings.get(item.threadId) }))
       .filter(item => norm(item.rootDir) !== detachedRoot);
     return { projects, items: await Promise.all(visible.map(async item => {
-      const running = !item.archived && !locallyRunning.has(item.threadId) && await desktopRunning(home, item);
+      const desktop = item.archived || locallyRunning.has(item.threadId)
+        ? { running: false } : await observeDesktop(home, item);
       const { rolloutPath, ...summary } = item;
-      return { ...summary, projectId: summary.projectId || assignments.get(summary.threadId) || null, running };
+      return { ...summary, projectId: summary.projectId || assignments.get(summary.threadId) || null, ...desktop };
     })) };
   }
 
@@ -253,7 +254,7 @@ function createService(options={}){
       const update = async () => {
         const session = binding && sessions.get(binding[0]);
         if (archived && (session?.run || session?.stopping ||
-          await desktopRunning(codexHome(), { threadId, rolloutPath: thread.path, running: thread.status?.type === 'active' }))) {
+          (await observeDesktop(codexHome(), { threadId, rolloutPath: thread.path, running: thread.status?.type === 'active' })).running)) {
           throw Error('请等会话运行结束后再归档');
         }
         try {
