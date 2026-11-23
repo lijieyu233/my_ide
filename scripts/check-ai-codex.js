@@ -66,6 +66,10 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  check('switching projects keeps the Codex session catalog available',await js(()=>!document.querySelector('[data-hist-refresh]').disabled&&!!document.querySelector('[data-codex-project="desktop-b"]')));
  await capture('codex-history-sidebar');
  const original=fixture.threads.get(externalId);
+ const picture=path.join(roots[1],'native-preview.png');
+ const pixels=Buffer.alloc(120*80*4);
+ for(let i=0;i<pixels.length;i+=4){pixels[i]=80;pixels[i+1]=160;pixels[i+2]=55;pixels[i+3]=255;}
+ fs.writeFileSync(picture,nativeImage.createFromBitmap(pixels,{width:120,height:80}).toPNG());
  await js(()=>{window.__codexHistoryRow=document.querySelector('#ai-msgs .ai-msg');});
  original.desktopRunning=true;
  const late={...original,id:'019caa00-0000-7000-8000-000000000007',projectId:'desktop-b',name:'桌面刚建的会话',desktopRunning:false};
@@ -74,6 +78,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
    [...document.querySelectorAll('[data-codex-project="desktop-b"] .ai-hist-nm')].some(node=>node.textContent==='桌面刚建的会话')),'automatic desktop refresh');
  check('Codex desktop activity disables send and updates the sidebar in place',await js(()=>document.getElementById('ai-send').getAttribute('aria-label').includes('Codex 中运行')&&
    document.getElementById('ai-stop').classList.contains('hidden')&&
+   document.getElementById('ai-codex-activity')?.textContent==='Codex 正在运行'&&
    !document.querySelector('[data-hist-refresh]').disabled));
  const beforeDesktopTurn=fixture.requests.filter(r=>r.method==='turn/start').length;
  await js(()=>{
@@ -87,11 +92,12 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
    await js(()=>document.getElementById('ai-input').value==='等待桌面完成的草稿'));
  original.items.push({id:'desktop-progress',type:'agentMessage',text:'CODEX_DESKTOP_PROGRESS'});
  const command={id:'desktop-command',type:'commandExecution',command:'codex queue --help token=PRIVATE_TOKEN_FIXTURE access_token=PRIVATE_QUEUE_FIXTURE',status:'inProgress'};
- original.items.push(command);
+ original.items.push(command, {id:'desktop-picture',type:'imageView',path:picture},
+   {id:'desktop-reasoning',type:'reasoning',summary:['**正在整理图片预览**\n\n补充摘要'],content:['不得显示这段原始内容']});
  await until(()=>js(()=>document.getElementById('ai-msgs').textContent.includes('CODEX_DESKTOP_PROGRESS')),'external commentary appears');
  check('Codex desktop commentary appends in place while the composer waits',await js(()=>
    document.querySelector('#ai-msgs .ai-msg')===window.__codexHistoryRow &&
-   document.getElementById('ai-send').classList.contains('ai-codex-observing') &&
+   document.getElementById('ai-send').disabled &&
    document.getElementById('ai-input').value==='等待桌面完成的草稿'));
  await until(()=>js(()=>!document.getElementById('ai-queue-submit').disabled),'native external queue available');
  await js(()=>{document.getElementById('ai-queue-submit').click();});
@@ -110,6 +116,11 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
    const summary=row.closest('.ai-tool-group').querySelector('.ai-tool-group-label').textContent;
    return summary.includes('正在运行 · codex queue --help')&&!row.textContent.includes('PRIVATE_QUEUE_FIXTURE')&&!row.textContent.includes('PRIVATE_TOKEN_FIXTURE');
  }));
+ await until(()=>js(()=>document.getElementById('ai-codex-activity')?.textContent==='正在整理图片预览'&&
+   document.querySelector('#ai-msgs img[alt="查看了 1 张图片"]')?.naturalWidth>0),'desktop activity title and image preview');
+ check('Codex mirrors the current native summary and viewed image with a static send control',await js(()=>
+   getComputedStyle(document.querySelector('#ai-send svg') || document.getElementById('ai-send')).animationName==='none'&&
+   !document.getElementById('ai-msgs').textContent.includes('不得显示这段原始内容')));
  await capture('codex-desktop-running');
  command.status='completed';
  original.items.push({id:'desktop-final',type:'agentMessage',text:'CODEX_DESKTOP_FINAL'});
@@ -119,7 +130,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  check('Codex desktop completion syncs exactly once without another turn',
    fixture.requests.filter(r=>r.method==='turn/start').length===beforeDesktopTurn && await js(()=>
      [...document.querySelectorAll('#ai-msgs .ai-msg')].filter(node=>node.textContent.includes('CODEX_DESKTOP_FINAL')).length===1));
- check('Codex desktop completion unlocks sending',await js(()=>document.getElementById('ai-input').value==='等待桌面完成的草稿'));
+ check('Codex desktop completion unlocks sending and hides the activity title',await js(()=>document.getElementById('ai-input').value==='等待桌面完成的草稿'&&document.getElementById('ai-codex-activity').classList.contains('hidden')));
  check('Codex marks the mirrored command complete without a duplicate row',await js(()=>{
    const rows=document.querySelectorAll('[data-tool-call-id="desktop-command"]');
    return rows.length===1&&rows[0].dataset.state==='completed';

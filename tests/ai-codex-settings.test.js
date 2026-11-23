@@ -16,7 +16,7 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
   const select=engine=>{q('#ai-cfg-engine').value=engine;q('#ai-cfg-engine').dispatchEvent(new w.Event('change'));};
   try{
     w.Settings.open('ai');assert.equal(q('#ai-cfg-engine').value,'codex');assert(!q('#ai-cfg-codex-wrap').classList.contains('hidden'));assert(q('#ai-cfg-dsh-wrap').classList.contains('hidden'));
-    assert.match(q('#ai-cfg-codex-wrap').textContent,/已有登录态/);assert.match(q('#ai-cfg-codex-wrap').textContent,/审批独立/);assert.match(q('#ai-cfg-codex-wrap').textContent,/不支持 DSH 外部旁听/);
+    assert.match(q('#ai-cfg-codex-wrap').textContent,/已有登录态/);assert.match(q('#ai-cfg-codex-wrap').textContent,/盾牌菜单/);
     assert.equal(q('#ai-cfg-url').value,config.baseUrl,'原生模式不得覆写普通助手服务地址');
     q('#ai-codex-pick').click();await tick();assert.equal(q('#ai-cfg-codex').value,'selected-codex.cmd');assert.equal(calls.at(-1).kind,'pick');assert.equal(calls.at(-1).filters[0].extensions.join(','),'cmd,exe,ps1');
     q('#ai-codex-detect').click();await tick();assert.match(q('#ai-codex-status').textContent,/fixture-version/);assert.equal(calls.at(-1).launcher,'selected-codex.cmd');

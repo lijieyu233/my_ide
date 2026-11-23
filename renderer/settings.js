@@ -751,7 +751,7 @@ const Settings = (() => {
           <label class="m-label" for="ai-cfg-codex" style="margin-top:8px">Codex 启动器（留空使用本机安装）</label>
           <input id="ai-cfg-codex" type="text" value="${esc(cfg.codexPath||'')}" placeholder="codex.cmd / codex.exe" spellcheck="false">
           <div class="set-button-row"><button id="ai-codex-pick" class="tb-btn">选择启动器</button><button id="ai-codex-detect" class="tb-btn">检查安装</button></div><span id="ai-codex-status" class="set-note" role="status"></span>
-          <div class="set-note">使用本机 Codex 登录态。模型由 Codex 提供，原生权限可在输入框的盾牌菜单设置。</div>
+          <div class="set-note">使用本机 Codex 已有登录态。模型由 Codex 提供，原生权限可在输入框的盾牌菜单设置。</div>
         </div>
       </div>
       <div class="set-form">

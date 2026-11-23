@@ -1,4 +1,5 @@
 const path = require('node:path');
+const { createMediaReader, isMediaItem, mediaLabel } = require('./codex-media');
 
 const nativeId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 const accountThreads = {
@@ -38,7 +39,7 @@ async function pages(request, method, params, limit, cap, onPage) {
   for (let page = 0; page < cap; page++) {
     const result = await request(method, { ...params, limit, ...(cursor ? { cursor } : {}) });
     if (!Array.isArray(result?.data)) throw Error('Codex 返回的会话分页格式不兼容');
-    if (onPage(result.data) === false) return;
+    if (await onPage(result.data) === false) return;
     cursor = result.nextCursor;
     if (!cursor) return;
     if (typeof cursor !== 'string' || cursors.has(cursor)) throw Error('Codex 会话分页游标无效');
@@ -111,10 +112,31 @@ async function assertThreadIdle(request, thread) {
   }
 }
 
+function activityTitle(summary) {
+  const text = Array.isArray(summary) ? summary.find(part => typeof part === 'string' && part.trim()) : summary;
+  if (typeof text !== 'string') return '';
+  const line = text.trim().split(/\r?\n/, 1)[0];
+  return (line.match(/^\s*\*\*(.+?)\*\*/)?.[1] || line.replace(/^(?:#+|[-*])\s+/, '')).trim().slice(0, 120);
+}
+
 async function readMessages(request, thread, redact) {
-  let chars = 0, commands = 0;
-  const messages = [];
-  const append = item => {
+  let chars = 0, commands = 0, deferredReads = 0, activity = '', latestTurn, inLatestTurn = true;
+  const messages = [], readMedia = createMediaReader();
+  const append = async (item, turnId) => {
+    if (!item) return true;
+    latestTurn ??= turnId;
+    if (inLatestTurn && turnId === latestTurn) {
+      if (item.type === 'userMessage') inLatestTurn = false;
+      else if (!activity && item.type === 'reasoning') activity = redact(activityTitle(item.summary));
+      else if (!activity && item.type === 'commandExecution' && item.status === 'inProgress') activity = '正在执行命令';
+    }
+    if (item.type === 'reasoning') return true;
+    const imgs = await readMedia(item);
+    if (imgs.length && item.type !== 'userMessage') {
+      const _codexMedia = mediaLabel(item, imgs.length);
+      messages.push({ role: 'assistant', content: '', _imgs: imgs, _codexMedia });
+      return messages.length < maxMessages;
+    }
     if (item?.type === 'commandExecution' && typeof item.id === 'string' && typeof item.command === 'string') {
       if (commands >= 32) return true;
       const command = redact(item.command).slice(0, 1600);
@@ -128,23 +150,36 @@ async function readMessages(request, thread, redact) {
     if (!role) return true;
     const text = role === 'assistant' ? item.text :
       (item.content || []).filter(block => block.type === 'text').map(block => block.text).join('\n');
-    if (typeof text !== 'string' || !text.trim()) return true;
+    if (typeof text !== 'string' || !text.trim() && !imgs.length) return true;
     const content = text.slice(0, Math.min(120000, maxHistoryChars - chars));
-    messages.push({ role, content });
+    messages.push({ role, content, ...(imgs.length ? { _imgs: imgs } : {}) });
     chars += content.length;
     return messages.length < maxMessages && chars < maxHistoryChars;
   };
   if (thread.historyMode === 'paginated') {
     await pages(request, 'thread/items/list', { threadId: thread.id, sortDirection: 'desc' }, 60, maxHistoryPages,
-      data => data.every(entry => append(entry.item)));
+      async data => {
+        for (const entry of data) {
+          let item = entry.item;
+          if (entry.outputDeferred && isMediaItem(item) && deferredReads++ < 6) {
+            try {
+              const result = await request('thread/items/read', { threadId: thread.id, turnId: entry.turnId, itemIds: [item.id] });
+              item = result.data.find(value => value.item?.id === item.id)?.item || item;
+            } catch {}
+          }
+          if (!await append(item, entry.turnId)) return false;
+        }
+      });
   } else {
     const result = await request('thread/read', { threadId: thread.id, includeTurns: true });
     if (result.thread?.id !== thread.id || !Array.isArray(result.thread.turns)) throw Error('Codex 会话历史格式不兼容');
-    for (const turn of result.thread.turns.toReversed()) {
-      if (!(turn.items || []).toReversed().every(append)) break;
+    turns: for (const turn of result.thread.turns.toReversed()) {
+      for (const item of (turn.items || []).toReversed()) {
+        if (!await append(item, turn.id)) break turns;
+      }
     }
   }
-  return messages.reverse();
+  return { messages: messages.reverse(), activity };
 }
 
-module.exports = { isProjectThread, listProjects, listProjectThreads, findProjectThread, readProjectThread, threadSummary, readMessages, assertThreadIdle, assertIdle };
+module.exports = { isProjectThread, listProjects, listProjectThreads, findProjectThread, readProjectThread, threadSummary, readMessages, activityTitle, assertThreadIdle, assertIdle };

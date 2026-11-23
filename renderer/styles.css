@@ -4827,10 +4827,8 @@ details[open] > .ai-tool-summary > .ai-tool-ic::after { transform: rotate(225deg
 #ai-send { width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0; color: var(--text-bright); background: color-mix(in srgb, var(--accent) 45%, var(--bg)); border: 0; }
 #ai-send:hover { background: var(--bg-selected); }
 #ai-send svg.ic { width: 17px; height: 17px; }
-#ai-send.ai-codex-observing { color: var(--ai-running-text); opacity: 1; }
-#ai-send.ai-codex-observing svg.ic { width: 14px; height: 14px; animation: ai-codex-spin .9s linear infinite; }
-@keyframes ai-codex-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { #ai-send.ai-codex-observing svg.ic { animation: none; } }
+#ai-codex-activity { padding-left: 12px; }
+#ai-codex-activity .ai-run-text { color: var(--ai-process-text, var(--text-dim)); }
 .ai-input-help { display: flex; justify-content: space-between; gap: 8px; flex-basis: 100%; font-size: .77em; color: var(--text-dim); }
 @container (max-width: 350px) {
   .ai-head .panel-title-actions { gap: 1px; }

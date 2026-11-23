@@ -1625,17 +1625,24 @@ const AiPanel = (() => {
     pre.className = 'ai-md';
     if (role === 'user') {
       pre.innerHTML = '<p>' + esc(text).replace(/\n/g, '<br>') + '</p>';
-      // 贴图：气泡里也把图显示出来（否则发完就看不见自己发了什么）
-      const imgs = (opts && opts.imgs) || [];
+    } else {
+      pre.innerHTML = renderMd(text);
+    }
+    const imgs = opts?.imgs || [];
+    if (imgs.length) {
+      const media = opts?.mediaLabel ? document.createElement('details') : pre;
+      if (opts?.mediaLabel) {
+        const summary = document.createElement('summary');
+        summary.textContent = opts.mediaLabel;
+        media.open = true; media.appendChild(summary); pre.appendChild(media);
+      }
       for (const u of imgs) {
         const im = document.createElement('img');
         im.className = 'ai-msg-img';
         im.src = u;
-        im.alt = '发送的图片';
-        pre.appendChild(im);
+        im.alt = opts?.mediaLabel || '发送的图片';
+        media.appendChild(im);
       }
-    } else {
-      pre.innerHTML = renderMd(text);
     }
     row.appendChild(pre);
     // 复制按钮（PyCharm AI Assistant 式悬停出现；文本可选中 + 一键复制双通道）
@@ -2518,9 +2525,8 @@ const AiPanel = (() => {
     const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect){reconnect.disabled=b||dshOptionsState==='loading';reconnect.setAttribute('aria-label','重新连接 '+nativeLabel());reconnect.title='重新连接 '+nativeLabel()+'，保留会话，不重发任务';}
     if (sendBtn) {
       sendBtn.disabled = codexExternal || codexArchived || stopping || !b && !external && !dshCanSend();
-      sendBtn.classList.toggle('ai-codex-observing', codexExternal);
       if (codexExternal) {
-        sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5a5.5 5.5 0 1 1-5.5 5.5"/></svg>';
+        sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M4 7l4-4 4 4"/></svg>';
         sendBtn.title = '此会话正在 Codex 中运行';
         sendBtn.setAttribute('aria-label', sendBtn.title);
       } else {
@@ -2529,6 +2535,7 @@ const AiPanel = (() => {
         sendBtn.setAttribute('aria-label', codexArchived ? sendBtn.title : b || external ? '停止生成' : '发送消息');
       }
     }
+    renderCodexObservedActivity();
     const headerStop = document.getElementById('ai-stop'); if (headerStop) { headerStop.onclick = stopVisibleRun; headerStop.disabled = stopping; headerStop.classList.toggle('hidden',!b&&!external); }
     renderNativeInputUI();
   }
@@ -2618,6 +2625,7 @@ const AiPanel = (() => {
             const part=m._dshTimeline[j];replayActivityPosition=[i,j];
             if(part.kind==='text')decorateCodeBlocks(addMsg('assistant',part.text||''));
             else if(part.kind==='tool'&&part.call)renderDshActivity(part);
+            else if(part.kind==='codexMedia')addMsg('assistant', '', { imgs: part.images, mediaLabel: part.label });
             else if(['thought','reasoning','projection'].includes(part.kind))renderDshThought(part);
           }
           continue;
@@ -2629,7 +2637,7 @@ const AiPanel = (() => {
           if (m._ui) row.dataset.mid = m._ui;
           lastUserAt = i;
         } else if (m.role === 'assistant') {
-          const row = addMsg('assistant', m.content || '');
+          const row = addMsg('assistant', m.content || '', { imgs: m._imgs, mediaLabel: m._codexMedia });
           decorateCodeBlocks(row);
         }
       }
@@ -2665,10 +2673,10 @@ const AiPanel = (() => {
           for(let count=0;count<24;count++){
             const next=iterator.next();if(next.done){done=true;break;}
             const {m,i,part,j}=next.value;
-            if(part){replayActivityPosition=[i,j];if(part.kind==='text')addMsg('assistant',part.text||'');else if(part.kind==='tool'&&part.call)renderDshActivity(part);else if(['thought','reasoning','projection'].includes(part.kind))renderDshThought(part);}
+            if(part){replayActivityPosition=[i,j];if(part.kind==='text')addMsg('assistant',part.text||'');else if(part.kind==='tool'&&part.call)renderDshActivity(part);else if(part.kind==='codexMedia')addMsg('assistant', '', { imgs: part.images, mediaLabel: part.label });else if(['thought','reasoning','projection'].includes(part.kind))renderDshThought(part);}
             else if(!m._dshTool&&m.role!=='tool'&&!m.tool_calls){
               if(m.role==='user'){const row=addMsg('user',m._text||(typeof m.content==='string'?m.content:'（含图片的消息）'),{imgs:m._imgs||[]});if(m._ui)row.dataset.mid=m._ui;lastUserAt=i;}
-              else if(m.role==='assistant')decorateCodeBlocks(addMsg('assistant',m.content||''));
+              else if(m.role==='assistant')decorateCodeBlocks(addMsg('assistant', m.content || '', { imgs: m._imgs, mediaLabel: m._codexMedia }));
             }
             if(performance.now()-start>=8)break;
           }
@@ -2756,6 +2764,26 @@ const AiPanel = (() => {
     return codexSelectedHistoryItem()?.running === true;
   }
 
+  function renderCodexObservedActivity() {
+    const selected = codexSelectedHistoryItem();
+    const running = !busy && selected?.running === true && !selected.archived;
+    let row = document.getElementById('ai-codex-activity');
+    if (!row && running) {
+      row = document.createElement('div');
+      row.id = 'ai-codex-activity'; row.className = 'ai-run-state running';
+      row.setAttribute('role', 'status');
+      row.append(Object.assign(document.createElement('span'), { className: 'ai-run-text' }));
+      document.getElementById('ai-runstate')?.after(row);
+    }
+    if (!row) return;
+    row.classList.toggle('hidden', !running);
+    if (!running) return;
+    const view = codexLiveView, text = row.firstElementChild;
+    const title = view?.threadId === selected.threadId && view.ticket === sessionLoadTicket && view.activity;
+    const label = title || 'Codex 正在运行';
+    if (text.textContent !== label) text.textContent = label;
+  }
+
   async function syncCodexLiveHistory(selected, config) {
     if (!selected || selected.archived || busy || !panel || panel.classList.contains('hidden')) return;
     const ticket = sessionLoadTicket, scope = sessKey(), threadId = selected.threadId;
@@ -2780,9 +2808,13 @@ const AiPanel = (() => {
       const result = await window.myIDE.ai.codexHistory(config, threadId);
       if (!result?.ok || result.threadId !== threadId || result.localId !== curSessionId ||
           pathKey(result.rootDir) !== pathKey(window.App?.root) || !wanted()) return;
+      view.activity = result.activity;
+      renderCodexObservedActivity();
       const next = result.messages;
       const samePrefix = msgs.length <= next.length && msgs.every((message, index) =>
-        message.role === next[index].role && message.content === next[index].content && message._codexCommand === next[index]._codexCommand);
+        message.role === next[index].role && message.content === next[index].content && message._codexCommand === next[index]._codexCommand &&
+        message._codexMedia === next[index]._codexMedia && (message._imgs?.length || 0) === (next[index]._imgs?.length || 0) &&
+        (!message._imgs || message._imgs.every((image, i) => image === next[index]._imgs[i])));
       if (!samePrefix || msgs.length !== next.length) {
         const appendFrom = samePrefix ? msgs.length : 0;
         const container = msgsEl, top = container.scrollTop;
@@ -2818,6 +2850,7 @@ const AiPanel = (() => {
         codexCatalogError = null;
         codexCatalog = { launcher: codexPath, items: result.items, projects: result.projects || [] };
         const selected = codexSelectedHistoryItem();
+        if (codexLiveView && selected?.running && !previous?.running) codexLiveView.activity = '';
         if (previous?.running !== selected?.running || previous?.archived !== selected?.archived) setBusyUI(busy);
         void syncCodexLiveHistory(selected, config);
         if (panel && !panel.classList.contains('hidden')) void refreshNativeQueue(true);
@@ -5020,6 +5053,17 @@ const AiPanel = (() => {
       }
       return;
     }
+    if (event.type === 'codexActivity') {
+      run.nativeActivity = event.label;
+      setRunState(run, event.label);
+      return;
+    }
+    if (event.type === 'codexMedia') {
+      sealDshSegment(run);
+      run.stream.timeline.push({ kind: 'codexMedia', images: event.images, label: event.label });
+      addMsg('assistant', '', { imgs: event.images, mediaLabel: event.label });
+      return;
+    }
     if (event.type === 'codexInputConsumed') { showConsumedInput(run, event.requestId, event.content); return; }
     if(event.type==='config'){if(backgroundView||getConfig().engine!==run.engine)return;dshOptionsState='ready';dshConfigOptions=event.configOptions||[];showDshConnectedInfo(dshSessionAccess?.hostId);refreshModelSel();setBusyUI(busy);return;}
     if(event.type==='native'&&event.update?.sessionUpdate==='myide_input_state'){
@@ -5055,7 +5099,7 @@ const AiPanel = (() => {
           run.thoughtPart={kind:'thought',text:''};run.stream.timeline.push(run.thoughtPart);run.thought=renderDshThought(run.thoughtPart);
         }
         run.thoughtPart.text+=update.content.text;
-        paintLiveText(run.thought.querySelector('pre'),run.thoughtPart.text,{plain:true});toolRows.get(run.thought).tx.textContent=' · '+firstActivityLine(run.thoughtPart.text);setRunState(run,'深度求索');
+        paintLiveText(run.thought.querySelector('pre'),run.thoughtPart.text,{plain:true});toolRows.get(run.thought).tx.textContent=' · '+firstActivityLine(run.thoughtPart.text);setRunState(run, run.engine === 'codex' ? run.nativeActivity || '正在思考' : '深度求索');
       }
       if(['tool_call','tool_call_update'].includes(update.sessionUpdate)){
         run.dshRows ||= new Map();let entry=run.dshRows.get(update.toolCallId);
@@ -5064,7 +5108,7 @@ const AiPanel = (() => {
         if(update.status)setDshToolState(entry.row,update.status);
         const output=(update.content||[]).map(block=>block.content?.text||'').filter(Boolean).join('\n');
         if(output&&entry.row){entry.activity.output=output;entry.row.title=output;setDshToolOutput(entry.row,output);}
-        setRunState(run,'执行 '+(entry.call.name||'工具'));
+        setRunState(run, run.engine === 'codex' ? run.nativeActivity || (entry.call.name === 'commandExecution' ? '正在执行命令' : '正在使用工具') : '执行 ' + (entry.call.name || '工具'));
       }
       // 用量归当前请求/后台视图所有，只在明细呈现，不能再覆写顶部连接状态。
       if(update.sessionUpdate==='usage_update' && Number.isFinite(update.used) && Number.isFinite(update.size) && update.used>=0 && update.size>0){
