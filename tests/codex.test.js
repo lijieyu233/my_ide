@@ -61,6 +61,7 @@ function fixture(config={}){
     send(c,{id:r.id,result:{status:'unsubscribed'}});
    }else if(r.method==='thread/start'||r.method==='thread/resume'){
     if(r.method==='thread/resume'&&config.writerLocked){
+     if(config.activeOnWriterConflict)config.activeHistory=true;
      send(c,{id:r.id,error:{code:-32600,message:'thread '+p.threadId+' already has an active writer'}});
      continue;
     }
@@ -211,7 +212,7 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
   assert.equal((await probe(home,item)).running,false);
   assert.deepEqual(await probe(path.join(temp,'other-codex-home'),item),{running:false});
  });
- await test('旧运行状态收到原生空闲回执后，已确认占用的本地会话仍可入原队列',async()=>{
+ await test('空闲会话被占用时保留草稿，确认有活跃轮次后才允许入队',async()=>{
   const id='019caa00-0000-7000-8000-000000000008';
   const root=fs.realpathSync(temp);
   const c=context(1,{sessionId:'myide-created-before-taking-writer',rootId:root});
@@ -225,10 +226,15 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
   try{
    const target={threadId:id,sessionId:c.sessionId};
    const requestId='myide-input-019caa00-0000-7000-8000-000000000010';
-   assert.deepEqual(await f.service.changeInput({},c,target,{kind:'queue',requestId,message,checkIdle:true}),
+   assert.deepEqual(await f.service.changeInput({},c,target,{kind:'queue',requestId,message}),
     {ok:true,idle:true});
    assert(!f.requests.some(r=>r.method==='thread/queue/add'||r.method==='turn/start'));
-   const result=await f.service.chat({codexQueueOnConflict:true},[message],[],c);
+   const idle=await f.service.chat({codexQueueOnConflict:true,codexPermission:'danger-full-access'},[message],[],c);
+   assert.equal(idle.errorCode,'threadInUse');
+   assert.equal(idle.rejectedBeforeTurn,true);
+   assert(!f.requests.some(r=>r.method==='thread/queue/add'||r.method==='turn/start'));
+   config.activeOnWriterConflict=true;
+   const result=await f.service.chat({codexQueueOnConflict:true},[message],[],{...c,requestId:'codex-checked-running'});
    assert.equal(result.status,'queued');
    assert.equal(result.threadId,id);
    const submissions=f.requests.filter(r=>r.method==='thread/queue/add');

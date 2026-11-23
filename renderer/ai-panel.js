@@ -181,7 +181,8 @@ const AiPanel = (() => {
     if(run.stream?.element){finishLiveText(run.stream.element);run.stream.element.querySelector('.ai-cursor')?.remove();}
     if(run.thought)finishLiveText(run.thought.querySelector('pre'));
     for (const group of run.activityGroups || []) paintToolGroup(group);
-    const inputStatus = status === 'queued' ? '已排队' : status === 'occupied' ? '原会话正在 Codex 中打开' : '';
+    const inputStatus = status === 'queued' ? '已排队' : status === 'occupied'
+      ? run.codexInputStatus || '原会话正在 Codex 中打开' : '';
     setRunState(run, inputStatus || (status === 'limited' ? '已达本次工具操作上限，可继续处理剩余任务' : status === 'cancelled' ? run.engine==='dsh'?'已停止本地派发；DSH 停止和队列撤回状态请刷新确认':run.engine==='codex'?'已请求停止 Codex；以原生回执为准':'已停止' : status === 'incomplete' ? '回复未完成，未执行工具' : status === 'failed' ? '生成失败' : '已完成'), true);
     if (curStream === run.stream?.element) { curStream = null; curText = ''; }
     busy = false; setBusyUI(false); persistSession(); markRegen();
@@ -2126,7 +2127,7 @@ const AiPanel = (() => {
   }
 
   const nativeInputRequests=new Map();let nativeInputPending=false,nativeQueueReadTicket=0,inputDraftRevision=0;
-  let codexQueue = null, codexOccupiedView = null;
+  let codexQueue = null, codexBusyDraft = null;
   function inputScopeKey(){return JSON.stringify([sessKey(),curSessionId,currentPage().id,sessionRoot()]);}
   function inputViewKey(){return JSON.stringify([inputScopeKey(),pageEpoch]);}
   function codexRunningInput() {
@@ -2136,8 +2137,8 @@ const AiPanel = (() => {
     if (getConfig().engine !== 'codex' || busy) return false;
     const item = codexSelectedHistoryItem();
     return !!item && !item.archived && (item.running ||
-      codexOccupiedView?.key === inputViewKey() && codexOccupiedView.revision === inputDraftRevision &&
-      codexOccupiedView.raw === inputEl.value);
+      codexBusyDraft?.key === inputViewKey() && codexBusyDraft.revision === inputDraftRevision &&
+      codexBusyDraft.raw === inputEl.value);
   }
   function nativeInputTarget(){
     if (getConfig().engine === 'codex') {
@@ -2188,8 +2189,7 @@ const AiPanel = (() => {
     const codex = getConfig().engine === 'codex';
     const running = codex ? codexRunningInput() : getConfig().engine === 'dsh' && (busy || dshObservedRunning());
     const target = nativeInputTarget(), queue = nativeQueueSource();
-    const canQueueExternal = codex && !!target && (codexSelectedHistoryItem()?.external || codexOccupiedView?.key === inputViewKey());
-    const showActions = !codexPrimaryQueues() && (running || canQueueExternal && !!inputEl.value.trim());
+    const showActions = !codexPrimaryQueues() && running;
     const actions=document.getElementById('ai-running-input-actions');
     actions?.classList.toggle('hidden', !showActions);
     actions?.querySelector('span')?.classList.toggle('hidden', codex);
@@ -2302,7 +2302,7 @@ const AiPanel = (() => {
     nativeInputPending=true;renderNativeInputUI();
     try{const result=await window.myIDE.ai.dshQueueUpdate(getConfig(),target,{itemId:item.id,kind,...(kind==='edit'?{text}: {})});if(!result?.ok||result.accepted!==true)throw Error(result?.error||'原生队列未确认修改');const pending=nativeInputRequests.get(item.requestId);if(pending&&kind==='edit'){pending.draft={...pending.draft,text,raw:text,imgs:[],message:{role:'user',content:text,_text:text,_imgs:[],_dshAttachments:[]}};}if(pending&&kind==='remove')nativeInputRequests.delete(item.requestId);if(key===inputViewKey())acceptNativeQueue(result,target);}catch(error){if(key===inputViewKey())MI.toast(error.message,'err');}finally{nativeInputPending=false;renderNativeInputUI();}
   }
-  async function submitCodexInput(mode, checkIdle = false) {
+  async function submitCodexInput(mode) {
     const target = nativeInputTarget(), draft = freezeInputDraft();
     if (!target || !draft || mode === 'steer' && !target.run) return;
     const requestId = 'myide-input-' + window.crypto.randomUUID();
@@ -2312,10 +2312,10 @@ const AiPanel = (() => {
     let idle = false;
     try {
       const result = await window.myIDE.ai.codexInput(getConfig(), target, {
-        kind: mode, requestId, message: draft.message, ...(checkIdle ? { checkIdle } : {}),
+        kind: mode, requestId, message: draft.message,
       });
       if (!result?.ok) throw Error(result?.error || 'Codex 未确认接收');
-      idle = checkIdle && result.idle === true;
+      idle = result.idle === true;
       if (!idle) {
         if (item) item.accepted = true;
         clearAcceptedDraft(draft);
@@ -2336,9 +2336,9 @@ const AiPanel = (() => {
       await send({ codexIdle: true });
     }
   }
-  async function submitRunningInput(mode='queue', checkIdle = false){
+  async function submitRunningInput(mode='queue'){
     if(nativeInputPending)return;
-    if (getConfig().engine === 'codex') return submitCodexInput(mode, checkIdle);
+    if (getConfig().engine === 'codex') return submitCodexInput(mode);
     if(rejectDshSend())return;
     const target=nativeInputTarget(),draft=freezeInputDraft();if(!target||!draft)return;
     if(target.kind==='watch'){
@@ -2506,9 +2506,12 @@ const AiPanel = (() => {
         nativeInputRequests.set(run.identity.requestId, { run,
           draft: { ...draft, text: draft.raw, imgs: draft.images }, error: '原会话正在 Codex 中打开' });
       }
-      if (!backgroundView) codexOccupiedView = { key: draft.key, revision: draft.revision, raw: draft.raw };
+      if (!backgroundView) codexBusyDraft = result.errorCode === 'threadBusy'
+        ? { key: draft.key, revision: draft.revision, raw: draft.raw } : null;
     }
     stream.element.remove();
+    if (occupied) run.codexInputStatus = result.errorCode === 'threadBusy'
+      ? '原会话仍在运行，草稿已保留' : '原会话正在 Codex 中打开，请在那边关闭会话后重试';
     endRun(run, queued ? 'queued' : 'occupied');
     if (!backgroundView) void refreshNativeQueue(true);
     return true;
@@ -5367,7 +5370,7 @@ const AiPanel = (() => {
     if (sendBtn) {
       sendBtn.onclick = () => {
         if (busy || dshObservedRunning()) { stopVisibleRun(); return; }
-        if (codexPrimaryQueues()) { void submitRunningInput('queue', true); return; }
+        if (codexPrimaryQueues()) { void submitRunningInput('queue'); return; }
         send();
       };
     }
@@ -5388,7 +5391,7 @@ const AiPanel = (() => {
         if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
           e.preventDefault();
           if (codexPrimaryQueues()) {
-            if (!e.altKey) void submitRunningInput('queue', true);
+            if (!e.altKey) void submitRunningInput('queue');
           } else if(codexRunningInput() || getConfig().engine==='dsh'&&(busy||dshObservedRunning()))submitRunningInput(e.altKey?'steer':'queue');
           else if (!busy) send();
         }

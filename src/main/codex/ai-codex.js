@@ -494,17 +494,23 @@ function createService(options={}){
       let attached;
       try { attached = await attach(conn,cfg,context,tools,run,data,info,permission.thread); }
       catch (error) {
-        // Queue input inherits the writer's configuration. Only an explicit queue click or full access
-        // authorizes that fallback after verifying the same imported session and its ownership conflict.
-        const sessionBusy = error.kind === 'threadBusy' || (error.kind === 'threadInUse' &&
-          error.rpcMethod === 'thread/resume' && error.rpcResponseReceived === true);
+        // An idle Desktop can hold the writer. Queue only after verifying an active turn.
+        const writerConflict = error.kind === 'threadInUse' && error.rpcMethod === 'thread/resume' &&
+          error.rpcResponseReceived === true;
         const queueAllowed = cfg.codexQueueOnConflict === true || permission.thread.sandbox === 'danger-full-access';
-        if (!sessionBusy || !queueAllowed || info.scope !== 'project' ||
+        if ((!writerConflict && error.kind !== 'threadBusy') || !queueAllowed || info.scope !== 'project' ||
             !binding?.id || binding.blocked || saved.get(info.key) !== binding || pendingChoices.has(info.key)) throw error;
         const request = historyRequest(conn);
-        if (!binding.external) {
-          const listed = await history.findProjectThread(request, binding.id);
-          if (!listed || norm(await projectThreadRoot(listed)) !== norm(info.cwd)) throw error;
+        if (writerConflict) {
+          let running = false;
+          try {
+            const native = await history.readProjectThread(request, binding.id);
+            if (norm(await projectThreadRoot(native)) !== norm(info.cwd)) throw error;
+            await history.assertThreadIdle(request, native);
+          } catch (probeError) {
+            running = probeError.kind === 'threadBusy';
+          }
+          if (!running) throw error;
         }
         live(run);
         queueing = true;
@@ -591,7 +597,7 @@ function createService(options={}){
       const listed = await history.findProjectThread(historyRequest(conn), record.id);
       if (!listed || norm(await projectThreadRoot(listed)) !== norm(info.cwd)) throw Error('无法核对原 Codex 会话');
       threadId = record.id;
-      if (action.kind === 'queue' && action.checkIdle === true) {
+      if (action.kind === 'queue') {
         const request = historyRequest(conn);
         try {
           await history.assertThreadIdle(request, listed);
