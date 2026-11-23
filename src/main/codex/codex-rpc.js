@@ -42,6 +42,8 @@ class Rpc extends EventEmitter {
           // Codex reports the exclusive writer conflict via a text-only JSON-RPC error.
           if(['thread/resume','thread/archive','thread/unarchive'].includes(pending.method)&&error.code===-32600&&
             /\bthread [0-9a-f-]{36} already has an active writer\b/i.test(message.error.message||'')) error.kind='threadInUse';
+          if (pending.method === 'project/create' && error.code === -32602 &&
+              /^idempotency key refers to deleted project: /.test(message.error.message || '')) error.kind = 'deletedProjectKey';
           pending.reject(error);
         }
         else if(Object.hasOwn(message,'result'))pending.resolve(message.result);

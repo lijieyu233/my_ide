@@ -29,6 +29,13 @@ function fixture(config={}){
    else if(r.method==='project/list'){
      assert.equal(p.sortKey,'position');
      send(c,{id:r.id,result:{data:config.projects||[],nextCursor:null}});
+   }else if(r.method==='project/create'){
+     if(config.projectCreateUnsupported)return send(c,{id:r.id,error:{code:-32601,message:'unsupported'}});
+     if(config.deletedProjectKey&&p.idempotencyKey.startsWith('myide-root-'))return send(c,{id:r.id,error:{code:-32602,message:'idempotency key refers to deleted project: '+p.idempotencyKey}});
+     const projects=config.projects ||= [];
+     const project={id:'registered-'+(projects.length+1),name:p.name,roots:p.roots};
+     projects.push(project);
+     send(c,{id:r.id,result:{project}});
    }
    else if(r.method==='thread/list'&&config.history){
      assert.equal(p.currentAccountOnly,true);
@@ -96,6 +103,36 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
    assert.equal(reader.params.projectId,undefined);
    assert.equal(reader.params.threadSource,undefined);
   }finally{await f.service.dispose();}
+ });
+ await test('未登记工作区在首发时注册，两个会话复用同一个项目',async()=>{
+  const root=path.join(temp,'私人知识库');fs.mkdirSync(root);
+  const f=fixture();
+  try{
+   const send=(n,sessionId)=>f.service.chat({},user('新会话 '+n),[],context(n,{rootId:root,sessionId}));
+   const results=await Promise.all([send(1,'first'),send(2,'second')]);
+   for(const result of results)assert(result.ok,result.error);
+   const creates=f.requests.filter(r=>r.method==='project/create');
+   assert.equal(creates.length,1);
+   assert.deepEqual(creates[0].params.roots,[{path:root}]);
+   assert.equal(creates[0].params.name,path.basename(root));
+   const starts=f.requests.filter(r=>r.method==='thread/start');
+   assert.deepEqual(starts.map(r=>r.params.projectId),['registered-1','registered-1']);
+   assert(starts.every(r=>r.params.threadSource==='user'));
+  }finally{await f.service.dispose();}
+ });
+ await test('项目删除后重新登记，旧版缺少项目接口时仍可发送',async()=>{
+  for(const unsupported of [false,true]){
+   const f=fixture({deletedProjectKey:!unsupported,projectCreateUnsupported:unsupported});
+   try{
+    const result=await f.service.chat({},user('开始'),[],context());
+    assert(result.ok,result.error);
+    const creates=f.requests.filter(r=>r.method==='project/create');
+    assert.equal(creates.length,unsupported?1:2);
+    if(!unsupported)assert.notEqual(creates[0].params.idempotencyKey,creates[1].params.idempotencyKey);
+    const start=f.requests.find(r=>r.method==='thread/start');
+    assert.equal(start.params.projectId,unsupported?undefined:'registered-1');
+   }finally{await f.service.dispose();}
+  }
  });
  await test('按桌面端本地项目归属补齐会话，滚动读取外部轮次开始和结束',async()=>{
   const desktop=require('../src/main/codex/codex-desktop-state');

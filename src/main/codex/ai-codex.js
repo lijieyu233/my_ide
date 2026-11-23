@@ -347,15 +347,38 @@ function createService(options={}){
     return { ...history.threadSummary(thread), rootDir, localId, ...view, external: saved.get(key)?.external === true };
   }
 
-  async function projectThreadParams(conn, info) {
+  async function projectThreadParams(conn, info, run) {
     if (info.scope !== 'project' || !info.root) return {};
-    const projects = await history.listProjects(historyRequest(conn));
-    const roots = await Promise.all(projects.map(async project => {
-      const paths = await Promise.all(project.roots.map(root => canonical(root).catch(() => '')));
-      return paths.some(root => root && norm(root) === norm(info.root)) ? project.id : null;
-    }));
-    const matches = roots.filter(Boolean);
-    return { threadSource: 'user', ...(matches.length === 1 ? { projectId: matches[0] } : {}) };
+    const rootKey = norm(info.root);
+    return locked('codex-project:' + rootKey, async () => {
+      const request = historyRequest(conn);
+      const projects = await history.listProjects(request);
+      const roots = await Promise.all(projects.map(async project => {
+        const paths = await Promise.all(project.roots.map(root => canonical(root).catch(() => '')));
+        return paths.some(root => root && norm(root) === rootKey) ? project.id : null;
+      }));
+      const matches = roots.filter(Boolean);
+      const threadSource = 'user';
+      if (matches.length) return matches.length === 1 ? { threadSource, projectId: matches[0] } : { threadSource };
+      live(run);
+      const params = {
+        name: path.basename(info.root) || info.root,
+        roots: [{ path: info.root }],
+        idempotencyKey: 'myide-root-' + crypto.createHash('sha256').update(rootKey).digest('hex'),
+      };
+      let result;
+      try {
+        result = await request('project/create', params);
+      } catch (error) {
+        if (error.code === -32601) return { threadSource };
+        if (error.kind !== 'deletedProjectKey') throw error;
+        live(run);
+        result = await request('project/create', { ...params, idempotencyKey: crypto.randomUUID() });
+      }
+      const projectId = result?.project?.id;
+      if (typeof projectId !== 'string' || !projectId) throw Error('Codex 未确认项目登记');
+      return { threadSource, projectId };
+    });
   }
 
   async function attach(conn,cfg,context,tools,run,catalogue,info,threadPolicy){
@@ -379,7 +402,7 @@ function createService(options={}){
         const fresh=!session.id,pending=pendingChoices.get(info.key),requested=pending?.model||(!fresh?null:cfg.codexModel)||null;
         if(requested)validateChoice(catalogue.models,requested,pending?.effort||(!fresh?null:cfg.codexReasoning));live(run);
         const params = fresh
-          ? { dynamicTools: specs, allowProviderModelFallback: false, cwd: info.cwd, ...await projectThreadParams(conn, info) }
+          ? { dynamicTools: specs, allowProviderModelFallback: false, cwd: info.cwd, ...await projectThreadParams(conn, info, run) }
           : { threadId: session.id, excludeTurns: true };
         live(run);
         let response;

@@ -45,14 +45,17 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  const earlierTurns=fixture.requests.filter(r=>r.method==='turn/start').length;
  await js(()=>App.showTool('sessions'));
  await until(()=>js(()=>[...document.querySelectorAll('.ai-hist-nm')].some(node=>node.textContent==='桌面 Codex 外部会话')),'external catalog');
- check('Codex sidebar follows native project names, order and membership, keeping unassigned threads in Recent',await js(()=>{
+ const firstProject=fixture.projects.find(project=>project.roots.some(root=>root.path===roots[0]));
+ check('First send registers an unlisted project and gives the native thread its project ID',
+   firstProject?.name===path.basename(roots[0])&&fixture.requests.find(r=>r.method==='thread/start').params.projectId===firstProject.id);
+ check('Codex sidebar follows native project names, order and membership, keeping unassigned threads in Recent',await js(firstProjectName=>{
    const groups=[...document.querySelectorAll('.ai-hist-rows > .ai-hist-group')];
    const project=document.querySelector('[data-codex-project="desktop-b"]'), recent=document.querySelector('[data-codex-recent]');
-   return JSON.stringify(groups.map(group=>group.querySelector('.ai-hist-workspace-name').textContent))===JSON.stringify(['桌面空项目','桌面工程 B','最近'])&&
+   return JSON.stringify(groups.map(group=>group.querySelector('.ai-hist-workspace-name').textContent))===JSON.stringify([firstProjectName,'桌面空项目','桌面工程 B','最近'])&&
      project.querySelector('.ai-hist-nm')?.textContent==='桌面 Codex 外部会话'&&
      [...recent.querySelectorAll('.ai-hist-nm')].some(node=>node.textContent==='同目录的未分组会话')&&
      !recent.querySelector('[data-hist-jump]');
- }));
+ },firstProject.name));
  await js(()=>{document.querySelector('[data-codex-project="desktop-empty"] [data-hist-jump]').click();return true;});
  await until(()=>js(root=>App.root===root,emptyRoot),'open an empty native project');
  check('an empty Codex project can be opened even with no sessions',await js(root=>App.root===root,emptyRoot));

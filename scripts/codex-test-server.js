@@ -24,6 +24,11 @@ function createServer(){
    if(message.method==='account/gatewayOAuth/read')return reply(message.id,{providerId:'openai',providerName:'OpenAI',required:false,status:null,error:null});
    if(message.method==='model/list')return reply(message.id,{data:models,nextCursor:null});
    if(message.method==='project/list')return reply(message.id,{data:projects,nextCursor:null});
+   if(message.method==='project/create'){
+    const project={id:'offline-project-'+(projects.length+1),name:p.name,roots:p.roots};
+    projects.push(project);
+    return reply(message.id,{project});
+   }
    if(message.method==='thread/list'){
     if(p.currentAccountOnly!==true)throw Error('Synthetic catalog requires account scope');
     const data=[...threads.values()].filter(t=>!!t.archived===!!p.archived&&(!p.includedThreadIds||p.includedThreadIds.includes(t.id)));
