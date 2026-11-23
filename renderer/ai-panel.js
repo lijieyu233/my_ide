@@ -1168,7 +1168,8 @@ const AiPanel = (() => {
     row.dataset.toolName = 'codexMedia';
     const data = toolGroups.get(group);
     if (data.total === 1) data.mediaSummary = label;
-    appendMessageImages(body, images, label);
+    body.classList.add('ai-tool-images');
+    appendMessageImages(body, images, label, true);
     setDshToolState(row, 'completed');
     scrollBottom();
     return row;
@@ -1630,13 +1631,24 @@ const AiPanel = (() => {
     return div.innerHTML;
   }
 
-  function appendMessageImages(container, images, label) {
+  function appendMessageImages(container, images, label, zoomable = false) {
     for (const source of images || []) {
       const img = document.createElement('img');
       img.className = 'ai-msg-img';
       img.src = source;
       img.alt = label;
-      container.appendChild(img);
+      if (!zoomable) {
+        container.appendChild(img);
+        continue;
+      }
+      const preview = document.createElement('button');
+      preview.type = 'button';
+      preview.className = 'ai-image-preview';
+      preview.title = '放大图片';
+      preview.setAttribute('aria-label', '放大图片');
+      preview.addEventListener('click', () => MI.showImgLightbox(img.src, img.alt));
+      preview.appendChild(img);
+      container.appendChild(preview);
     }
   }
 

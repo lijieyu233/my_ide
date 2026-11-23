@@ -70,9 +70,9 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  await capture('codex-history-sidebar');
  const original=fixture.threads.get(externalId);
  const picture=path.join(roots[1],'native-preview.png');
-  const pixels=Buffer.alloc(120*80*4);
+  const pixels=Buffer.alloc(240*320*4);
  for(let i=0;i<pixels.length;i+=4){pixels[i]=80;pixels[i+1]=160;pixels[i+2]=55;pixels[i+3]=255;}
- fs.writeFileSync(picture,nativeImage.createFromBitmap(pixels,{width:120,height:80}).toPNG());
+ fs.writeFileSync(picture,nativeImage.createFromBitmap(pixels,{width:240,height:320}).toPNG());
  await js(()=>{window.__codexHistoryRow=document.querySelector('#ai-msgs .ai-msg');});
  original.desktopRunning=true;
  const late={...original,id:'019caa00-0000-7000-8000-000000000007',projectId:'desktop-b',name:'桌面刚建的会话',desktopRunning:false};
@@ -152,6 +152,22 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
    const image=document.querySelector('.ai-tool[data-tool-name="codexMedia"] .ai-tool-body img');
    return image?.naturalWidth>0 && image.checkVisibility();
  }),'image preview after expanding the tool row');
+ const thumbHeight=await js(()=>{
+   const preview=document.querySelector('.ai-tool-images .ai-image-preview');
+   const image=preview.querySelector('img');
+   const height=image.getBoundingClientRect().height;
+   const bodyStyle=getComputedStyle(preview.closest('.ai-tool-images'));
+   const imageStyle=getComputedStyle(image);
+   if(bodyStyle.borderTopWidth!=='0px'||bodyStyle.backgroundColor!=='rgba(0, 0, 0, 0)'||imageStyle.borderTopWidth!=='0px')throw Error('Image preview has a visible frame');
+   preview.focus();
+   preview.click();
+   return height;
+ });
+ await until(()=>js(height=>document.querySelector('.img-lightbox[open] img')?.getBoundingClientRect().height>height,thumbHeight),'enlarged image in the shared preview');
+ check('The frameless Codex thumbnail opens the shared preview and Escape restores focus',await js(()=>{
+   document.querySelector('.img-lightbox').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+   return !document.querySelector('.img-lightbox')&&document.activeElement.matches('.ai-image-preview');
+ }));
  check('Closing the image tool row hides its preview',await js(()=>{
    const row=document.querySelector('.ai-tool[data-tool-name="codexMedia"]');
    row.querySelector('.ai-tool-summary').click();
