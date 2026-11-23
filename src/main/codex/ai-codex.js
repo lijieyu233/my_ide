@@ -429,7 +429,8 @@ function createService(options={}){
         live(run);
       }
       const specs=session.external?[]:toolSpecs(tools);
-      if(!session.attached||session.conn!==conn){
+      const needsAttach = !session.attached || session.conn !== conn;
+      if (needsAttach) {
         const fresh=!session.id,pending=pendingChoices.get(info.key),requested=pending?.model||(!fresh?null:cfg.codexModel)||null;
         if(requested)validateChoice(catalogue.models,requested,pending?.effort||(!fresh?null:cfg.codexReasoning));live(run);
         const params = fresh
@@ -452,17 +453,29 @@ function createService(options={}){
         const mismatch=typeof response.thread?.id!=='string'||!response.model||(!fresh&&response.thread.id!==session.id)||!matchingCwd;
         if(mismatch||fresh&&requested&&response.model!==requested){
           session.blocked=mismatch?'Codex 返回了不匹配的会话或工作目录，已拒绝发送；此身份不会新建替代线程':'Codex 未采用所选模型，已拒绝发送；此身份不会新建替代线程';
-          saved.set(info.key,{id:session.id||response.thread?.id||'invalid-thread',cwd:info.cwd,external:session.external,blocked:session.blocked});await persist();throw Error(session.blocked);
+          const returnedId = response.thread?.id;
+          if (response.thread?.status?.type !== 'active' && typeof returnedId === 'string' &&
+              (fresh || returnedId === session.id)) await releaseIdleThread({ id: returnedId, conn, attached: true });
+          saved.set(info.key,{id:session.id||returnedId||'invalid-thread',cwd:info.cwd,external:session.external,blocked:session.blocked});await persist();throw Error(session.blocked);
         }
         session.id=response.thread.id;session.model=response.model;session.effort=(fresh?cfg.codexReasoning:null)||response.reasoningEffort||null;session.attached=true;session.conn=conn;
         if(fresh)session.toolNames=specs.map(t=>t.name);
-        saved.set(info.key,{id:session.id,cwd:info.cwd,model:session.model,effort:session.effort,toolNames:session.toolNames,...(session.external?{external:true}:{})});await persist();
+        saved.set(info.key,{id:session.id,cwd:info.cwd,model:session.model,effort:session.effort,toolNames:session.toolNames,...(session.external?{external:true}:{})});
       }
       // thread/resume reuses the tools registered at thread/start. Adding a MyIDE tool must not block existing chats.
       const registered=Array.isArray(session.toolNames)?new Set(session.toolNames):new Set();
       session.allowed=new Set(specs.map(t=>t.name).filter(name=>registered.has(name)));
       const pending=pendingChoices.get(info.key),model=pending?.model||session.model,effort=pending?.effort??session.effort;
-      validateChoice(catalogue.models,model,effort);live(run);session.run=run;run.session=session;run.conn=conn;return {session,model,effort,pending};
+      try {
+        if (needsAttach) await persist();
+        validateChoice(catalogue.models,model,effort);
+        live(run);
+      } catch (error) {
+        // Native resume can acquire the writer before local validation or persistence fails.
+        await releaseIdleThread(session);
+        throw error;
+      }
+      session.run=run;run.session=session;run.conn=conn;return {session,model,effort,pending};
     });
   }
   async function inspect(cfg={},context,tools=[],apply=false){
