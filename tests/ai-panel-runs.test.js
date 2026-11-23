@@ -1375,6 +1375,49 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     f.openSessions();await tick();await tick();f.sessionAction('open',f.element('[data-id="host:session-preview-retry"]'));await tick();await tick();assert(f.text().includes('临时读取失败'));assert.equal(f.element('#ai-dsh-reconnect').getAttribute('aria-label'),'重新连接 DSH');assert(f.element('#ai-dsh-reconnect svg'));
     f.element('#ai-dsh-reconnect').click();await until(()=>f.w.AiPanel.aiState().dshSession?.state==='ready'&&!f.element('#ai-send').disabled);assert(f.text().includes('预览恢复成功'));assert.equal(reads,2);assert.equal(f.binds.length,1);assert.equal(f.binds[0].state.rootId,f.B);assert.equal(f.aborts.length,0);
   });
+  await test('DSH 侧栏自动发现外部新建的工作区和会话，关闭期间暂停同步', async () => {
+    const f = fixture(), timers = new Map();
+    let timerId = 0, reads = 0, showExternal = false, response;
+    f.w.setInterval = callback => { timers.set(++timerId, callback); return timerId; };
+    f.w.clearInterval = id => timers.delete(id);
+    f.catalogRead = async () => {
+      reads++;
+      if (response) await response.promise;
+      return showExternal ? { ok: true,
+        workspaces: [{ id: 'workspace-external', rootDir: f.B, title: 'DSH 新工作区' }],
+        items: [{ sessionId: 'session-external', cwd: f.B, title: 'DSH 新会话', running: true }],
+      } : { ok: true, items: [] };
+    };
+    const row = () => f.element('[data-id="host:session-external"]');
+    const refresh = () => f.element('[data-hist-refresh]');
+    await f.w.AiPanel.setConfig({ engine: 'dsh' });
+    f.w.App.showTool('sessions');
+    await until(() => reads === 1 && !refresh().disabled);
+    assert.equal(timers.size, 1);
+    assert(!row());
+
+    showExternal = true;
+    response = defer();
+    refresh().focus();
+    const poll = [...timers.values()][0];
+    poll(); poll();
+    assert.equal(reads, 2, '同一轮读取未完成时不再请求目录');
+    assert.equal(f.w.document.activeElement, refresh());
+    response.resolve();
+    await until(row);
+    assert(!row().closest('.ai-hist-group').hidden);
+    assert(!row().closest('.ai-hist-items').hidden);
+    assert.match(row().textContent, /DSH 新会话/);
+
+    f.w.App.hideSideTool('sessions');
+    assert.equal(timers.size, 0);
+    showExternal = false;
+    f.w.App.showTool('sessions');
+    await until(() => !row());
+    assert.equal(reads, 3);
+    await f.w.AiPanel.setConfig({ engine: 'standard' });
+    assert.equal(timers.size, 0);
+  });
   await test('全局目录失败保留折叠状态与已有记录并允许重试',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.dshCatalog=[{sessionId:'session-foreign',title:'目录项目',cwd:f.B,rootDir:f.B}];
     f.openSessions();await tick();await tick();const pop=f.element('.ai-hist-dock'),group=f.element('[data-id="host:session-foreign"]').closest('.ai-hist-group');

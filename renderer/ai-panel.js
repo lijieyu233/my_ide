@@ -1271,7 +1271,7 @@ const AiPanel = (() => {
     if(switching)onProjectChange();
     if (histSidebarVisible && (switching || previousConfig.dshPath !== getConfig().dshPath || previousConfig.codexPath !== getConfig().codexPath)) {
       refreshHistInPlace();
-      ensureHistoryCatalog();
+      syncHistoryCatalog();
     }
     refreshModelSel();
     // 空会话的引导也应跟着配置刷新，避免模型已选好却仍提示“还没配置”。
@@ -2626,33 +2626,47 @@ const AiPanel = (() => {
     return request.promise;
   }
 
-  function ensureHistoryCatalog() {
-    if (getConfig().engine === 'dsh') return ensureDshCatalog();
+  let dshCatalogRefreshTimer = null;
+  function syncHistoryCatalog() {
+    if (histSidebarVisible && getConfig().engine === 'dsh') {
+      // DSH 可在另一个窗口新建会话，侧栏打开时持续更新宿主目录。
+      dshCatalogRefreshTimer ??= setInterval(() => {
+        if (!document.hidden) refreshDshCatalog({ background: true });
+      }, 5000);
+      return refreshDshCatalog({ background: catalogUsable() });
+    }
+    clearInterval(dshCatalogRefreshTimer);
+    dshCatalogRefreshTimer = null;
+    if (!histSidebarVisible) return;
     if (codexProjectHistory() && codexCatalog?.launcher !== (getConfig().codexPath || '')) return refreshCodexCatalog();
   }
 
   // DSH 会话和工作区共用宿主目录，切换 IDE 项目不重读。
   let dshCatalog = { launcher: null, items: [], workspaces: new Map(), archivedIds: new Set(), pinnedIds: new Set() }, dshCatalogRequest = null, dshCatalogError = null;
-  function refreshDshCatalog() {
+  function refreshDshCatalog({ background = false } = {}) {
     const config = getConfig(), launcher = config.dshPath || '';
     if (config.engine !== 'dsh') return;
     if (dshCatalogRequest?.launcher === launcher) return dshCatalogRequest.promise;
-    const request = { launcher };
+    const request = { launcher, background };
     dshCatalogRequest = request;
-    dshCatalogError = null;
-    refreshHistInPlace();
+    if (!background) {
+      dshCatalogError = null;
+      refreshHistInPlace();
+    }
     request.promise = (async () => {
       try {
         const result = await window.myIDE.ai.dshSessions({...config, catalogScope:'all'});
         if (dshCatalogRequest !== request) return;
-        if (result?.ok) dshCatalog = {
-          launcher,
-          items: Array.isArray(result.items) ? result.items : [],
-          workspaces: new Map((Array.isArray(result.workspaces) ? result.workspaces : []).map(workspace => [pathKey(workspace.rootDir), workspace])),
-          archivedIds: new Set(Array.isArray(result.archivedSessionIds) ? result.archivedSessionIds : []),
-          pinnedIds: new Set(Array.isArray(result.pinnedSessionIds) ? result.pinnedSessionIds : []),
-        };
-        else dshCatalogError = { launcher, message: result?.error || '未能读取 DSH 会话目录' };
+        if (result?.ok) {
+          dshCatalogError = null;
+          dshCatalog = {
+            launcher,
+            items: Array.isArray(result.items) ? result.items : [],
+            workspaces: new Map((Array.isArray(result.workspaces) ? result.workspaces : []).map(workspace => [pathKey(workspace.rootDir), workspace])),
+            archivedIds: new Set(Array.isArray(result.archivedSessionIds) ? result.archivedSessionIds : []),
+            pinnedIds: new Set(Array.isArray(result.pinnedSessionIds) ? result.pinnedSessionIds : []),
+          };
+        } else dshCatalogError = { launcher, message: result?.error || '未能读取 DSH 会话目录' };
       } catch (error) {
         if (dshCatalogRequest === request) dshCatalogError = { launcher, message: error?.message || 'DSH 会话目录读取失败' };
       } finally {
@@ -3021,7 +3035,7 @@ const AiPanel = (() => {
     const launcher = (codex ? config.codexPath : config.dshPath) || '';
     const request = codex ? codexCatalogRequest : dshCatalogRequest;
     const error = codex ? codexCatalogError : dshCatalogError;
-    const histLoading = request?.launcher === launcher;
+    const histLoading = request?.launcher === launcher && !request.background;
     const histError = error?.launcher === launcher ? error.message : '';
     const status = sidebar.querySelector('.ai-hist-status');
     const refresh = sidebar.querySelector('[data-hist-refresh]');
@@ -3194,11 +3208,11 @@ const AiPanel = (() => {
     if (!visible) {
       if (aiContextMenu?.kind === 'session') aiContextMenu.close();
       endHistorySearch();
-      return;
+    } else {
+      if (!histSidebar) mountSessionSidebar();
+      refreshHistInPlace();
     }
-    if (!histSidebar) mountSessionSidebar();
-    refreshHistInPlace();
-    ensureHistoryCatalog();
+    syncHistoryCatalog();
   }
 
   function mountSessionSidebar() {
