@@ -26,9 +26,9 @@ function fixture(config={}){
    else if(r.method==='account/gatewayOAuth/read'){if(config.unsupportedGateway)send(c,{id:r.id,error:{code:-32601,message:'unsupported'}});else send(c,{id:r.id,result:config.gateway||{providerId:'openai',providerName:'OpenAI',required:false,status:null}});}
     else if(r.method==='account/read')send(c,{id:r.id,result:config.account||{account:{type:'chatgpt',email:'private@example.invalid',planType:'plus',accessToken:'never-expose-token'},requiresOpenaiAuth:true}});
    else if(r.method==='model/list')send(c,{id:r.id,result:{data:config.models||models,nextCursor:null}});
-   else if(r.method==='project/list'&&config.projects){
+   else if(r.method==='project/list'){
      assert.equal(p.sortKey,'position');
-     send(c,{id:r.id,result:{data:config.projects,nextCursor:null}});
+     send(c,{id:r.id,result:{data:config.projects||[],nextCursor:null}});
    }
    else if(r.method==='thread/list'&&config.history){
      assert.equal(p.currentAccountOnly,true);
@@ -78,6 +78,25 @@ function fixture(config={}){
 }
 let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+name);}
 (async()=>{try{
+ await test('新建项目会话带上唯一匹配的原生项目和普通用户会话类型',async()=>{
+  const dir=path.join(temp,'shared-project');fs.mkdirSync(dir);
+  const root=process.platform==='win32'?'\\\\?\\'+dir:dir;
+  const project={id:'registered-project',name:'桌面项目',roots:[{path:root}]};
+  const unrelated={id:'unrelated-project',name:'其他项目',roots:[{path:temp}]};
+  const f=fixture({projects:[unrelated,project]});
+  try{
+   const sent=await f.service.chat({},user('开始会话'),[],context(1,{rootId:dir}));
+   assert(sent.ok,sent.error);
+   const start=f.requests.find(request=>request.method==='thread/start');
+   assert.equal(start.params.projectId,project.id);
+   assert.equal(start.params.threadSource,'user');
+   const detached=await f.service.chat({},user('阅读摘要'),[],context(2,{rootId:dir,page:{id:'reader',projectContext:false}}));
+   assert(detached.ok,detached.error);
+   const reader=f.requests.filter(request=>request.method==='thread/start').at(-1);
+   assert.equal(reader.params.projectId,undefined);
+   assert.equal(reader.params.threadSource,undefined);
+  }finally{await f.service.dispose();}
+ });
  await test('按桌面端本地项目归属补齐会话，滚动读取外部轮次开始和结束',async()=>{
   const desktop=require('../src/main/codex/codex-desktop-state');
   const id='019caa00-0000-7000-8000-000000000010',home=path.join(temp,'desktop-status'),logs=path.join(home,'sessions');

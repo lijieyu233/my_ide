@@ -347,6 +347,17 @@ function createService(options={}){
     return { ...history.threadSummary(thread), rootDir, localId, ...view, external: saved.get(key)?.external === true };
   }
 
+  async function projectThreadParams(conn, info) {
+    if (info.scope !== 'project' || !info.root) return {};
+    const projects = await history.listProjects(historyRequest(conn));
+    const roots = await Promise.all(projects.map(async project => {
+      const paths = await Promise.all(project.roots.map(root => canonical(root).catch(() => '')));
+      return paths.some(root => root && norm(root) === norm(info.root)) ? project.id : null;
+    }));
+    const matches = roots.filter(Boolean);
+    return { threadSource: 'user', ...(matches.length === 1 ? { projectId: matches[0] } : {}) };
+  }
+
   async function attach(conn,cfg,context,tools,run,catalogue,info,threadPolicy){
     return locked(info.key,async()=>{
       live(run);let session=sessions.get(info.key),record=saved.get(info.key);
@@ -367,7 +378,21 @@ function createService(options={}){
       if(!session.attached||session.conn!==conn){
         const fresh=!session.id,pending=pendingChoices.get(info.key),requested=pending?.model||(!fresh?null:cfg.codexModel)||null;
         if(requested)validateChoice(catalogue.models,requested,pending?.effort||(!fresh?null:cfg.codexReasoning));live(run);
-        let response;try{response=await conn.rpc.request(fresh?'thread/start':'thread/resume',{...(fresh?{dynamicTools:specs,allowProviderModelFallback:false,cwd:info.cwd}:{threadId:session.id,excludeTurns:true}),...threadPolicy,...(requested&&fresh?{model:requested}:{})},options.requestTimeoutMs||45000);}catch(error){if(error.code===-32601||error.code===-32602)throw Error('本机 Codex app-server 不支持所需实验协议，请更新兼容版本；不会新建替代线程或重发任务');throw error;}
+        const params = fresh
+          ? { dynamicTools: specs, allowProviderModelFallback: false, cwd: info.cwd, ...await projectThreadParams(conn, info) }
+          : { threadId: session.id, excludeTurns: true };
+        live(run);
+        let response;
+        try {
+          response = await historyRequest(conn)(fresh ? 'thread/start' : 'thread/resume', {
+            ...params, ...threadPolicy, ...(requested && fresh ? { model: requested } : {}),
+          });
+        } catch (error) {
+          if (error.code === -32601 || error.code === -32602) {
+            throw Error('本机 Codex app-server 不支持所需实验协议，请更新兼容版本；不会新建替代线程或重发任务');
+          }
+          throw error;
+        }
         if (session.external) history.assertIdle(response.thread || {});
         let matchingCwd=false;try{matchingCwd=norm(await canonical(response.cwd||response.thread?.cwd))===norm(info.cwd);}catch{}
         const mismatch=typeof response.thread?.id!=='string'||!response.model||(!fresh&&response.thread.id!==session.id)||!matchingCwd;

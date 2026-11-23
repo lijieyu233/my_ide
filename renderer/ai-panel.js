@@ -3333,6 +3333,12 @@ const AiPanel = (() => {
       if (codex) {
         const projectKey = codexProjectKey(session.codexProjectId);
         key = registered.has(projectKey) ? projectKey : codexRecentKey;
+        // A local draft has a workspace before it has a native thread or persisted project assignment.
+        if (key === codexRecentKey && !session.codexThreadId && session.rootDir) {
+          const root = pathKey(session.rootDir);
+          const matches = [...registered].filter(([, project]) => project.roots.some(folder => pathKey(folder) === root));
+          if (matches.length === 1) key = matches[0][0];
+        }
       }
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(session);
