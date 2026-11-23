@@ -120,6 +120,32 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
    assert(starts.every(r=>r.params.threadSource==='user'));
   }finally{await f.service.dispose();}
  });
+ await test('同目录优先桌面端项目，空的临时登记不重复展示',async()=>{
+  const root=path.join(temp,'desktop-same-root');fs.mkdirSync(root);
+  const roots=[{path:root}];
+  const desktopId='desktop-native', previous='myide-empty', used='myide-with-history';
+  const projects=[
+   {id:previous,name:'工作区',roots,metadata:{'myide.provisional-project':'1'}},
+   {id:desktopId,name:'桌面项目',roots},
+   {id:used,name:'临时项目',roots,metadata:{'myide.provisional-project':'1'}},
+  ];
+  const history=[{id:'019caa00-0000-7000-8000-000000000009',projectId:used,cwd:root,name:'旧会话',archived:true}];
+  const f=fixture({projects,history});
+  fs.mkdirSync(f.home,{recursive:true});
+  const state={'local-projects':{desktop:{id:'desktop'}},
+    'app-server-project-id-by-legacy-project-id-by-host':{'local:fixture':{desktop:desktopId}}};
+  fs.writeFileSync(path.join(f.home,'.codex-global-state.json'),JSON.stringify(state));
+  try{
+   assert.equal(await f.service.getHistoryProjectRoot({},desktopId),root);
+   await assert.rejects(f.service.getHistoryProjectRoot({},'missing'),/找不到 Codex 项目目录/);
+   assert.deepEqual((await f.service.listHistory({})).projects.map(p=>p.id),[desktopId,used]);
+   const result=await f.service.chat({},user('开始'),[],context(1,{rootId:root}));
+   assert(result.ok,result.error);
+   const start=f.requests.find(r=>r.method==='thread/start');
+   assert.equal(start.params.projectId,desktopId);
+   assert(!f.requests.some(r=>r.method==='project/create'));
+  }finally{await f.service.dispose();}
+ });
  await test('项目删除后重新登记，旧版缺少项目接口时仍可发送',async()=>{
   for(const unsupported of [false,true]){
    const f=fixture({deletedProjectKey:!unsupported,projectCreateUnsupported:unsupported});

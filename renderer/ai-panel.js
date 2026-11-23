@@ -3327,6 +3327,12 @@ const AiPanel = (() => {
     const scope = sessKey(), engine = getConfig().engine;
     const current = () => histSidebarVisible && anchor.isConnected && scope === sessKey() && engine === getConfig().engine;
     const actions = [{ label: '在资源管理器中显示', run: () => window.myIDE.shell.showInFolder(rootDir) }];
+    if (engine === 'codex' && group.dataset.codexProject) {
+      actions.unshift({ label: '在 Codex 中打开', run: async () => {
+        const result = await window.myIDE.ai.codexDesktopProject(getConfig(), group.dataset.codexProject);
+        if (!result?.ok) MI.toast(result?.error || '无法打开 Codex 项目', 'err');
+      } });
+    }
     if (engine === 'dsh') {
       const workspace = catalogUsable() && dshCatalog.workspaces.get(pathKey(rootDir));
       const run = (operation, extra) => manageHistory(operation, { rootDir, ...extra });

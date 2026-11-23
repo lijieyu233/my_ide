@@ -25,6 +25,18 @@ async function readDesktopState(home) {
   } catch { return {}; }
 }
 
+function registeredProjectIds(state) {
+  const { ['local-projects']: projects = {}, ['app-server-project-id-by-legacy-project-id-by-host']: hosts = {} } = state;
+  const ids = new Set(Object.keys(projects || {}));
+  for (const [host, aliases] of Object.entries(hosts || {})) {
+    if (!host.startsWith('local:')) continue;
+    for (const [id, nativeId] of Object.entries(aliases || {})) {
+      if (Object.hasOwn(projects || {}, id) && typeof nativeId === 'string') ids.add(nativeId);
+    }
+  }
+  return ids;
+}
+
 function projectAssignments(projects, state) {
   const projectIds = new Set(projects.map(project => project.id));
   const aliases = new Map();
@@ -123,4 +135,4 @@ function createDesktopStatusReader({ liveOwner = hasLiveOwner } = {}) {
   return observe;
 }
 
-module.exports = { readDesktopState, projectAssignments, createDesktopStatusReader };
+module.exports = { readDesktopState, registeredProjectIds, projectAssignments, createDesktopStatusReader };

@@ -1,6 +1,8 @@
 // Hidden production UI+IPC+Codex service/RPC. Only the app-server child is synthetic.
 const fs=require('fs'),path=require('path'),os=require('os'),assert=require('assert/strict');
-const {app,BrowserWindow,session,ipcMain,clipboard,nativeImage}=require('electron');
+const {app,BrowserWindow,session,ipcMain,clipboard,nativeImage,shell}=require('electron');
+const desktopLinks=[], openExternal=shell.openExternal.bind(shell);
+shell.openExternal=(url,...args)=>url.startsWith('codex:')?(desktopLinks.push(url),Promise.resolve()):openExternal(url,...args);
 const repo=path.resolve(__dirname,'..'),temp=fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(),'myide-codex-ui-'))),roots=['A','B'].map(n=>path.join(temp,n)),out=path.join(repo,'.ui-check-trash','codex-ui-'+process.pid);
 fs.mkdirSync(out,{recursive:true});for(const root of roots){fs.mkdirSync(root);fs.writeFileSync(path.join(root,'fixture.txt'),'MYIDE_DYNAMIC_READ_SENTINEL\n');}
 os.homedir=()=>temp;process.env.HOME=process.env.USERPROFILE=temp;process.env.CODEX_HOME=path.join(temp,'codex-home');app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
@@ -56,6 +58,16 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
      [...recent.querySelectorAll('.ai-hist-nm')].some(node=>node.textContent==='同目录的未分组会话')&&
      !recent.querySelector('[data-hist-jump]');
  },firstProject.name));
+ await js(()=>{
+   const head=document.querySelector('[data-codex-project="desktop-empty"] .ai-hist-group-head');
+   head.dispatchEvent(new MouseEvent('contextmenu',{button:2,bubbles:true,cancelable:true}));
+   [...document.querySelectorAll('#ctx-menu button')].find(button=>button.textContent==='在 Codex 中打开').click();
+ });
+ await until(()=>desktopLinks.length===1,'open chosen project in Codex Desktop');
+ const desktopLink=new URL(desktopLinks[0]);
+ check('Opening a Codex project sends only its verified folder to the Desktop app',
+   desktopLink.protocol==='codex:'&&desktopLink.host==='new'&&desktopLink.searchParams.get('path')===emptyRoot&&
+   desktopLink.searchParams.size===1&&await js(root=>App.root===root,roots[0]));
  await js(()=>{document.querySelector('[data-codex-project="desktop-empty"] [data-hist-jump]').click();return true;});
  await until(()=>js(root=>App.root===root,emptyRoot),'open an empty native project');
  check('an empty Codex project can be opened even with no sessions',await js(root=>App.root===root,emptyRoot));

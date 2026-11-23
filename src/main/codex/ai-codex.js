@@ -240,6 +240,13 @@ function createService(options={}){
     return 'codex:' + threadId;
   }
 
+  async function getHistoryProjectRoot(cfg, projectId) {
+    const conn = await connect(cfg);
+    const project = (await history.listProjects(historyRequest(conn))).find(item => item.id === projectId);
+    if (!project?.roots[0]) throw Error('找不到 Codex 项目目录');
+    return canonical(project.roots[0]);
+  }
+
   async function listHistory(cfg) {
     const conn = await connect(cfg);
     const request = historyRequest(conn);
@@ -261,7 +268,13 @@ function createService(options={}){
     const locallyRunning = new Set([...sessions.values()].filter(session => session.run).map(session => session.id));
     const visible = items.map(item => ({ ...item, localId: 'codex:' + item.threadId, external: true, ...projectBindings.get(item.threadId) }))
       .filter(item => norm(item.rootDir) !== detachedRoot);
-    return { projects, items: await Promise.all(visible.map(async item => {
+    const registeredIds = desktopState.registeredProjectIds(desktop);
+    const occupiedProjects = new Set(items.map(item => item.projectId || assignments.get(item.threadId)));
+    const registeredRoots = new Set(projects.filter(p => registeredIds.has(p.id) && p.roots.length === 1)
+      .map(p => norm(p.roots[0])));
+    const shownProjects = projects.filter(p => !p.provisional || registeredIds.has(p.id) ||
+      occupiedProjects.has(p.id) || p.roots.length !== 1 || !registeredRoots.has(norm(p.roots[0])));
+    return { projects: shownProjects, items: await Promise.all(visible.map(async item => {
       const desktop = item.archived || locallyRunning.has(item.threadId)
         ? { running: false } : await observeDesktop(home, item);
       const { rolloutPath, ...summary } = item;
@@ -359,11 +372,18 @@ function createService(options={}){
       }));
       const matches = roots.filter(Boolean);
       const threadSource = 'user';
-      if (matches.length) return matches.length === 1 ? { threadSource, projectId: matches[0] } : { threadSource };
+      if (matches.length === 1) return { threadSource, projectId: matches[0] };
+      if (matches.length > 1) {
+        const desktop = await desktopState.readDesktopState(codexHome());
+        const registeredIds = desktopState.registeredProjectIds(desktop);
+        const preferred = matches.filter(id => registeredIds.has(id));
+        return preferred.length === 1 ? { threadSource, projectId: preferred[0] } : { threadSource };
+      }
       live(run);
       const params = {
         name: path.basename(info.root) || info.root,
         roots: [{ path: info.root }],
+        metadata: { [history.provisionalProjectKey]: '1' },
         idempotencyKey: 'myide-root-' + crypto.createHash('sha256').update(rootKey).digest('hex'),
       };
       let result;
@@ -589,6 +609,6 @@ function createService(options={}){
   async function status(launcher){try{const runtime=await (options.resolveRuntime||resolveRuntime)(launcher||undefined);return {ok:true,available:true,connected:!!connection&&!connection.rpc.closed,launcher:runtime.launcher||runtime.executable,path:runtime.launcher||runtime.executable,transport:'stdio'};}catch(error){return {ok:false,available:false,connected:false,error:error.message};}}
   function hasRun(context){return [...runs.values()].some(run=>run.context.sessionId===context?.sessionId&&run.context.rootId===context?.rootId);}
   async function dispose(){if(disposed)return;disposed=true;for(const run of runs.values()){run.aborted=true;discardPending(run);resolveRun(run,{status:'interrupted'});}const conn=connection;conn?.rpc.close();conn?.child.kill();if(starting)try{const own=await starting;own.rpc.close();own.child.kill();}catch{}await saving;}
-  return {chat,inspect,listHistory,openHistory,forkHistory,setHistoryArchived,changeInput,status,abort,toolResult,permissionResult,questionResult,dispose,hasRun};
+  return {chat,inspect,listHistory,getHistoryProjectRoot,openHistory,forkHistory,setHistoryArchived,changeInput,status,abort,toolResult,permissionResult,questionResult,dispose,hasRun};
 }
 module.exports={createService,promptContent,toolSpecs,configOptions};

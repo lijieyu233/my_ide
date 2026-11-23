@@ -903,6 +903,16 @@ ipcMain.handle('ai:codex-sessions',async (event, cfg) => {
     return { ok: true, ...await CODEX.listHistory(cfg) };
   } catch (error) { return { ok: false, error: error.message }; }
 });
+ipcMain.handle('ai:codex-desktop-project', async (event, cfg, projectId) => {
+  try {
+    await codexHistoryConfig(event, cfg);
+    const root = await CODEX.getHistoryProjectRoot(cfg, projectId);
+    const url = new URL('codex://new');
+    url.searchParams.set('path', root);
+    await shell.openExternal(url.href);
+    return { ok: true };
+  } catch (error) { return { ok: false, error: error.message }; }
+});
 ipcMain.handle('ai:codex-history',async (event, cfg, threadId, archived) => {
   try {
     await codexHistoryConfig(event, cfg);

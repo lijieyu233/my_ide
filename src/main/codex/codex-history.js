@@ -47,6 +47,8 @@ async function pages(request, method, params, limit, cap, onPage) {
   }
 }
 
+const provisionalProjectKey = 'myide.provisional-project';
+
 async function listProjects(request) {
   const projects = new Map();
   try {
@@ -56,7 +58,8 @@ async function listProjects(request) {
         const roots = (Array.isArray(project.roots) ? project.roots : [])
           .map(root => root?.path).filter(root => typeof root === 'string' && path.isAbsolute(root))
           .map(root => path.normalize(root));
-        projects.set(project.id, { id: project.id, title: project.name, roots });
+        projects.set(project.id, { id: project.id, title: project.name, roots,
+          ...(project.metadata?.[provisionalProjectKey] === '1' ? { provisional: true } : {}) });
       }
     });
   } catch (error) {
@@ -189,4 +192,4 @@ async function readMessages(request, thread, redact) {
   return { messages: messages.reverse(), activity: activity || (runningCommand ? '正在执行命令' : ''), activityId };
 }
 
-module.exports = { isProjectThread, listProjects, listProjectThreads, findProjectThread, readProjectThread, threadSummary, readMessages, activityTitle, assertThreadIdle, assertIdle };
+module.exports = { provisionalProjectKey, isProjectThread, listProjects, listProjectThreads, findProjectThread, readProjectThread, threadSummary, readMessages, activityTitle, assertThreadIdle, assertIdle };
