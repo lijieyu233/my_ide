@@ -2095,16 +2095,31 @@ const AiPanel = (() => {
   }
 
   const nativeInputRequests=new Map();let nativeInputPending=false,nativeQueueReadTicket=0,inputDraftRevision=0;
+  let codexQueue = null, codexOccupiedView = null;
   function inputScopeKey(){return JSON.stringify([sessKey(),curSessionId,currentPage().id,sessionRoot()]);}
   function inputViewKey(){return JSON.stringify([inputScopeKey(),pageEpoch]);}
+  function codexRunningInput() {
+    return getConfig().engine === 'codex' && (busy || codexObservedRunning());
+  }
   function nativeInputTarget(){
+    if (getConfig().engine === 'codex') {
+      if (busy) {
+        return runIsLive(currentRun) && currentRun.nativeState?.turnId && currentRun.stream?.context &&
+          currentRun.pageId === currentPage().id ? { kind: 'codex', sessionId: curSessionId, run: currentRun.stream.context } : null;
+      }
+      const item = codexSelectedHistoryItem();
+      return item && !item.archived ? { kind: 'codex', sessionId: curSessionId, threadId: item.threadId } : null;
+    }
     if(getConfig().engine!=='dsh'||dshScopeMismatch()||!dshCanSend()||historyReplayJob)return null;
     if(dshOwnRun())return runIsLive(currentRun)&&currentRun.stream&&currentPage().id===currentRun.pageId?{kind:'run',context:{...currentRun.stream.context},page:{...currentPage()}}:null;
     if(dshWatch&&dshWatchWanted(dshWatch)&&!dshWatch.stopping&&dshWatch.state?.connected!==false)
       return {kind:'watch',watchId:dshWatch.watchId,runId:dshWatch.state?.runId||''};
     return null;
   }
-  function nativeQueueSource(){return dshOwnRun()?currentRun.inputQueue:dshWatch&&dshWatchWanted(dshWatch)?dshWatch.state?.queue:null;}
+  function nativeQueueSource(){
+    if (getConfig().engine === 'codex') return codexQueue?.key === inputViewKey() ? codexQueue.value : null;
+    return dshOwnRun()?currentRun.inputQueue:dshWatch&&dshWatchWanted(dshWatch)?dshWatch.state?.queue:null;
+  }
   function freezeInputDraft(){
     const text=(inputEl.value||'').trim();if(!text)return null;
     const files=effectiveCtxFiles().filter(file=>!file.auto).map(file=>({...file})),imgs=pendingImages.slice();
@@ -2131,47 +2146,108 @@ const AiPanel = (() => {
   }
   function renderNativeInputUI(){
     if(backgroundView)return;
-    const running=getConfig().engine==='dsh'&&(busy||dshObservedRunning()),target=nativeInputTarget(),queue=nativeQueueSource();
-    const actions=document.getElementById('ai-running-input-actions');actions?.classList.toggle('hidden',!running);
-    const ready=!!target&&!nativeInputPending&&!!inputEl.value.trim()&&(target.kind==='run'?currentRun.inputReady===true:queue?.available===true);
+    const codex = getConfig().engine === 'codex';
+    const running = codex ? codexRunningInput() : getConfig().engine === 'dsh' && (busy || dshObservedRunning());
+    const target = nativeInputTarget(), queue = nativeQueueSource();
+    const showActions = running || codex && !!target && codexOccupiedView === inputViewKey();
+    const actions=document.getElementById('ai-running-input-actions');
+    actions?.classList.toggle('hidden', !showActions);
+    actions?.querySelector('span')?.classList.toggle('hidden', codex);
+    const hasDraft = !!target && !nativeInputPending && !!inputEl.value.trim();
+    const ready = hasDraft && (target.kind === 'run' ? currentRun.inputReady === true : queue?.available === true);
     const queueButton=document.getElementById('ai-queue-submit'),steerButton=document.getElementById('ai-steer-submit');
-    if(queueButton)queueButton.disabled=!ready;
-    if(steerButton)steerButton.disabled=!ready||(target.kind==='run'?!currentRun.inputActive:!dshWatch?.state?.running);
+    if (queueButton) {
+      queueButton.disabled = !ready;
+      queueButton.title = codex ? '加入原会话的待发队列，沿用原会话权限' : '本轮结束后按顺序处理，不停止当前任务';
+    }
+    if (steerButton) {
+      steerButton.classList.toggle('hidden', codex && !busy);
+      steerButton.disabled = codex ? !hasDraft || !target?.run : !ready ||
+        (target.kind === 'run' ? !currentRun.inputActive : !dshWatch?.state?.running);
+    }
     const box=document.getElementById('ai-input-queue');if(!box)return;
     const failed=[...nativeInputRequests.values()].filter(item=>item.draft.scope===inputScopeKey()&&item.error),items=queue?.available?queue.items||[]:[];
-    box.classList.toggle('hidden',!running&&!items.length&&!failed.length);box.replaceChildren();if(box.classList.contains('hidden'))return;
+    box.classList.toggle('hidden',(!running||codex)&&!items.length&&!failed.length);box.replaceChildren();if(box.classList.contains('hidden'))return;
     const head=document.createElement('div');head.className='ai-queue-head';const label=document.createElement('span');label.textContent=nativeInputPending?'正在提交补充消息…':items.length?'待发 '+items.length+' 条':queue?.available?'暂无待发消息':'正在确认原生队列';head.appendChild(label);
     const refresh=document.createElement('button');refresh.type='button';refresh.className='ai-queue-action';refresh.textContent='刷新';refresh.disabled=!target||nativeInputPending;refresh.onclick=()=>refreshNativeQueue();head.appendChild(refresh);box.appendChild(head);
     for(const item of items){
       const row=document.createElement('div');row.className='ai-queue-item';row.dataset.queueId=item.id;
       const mode=document.createElement('span');mode.className='ai-queue-mode';mode.textContent=item.mode==='steer'?'下一步':'下一轮';const text=document.createElement('span');text.className='ai-queue-text';text.textContent=item.text||'（图片或附件）';text.title=text.textContent;row.append(mode,text);
       const add=(name,kind,disabled=false)=>{const button=document.createElement('button');button.type='button';button.className='ai-queue-action';button.textContent=name;button.disabled=!target||nativeInputPending||disabled;button.dataset.queueAction=kind;button.onclick=()=>updateNativeQueue(item,kind);row.appendChild(button);};
-      if(item.editable)add('编辑','edit');if(item.mode==='queue'&&running)add('插入','steer',target?.kind==='run'?!currentRun?.inputActive:!dshWatch?.state?.running);add('撤回','remove');box.appendChild(row);
+      if(item.editable)add('编辑','edit');if(!codex&&item.mode==='queue'&&running)add('插入','steer',target?.kind==='run'?!currentRun?.inputActive:!dshWatch?.state?.running);add('撤回','remove');box.appendChild(row);
     }
     for(const item of failed){const row=document.createElement('div');row.className='ai-queue-item ai-queue-failed';const text=document.createElement('span');text.className='ai-queue-text';text.textContent='待确认／可恢复：'+item.draft.text;text.title=item.error;const restore=document.createElement('button');restore.type='button';restore.className='ai-queue-action';restore.textContent='恢复草稿';restore.onclick=async()=>{if(inputEl.value.trim()&&inputEl.value!==item.draft.raw&&(!await Modal.confirm('恢复草稿','输入框已有其他内容，确定替换为这条未确认的消息？')))return;if(item.draft.scope!==inputScopeKey())return;inputEl.value=item.draft.raw;pendingImages=item.draft.imgs.slice();autoGrowInput();renderImages();nativeInputRequests.delete(item.requestId);renderNativeInputUI();};row.append(text,restore);box.appendChild(row);}
   }
   function acceptNativeQueue(result,target){
     if(!result.queue)return;
-    if(target.kind==='run'){if(currentRun?.stream&&identityMatches(target.context,currentRun.stream.context))currentRun.inputQueue=result.queue;}
+    if (target.kind === 'codex') {
+      const key = inputViewKey();
+      const followUntil = result.queue.items.length ? Date.now() + 15000 : codexQueue?.key === key ? codexQueue.followUntil : 0;
+      codexQueue = { key, value: result.queue, followUntil };
+    }
+    else if(target.kind==='run'){if(currentRun?.stream&&identityMatches(target.context,currentRun.stream.context))currentRun.inputQueue=result.queue;}
     else if(dshWatch?.watchId===target.watchId)dshWatch.state={...dshWatch.state,queue:result.queue};
     renderNativeInputUI();
   }
-  async function refreshNativeQueue(){
-    const target=nativeInputTarget();if(!target||!window.myIDE.ai.dshQueue)return;
+  async function refreshNativeQueue(silent = false){
+    const target = nativeInputTarget();
+    if (!target) return;
+    const ai = window.myIDE.ai, config = getConfig();
     const key=inputViewKey(),ticket=++nativeQueueReadTicket;
-    try{const result=await window.myIDE.ai.dshQueue(getConfig(),target);if(key!==inputViewKey()||ticket!==nativeQueueReadTicket)return;if(!result?.ok)throw Error(result?.error||'原生队列读取失败');acceptNativeQueue(result,target);}catch(error){if(key===inputViewKey())MI.toast(error.message,'err');}
+    try {
+      const result = await (target.kind === 'codex' ? ai.codexInput?.(config, target, { kind: 'list' }) : ai.dshQueue?.(config, target));
+      if (key !== inputViewKey() || ticket !== nativeQueueReadTicket) return;
+      if (!result?.ok) throw Error(result?.error || '原生队列读取失败');
+      acceptNativeQueue(result, target);
+    } catch (error) { if (!silent && key === inputViewKey()) MI.toast(error.message,'err'); }
   }
   function editQueueText(text){
     return new Promise(resolve=>{const box=document.createElement('div');box.innerHTML='<div class="m-head">编辑待发消息</div><div class="m-body"><textarea class="ai-queue-editor" aria-label="待发消息内容"></textarea></div><div class="m-foot"><button class="tb-btn" data-cancel>取消</button><button class="tb-btn m-ok" data-save>保存</button></div>';const area=box.querySelector('textarea');area.value=text;let done=false;const finish=value=>{if(done)return;done=true;Modal.hide();resolve(value);};box.onModalHide=()=>{if(!done){done=true;resolve(null);}};box.querySelector('[data-cancel]').onclick=()=>finish(null);box.querySelector('[data-save]').onclick=()=>finish(area.value);box.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();finish(null);}});Modal.show(box);area.focus();});
   }
   async function updateNativeQueue(item,kind){
-    const target=nativeInputTarget(),key=inputViewKey();if(!target||nativeInputPending||!window.myIDE.ai.dshQueueUpdate)return;
+    const target=nativeInputTarget(),key=inputViewKey();
+    if (!target || nativeInputPending) return;
+    if (target.kind === 'codex') {
+      try {
+        nativeInputPending = true; renderNativeInputUI();
+        const result = await window.myIDE.ai.codexInput(getConfig(), target, { kind, itemId: item.id });
+        if (!result?.ok) throw Error(result?.error || '撤回失败');
+        if (key === inputViewKey()) await refreshNativeQueue();
+      } catch (error) { if (key === inputViewKey()) MI.toast(error.message, 'err'); }
+      finally { nativeInputPending = false; renderNativeInputUI(); }
+      return;
+    }
+    if (!window.myIDE.ai.dshQueueUpdate) return;
     let text;if(kind==='edit'){text=await editQueueText(item.text);if(text==null)return;if(!text.trim()){MI.toast('待发消息不能为空','err');return;}if(key!==inputViewKey())return;}
     nativeInputPending=true;renderNativeInputUI();
     try{const result=await window.myIDE.ai.dshQueueUpdate(getConfig(),target,{itemId:item.id,kind,...(kind==='edit'?{text}: {})});if(!result?.ok||result.accepted!==true)throw Error(result?.error||'原生队列未确认修改');const pending=nativeInputRequests.get(item.requestId);if(pending&&kind==='edit'){pending.draft={...pending.draft,text,raw:text,imgs:[],message:{role:'user',content:text,_text:text,_imgs:[],_dshAttachments:[]}};}if(pending&&kind==='remove')nativeInputRequests.delete(item.requestId);if(key===inputViewKey())acceptNativeQueue(result,target);}catch(error){if(key===inputViewKey())MI.toast(error.message,'err');}finally{nativeInputPending=false;renderNativeInputUI();}
   }
+  async function submitCodexInput(mode) {
+    const target = nativeInputTarget(), draft = freezeInputDraft();
+    if (!target || !draft || (mode === 'steer' ? !target.run : nativeQueueSource()?.available !== true)) return;
+    const requestId = 'myide-input-' + window.crypto.randomUUID();
+    const item = mode === 'steer' ? { requestId, draft, run: currentRun, rendered: false } : null;
+    if (item) nativeInputRequests.set(requestId, item);
+    nativeInputPending = true; renderNativeInputUI();
+    try {
+      const result = await window.myIDE.ai.codexInput(getConfig(), target, { kind: mode, requestId, message: draft.message });
+      if (!result?.ok) throw Error(result?.error || 'Codex 未确认接收');
+      if (item) item.accepted = true;
+      clearAcceptedDraft(draft);
+      if (item?.rendered) nativeInputRequests.delete(requestId);
+      if (mode === 'queue' && draft.key === inputViewKey()) {
+        if (codexQueue?.key === draft.key) codexQueue.followUntil = Date.now() + 15000;
+        msgsEl.querySelector('.ai-codex-rejected')?.remove();
+        await refreshNativeQueue();
+      }
+    } catch (error) {
+      if (item) nativeInputRequests.delete(requestId);
+      if (draft.key === inputViewKey()) MI.toast(error.message, 'err');
+    } finally { nativeInputPending = false; renderNativeInputUI(); }
+  }
   async function submitRunningInput(mode='queue'){
     if(nativeInputPending)return;
+    if (getConfig().engine === 'codex') return submitCodexInput(mode);
     if(rejectDshSend())return;
     const target=nativeInputTarget(),draft=freezeInputDraft();if(!target||!draft)return;
     if(target.kind==='watch'){
@@ -2307,7 +2383,10 @@ const AiPanel = (() => {
     if(isErr || !complete){
       const note=r?.error||warning||(r?.aborted?'已停止生成':'回复未完成');
       const row=addMsg('assistant',note);row.querySelector('.ai-md').classList.add('ai-err');
-      if (restoredDraft) row.classList.add('ai-codex-rejected');
+      if (restoredDraft) {
+        row.classList.add('ai-codex-rejected');
+        if (r?.errorCode === 'threadInUse') codexOccupiedView = inputViewKey();
+      }
       else stream.timeline.push({kind:'text',text:note});
     }
     for(const row of msgsEl.querySelectorAll('.ai-msg.ai-assistant'))decorateCodeBlocks(row);
@@ -2647,8 +2726,10 @@ const AiPanel = (() => {
     }
     const view = codexLiveView;
     const running = selected.running === true;
-    if (view.pending || historyReplayJob || !running && !view.observed ||
-        running && view.observed && selected.revision && view.revision === selected.revision) return;
+    const waitingForQueuedReply = codexQueue?.key === inputViewKey() && codexQueue.followUntil > Date.now();
+    const unchanged = selected.revision && view.revision === selected.revision;
+    if (view.pending || historyReplayJob || !running && !view.observed && (!waitingForQueuedReply || unchanged) ||
+        running && view.observed && unchanged) return;
     const wanted = () => codexLiveView === view && !busy && sessionLoadTicket === ticket &&
       sessKey() === scope && currentCodexCatalog()?.launcher === launcher &&
       codexSelectedHistoryItem()?.threadId === threadId && !codexSelectedHistoryItem()?.archived;
@@ -2699,6 +2780,7 @@ const AiPanel = (() => {
         const selected = codexSelectedHistoryItem();
         if (previous?.running !== selected?.running || previous?.archived !== selected?.archived) setBusyUI(busy);
         void syncCodexLiveHistory(selected, config);
+        if (panel && !panel.classList.contains('hidden')) void refreshNativeQueue(true);
       } catch (error) {
         if (!background && codexCatalogRequest === request) codexCatalogError = { launcher: codexPath, message: error.message };
       } finally {
@@ -4891,8 +4973,13 @@ const AiPanel = (() => {
         if(typeof event.willRetry==='boolean')run.nativeState.willRetry=event.willRetry;
         const box=run.notice?.element;if(box){box.dataset.nativePhase=run.nativeState.phase||'connecting';box.title='Codex 阶段：'+(run.nativeState.phase||'connecting')+'\n原生线程：'+(run.nativeState.threadId||'尚未确认')+'\n原生轮次：'+(run.nativeState.turnId||'尚未确认');}
       }
-      setRunState(run,event.text);return;
+      setRunState(run,event.text);
+      if (!backgroundView && run.engine === 'codex' && event.phase === 'accepted') {
+        renderNativeInputUI(); void refreshNativeQueue(true);
+      }
+      return;
     }
+    if (event.type === 'codexInputConsumed') { showConsumedInput(run, event.requestId, event.content); return; }
     if(event.type==='config'){if(backgroundView||getConfig().engine!==run.engine)return;dshOptionsState='ready';dshConfigOptions=event.configOptions||[];showDshConnectedInfo(dshSessionAccess?.hostId);refreshModelSel();setBusyUI(busy);return;}
     if(event.type==='native'&&event.update?.sessionUpdate==='myide_input_state'){
       const update=event.update;run.inputReady=update.ready===true;run.inputActive=update.active===true;if(update.queue)run.inputQueue=update.queue;
@@ -5082,7 +5169,7 @@ const AiPanel = (() => {
         if (onKeydownMention(e)) return; // @ 补全弹窗接管：↑↓/Enter/Esc
         if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
           e.preventDefault();
-          if(getConfig().engine==='dsh'&&(busy||dshObservedRunning()))submitRunningInput(e.altKey?'steer':'queue');
+          if(codexRunningInput() || getConfig().engine==='dsh'&&(busy||dshObservedRunning()))submitRunningInput(e.altKey?'steer':'queue');
           else if (!busy) send();
         }
       });

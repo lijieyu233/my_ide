@@ -128,6 +128,10 @@ function createService(options={}){
           const delta=item.text.slice(seen.length);run.messageText.set(item.id,item.text);if(delta){run.text+=delta;emit(run,{type:'text',delta,messageId:item.id});}
         }return;
       }
+      if (item.type === 'userMessage' && message.method === 'item/completed' && run.steered?.delete(item.clientId)) {
+        emit(run, { type: 'codexInputConsumed', requestId: item.clientId, content: item.content });
+        return;
+      }
       if(['reasoning','userMessage','dynamicToolCall'].includes(item.type))return;
       const rawInput={...(item.command?{command:redact(item.command)}:{}),...(item.cwd?{cwd:item.cwd}:{}),...(Array.isArray(item.changes)?{changes:item.changes.slice(0,100).map(change=>({path:change.path,kind:change.kind,diff:redact(change.diff).slice(0,6000)}))}:{})};
       if(item.type==='fileChange'&&message.method==='item/started'&&run.nativeItems.size<128)run.nativeItems.set(item.id,rawInput);
@@ -381,7 +385,7 @@ function createService(options={}){
       const rejectedBeforeTurn = !run.accepting || (!run.turnId && (error.rpcResponseReceived === true || error.rpcNotSent === true));
       if(run.accepting&&!run.settled){if(run.turnId)interrupt(run);else if(run.session&&!rejectedBeforeTurn)run.session.stopping='unknown';}
       const stages={'thread/resume':'恢复原会话','thread/start':'创建会话','turn/start':'发送消息','thread/list':'核对会话','thread/read':'读取会话','thread/turns/list':'核对轮次','permissionProfile/list':'核对工作区权限','account/read':'读取账号','model/list':'读取模型'};
-      const message=error.kind==='threadInUse'?'会话由另一 Codex 进程占用。退出占用端后重试，或右键会话选择「分叉」。':error.rpcResponseReceived?
+      const message=error.kind==='threadInUse'?'会话由另一 Codex 进程占用。可用「排队」在原会话续聊。':error.rpcResponseReceived?
         'Codex '+(stages[error.rpcMethod]||'原生请求')+'失败'+(Number.isInteger(error.code)?'（RPC '+error.code+'）':'')+'。':error.message;
       const rejection={...(error.kind?{errorCode:error.kind}:{}),...(Number.isInteger(error.code)?{rpcErrorCode:error.code}:{}),
         ...(error.rpcMethod?{rpcMethod:error.rpcMethod}:{}),rejectedBeforeTurn};
@@ -418,9 +422,64 @@ function createService(options={}){
     const converted=Object.create(null),seen=new Set();for(const answer of answers){const question=pending.questions.find(q=>q.id===answer?.id);if(!question||seen.has(answer.id)||!Array.isArray(answer.selected)||answer.selected.some(v=>typeof v!=='string'||!(question.options||[]).some(o=>o.label===v))||answer.selected.length>1||answer.custom!==undefined&&typeof answer.custom!=='string')return {ok:false};seen.add(answer.id);const values=[...answer.selected,...(answer.custom?[answer.custom]:[])];if(!values.length||values.some(v=>v.length>20000))return {ok:false};converted[answer.id]={answers:values};}
     run.permissions.delete(id);activity(run);reply(run.conn,pending.serverId,{answers:converted});return {ok:true};
   }
+  async function changeInput(cfg, context, target, action) {
+    if (!['list', 'queue', 'remove', 'steer'].includes(action?.kind)) throw Error('Codex 队列操作无效');
+    const run = target.run ? owned(target.run) : null;
+    let conn, threadId;
+    if (target.run) {
+      if (!run?.turnId || run.buffering) throw Error('Codex 当前轮次尚未确认或已经结束');
+      ({ conn } = run);
+      threadId = run.session.id;
+    } else {
+      if (action.kind === 'steer') throw Error('桌面端任务请在 Codex 中插入消息');
+      const info = await identity(context);
+      conn = await connect(cfg);
+      const record = saved.get(info.key);
+      if (info.scope !== 'project' || !record?.id || record.blocked || record.id !== target.threadId ||
+          norm(record.cwd) !== norm(info.cwd)) throw Error('Codex 会话身份已变化');
+      const listed = await history.findProjectThread(historyRequest(conn), record.id);
+      if (!listed || norm(await projectThreadRoot(listed)) !== norm(info.cwd)) throw Error('无法核对原 Codex 会话');
+      threadId = record.id;
+    }
+    const request = historyRequest(conn);
+    if (action.kind === 'list') {
+      const { data } = await request('thread/queue/list', { threadId, limit: 100 });
+      if (!Array.isArray(data)) throw Error('Codex 未返回原生队列');
+      return { ok: true, queue: { available: true, items: data.map(({ id, input }) => ({
+        id, mode: 'queue', text: (input || []).find(block => block.type === 'text')?.text?.slice(0, 20000) || '',
+      })) } };
+    }
+    if (action.kind === 'remove') {
+      if (typeof action.itemId !== 'string' || !action.itemId || action.itemId.length > 128) throw Error('队列消息身份无效');
+      await request('thread/queue/delete', { threadId, queuedSubmissionId: action.itemId });
+      return { ok: true };
+    }
+    if (!/^myide-input-[0-9a-f-]{36}$/i.test(action.requestId || '')) throw Error('补充消息身份无效');
+    const input = promptContent([action.message], context.page);
+    const params = { threadId, input, clientUserMessageId: action.requestId };
+    if (action.kind === 'steer') {
+      run.steered ||= new Set();
+      if (run.steered.has(action.requestId)) throw Error('请等待上一次插入确认');
+      run.steered.add(action.requestId);
+      try {
+        const reply = await request('turn/steer', { ...params, expectedTurnId: run.turnId });
+        if (reply.turnId !== run.turnId) throw Error('Codex 未确认接收补充消息');
+      } catch (error) {
+        if (error.rpcNotSent || error.rpcResponseReceived) run.steered.delete(action.requestId);
+        throw error;
+      }
+      return { ok: true };
+    }
+    const result = await request('thread/queue/add', params);
+    if (typeof result.queuedSubmission?.id !== 'string' || result.queuedSubmission.clientUserMessageId !== action.requestId) {
+      throw Error('Codex 未确认排队结果，请先检查待发消息');
+    }
+    return { ok: true, itemId: result.queuedSubmission.id };
+  }
+
   async function status(launcher){try{const runtime=await (options.resolveRuntime||resolveRuntime)(launcher||undefined);return {ok:true,available:true,connected:!!connection&&!connection.rpc.closed,launcher:runtime.launcher||runtime.executable,path:runtime.launcher||runtime.executable,transport:'stdio'};}catch(error){return {ok:false,available:false,connected:false,error:error.message};}}
   function hasRun(context){return [...runs.values()].some(run=>run.context.sessionId===context?.sessionId&&run.context.rootId===context?.rootId);}
   async function dispose(){if(disposed)return;disposed=true;for(const run of runs.values()){run.aborted=true;discardPending(run);resolveRun(run,{status:'interrupted'});}const conn=connection;conn?.rpc.close();conn?.child.kill();if(starting)try{const own=await starting;own.rpc.close();own.child.kill();}catch{}await saving;}
-  return {chat,inspect,listHistory,openHistory,forkHistory,setHistoryArchived,status,abort,toolResult,permissionResult,questionResult,dispose,hasRun};
+  return {chat,inspect,listHistory,openHistory,forkHistory,setHistoryArchived,changeInput,status,abort,toolResult,permissionResult,questionResult,dispose,hasRun};
 }
 module.exports={createService,promptContent,toolSpecs,configOptions};

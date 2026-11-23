@@ -33,6 +33,19 @@ function createServer(){
     const t=threads.get(p.threadId);t.archived=message.method==='thread/archive';
     return reply(message.id,t.archived?{}:{thread:t});
    }
+   if(message.method.startsWith('thread/queue/')){
+    const t=threads.get(p.threadId);if(!t)return send({id:message.id,error:{code:-32600,message:'No synthetic thread'}});
+    t.inputQueue ||= [];
+    if(message.method==='thread/queue/list')return reply(message.id,{data:t.inputQueue,nextCursor:null});
+    if(message.method==='thread/queue/delete'){t.inputQueue=t.inputQueue.filter(item=>item.id!==p.queuedSubmissionId);return reply(message.id,{});}
+    const queuedSubmission={id:'queued-'+p.clientUserMessageId,clientUserMessageId:p.clientUserMessageId,input:p.input};
+    t.inputQueue.push(queuedSubmission);return reply(message.id,{queuedSubmission});
+   }
+   if(message.method==='turn/steer'){
+    const t=threads.get(p.threadId);if(!t?.running||t.turn?.id!==p.expectedTurnId)return send({id:message.id,error:{code:-32600,message:'Turn ended'}});
+    notice('item/completed',{threadId:t.id,turnId:t.turn.id,item:{type:'userMessage',id:'steered-item',clientId:p.clientUserMessageId,content:p.input}});
+    return reply(message.id,{turnId:t.turn.id});
+   }
    if(message.method==='thread/read'){
     const t=threads.get(p.threadId);
     return reply(message.id,{thread:{...t,status:{type:t.running?'active':'notLoaded'}}});

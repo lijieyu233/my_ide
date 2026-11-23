@@ -876,6 +876,27 @@ async function codexHistoryConfig(event, cfg) {
   const engine = await event.sender.executeJavaScript('AiPanel.getConfig().engine');
   if (engine !== 'codex' || cfg?.engine !== 'codex') throw Error('当前未连接 Codex');
 }
+ipcMain.handle('ai:codex-input', async (event, cfg, target, action) => {
+  try {
+    aiSender(event);
+    const state = await event.sender.executeJavaScript('({page:App.getPageContext(),rootId:App.root||"",sessionId:AiPanel.aiState().current,engine:AiPanel.getConfig().engine})');
+    if (state.engine !== 'codex' || cfg?.engine !== 'codex' || !target?.sessionId || target.sessionId !== state.sessionId) {
+      throw Error('Codex 会话视图已变化');
+    }
+    aiSender(event, state);
+    if (target.run) {
+      if (target.run.sessionId !== state.sessionId || target.run.rootId !== state.rootId) throw Error('Codex 当前轮次已切换');
+      const run = { ...target.run, page: state.page };
+      assertCodexRun(event, run);
+      target = { ...target, run };
+    }
+    return await CODEX.changeInput(cfg, state, target, action);
+  } catch (error) {
+    const message = error.code === -32601 ? '本机 Codex 版本暂不支持此操作'
+      : error.rpcResponseReceived ? 'Codex 拒绝了此操作' : error.message;
+    return { ok: false, error: message };
+  }
+});
 ipcMain.handle('ai:codex-sessions',async (event, cfg) => {
   try {
     await codexHistoryConfig(event, cfg);

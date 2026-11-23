@@ -20,7 +20,14 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  await js(async root=>{Object.defineProperty(document,'hidden',{value:false,configurable:true});await App.setRoot(root);App.showAi();await AiPanel.setConfig({engine:'codex',autoIdeContext:false,injectMyideRules:false});return true;},roots[0]);await until(()=>js(()=>AiPanel.aiState().dshState==='ready'),'Codex options');check('Codex connects in existing mode selector and shows native model',await js(()=>document.getElementById('ai-engine').value==='codex'&&document.getElementById('ai-model').textContent.includes('Codex offline fixture')));check('inspect never creates a thread or starts a turn',!fixture.requests.some(r=>['thread/start','turn/start'].includes(r.method)));
  await js(()=>{window.__codexGaps=[];let then=performance.now();setInterval(()=>{const now=performance.now();window.__codexGaps.push(now-then);then=now;},16);return AiPanel.ask('RETRY_CODEX 请读取合成文件');});await until(()=>js(()=>AiPanel.aiState().tasks[0]?.native?.phase==='retrying'),'native stream retry');check('four native stream disconnects are visible without claiming a generated reply',await js(()=>AiPanel.aiState().tasks[0].native.errorCode==='responseStreamDisconnected'&&AiPanel.aiState().tasks[0].native.assistantCharacters===0&&document.getElementById('ai-runstate').textContent.includes('重试')&&!document.getElementById('ai-msgs').textContent.includes('SENSITIVE_ERROR_MUST_NOT_APPEAR')));check('retry never resubmits the user turn',fixture.requests.filter(r=>r.method==='turn/start').length===1);await capture('codex-native-retrying');fixture.control.resumeRetry();await until(()=>js(()=>!!document.querySelector('.ai-dsh-permission button')),'native approval');check('native confirmation is visible and not auto-approved',!fixture.receipts.some(r=>r.kind==='approval')&&await js(()=>document.querySelector('.ai-dsh-permission').textContent.includes('Codex 原生')));await capture('codex-native-approval');await js(()=>{document.querySelector('.ai-dsh-permission button').click();return true;});await until(()=>js(()=>document.getElementById('ai-msgs').textContent.includes('CODEX_FINAL_SENTINEL')&&AiPanel.__testParked().currentRun==='completed'),'Codex completion');check('MyIDE dynamic tool traverses real IPC and permission authority',fixture.receipts.some(r=>r.kind==='dynamic'&&r.result.success&&JSON.stringify(r.result).includes('MYIDE_DYNAMIC_READ_SENTINEL')));check('one prompt and no synthetic native command was executed twice',fixture.requests.filter(r=>r.method==='turn/start').length===1&&fixture.requests.filter(r=>r.method==='thread/start').length===1);await capture('codex-connected-completed');
  const firstThread=fixture.requests.find(r=>r.method==='turn/start').params.threadId;await js(()=>AiPanel.ask('继续原来的会话'));await until(()=>js(()=>!!document.querySelector('.ai-dsh-permission button')),'second turn approval');await js(()=>{document.querySelector('.ai-dsh-permission button').click();return true;});await until(()=>fixture.receipts.filter(r=>r.kind==='dynamic').length===2&&js(()=>AiPanel.__testParked().currentRun==='completed'),'second done');check('continuation reuses the exact native thread without replaying user history',fixture.requests.filter(r=>r.method==='thread/start').length===1&&fixture.requests.filter(r=>r.method==='turn/start').every(r=>r.params.threadId===firstThread&&r.params.input.filter(i=>i.type==='text').length===1));
- await js(()=>AiPanel.ask('HOLD_CODEX 后台隔离'));await until(()=>fixture.requests.filter(r=>r.method==='turn/start').length===3,'held turn');await js(async root=>{await App.setRoot(root);return true;},roots[1]);await until(()=>js(()=>AiPanel.aiState().dshState==='ready'),'project B ready');check('changing project parks Codex without cancelling or leaking A output',!fixture.requests.some(r=>r.method==='turn/interrupt')&&await js(()=>AiPanel.__testParked().backgroundRuns===1&&!document.getElementById('ai-msgs').textContent.includes('HOLD_CODEX')));await js(async root=>{await App.setRoot(root);return true;},roots[0]);await until(()=>js(()=>AiPanel.__testParked().currentRun==='active'),'restore held');await js(()=>{document.getElementById('ai-send').click();return true;});await until(()=>fixture.requests.some(r=>r.method==='turn/interrupt')&&js(()=>AiPanel.__testParked().currentRun!=='active'),'interrupt');check('stop targets only the owned thread and no DSH queue is advertised',fixture.requests.find(r=>r.method==='turn/interrupt').params.threadId===firstThread&&await js(()=>document.getElementById('ai-input-queue').classList.contains('hidden')&&document.getElementById('ai-running-input-actions').classList.contains('hidden')));
+ await js(()=>AiPanel.ask('HOLD_CODEX 后台隔离'));await until(()=>fixture.requests.filter(r=>r.method==='turn/start').length===3,'held turn');await js(async root=>{await App.setRoot(root);return true;},roots[1]);await until(()=>js(()=>AiPanel.aiState().dshState==='ready'),'project B ready');check('changing project parks Codex without cancelling or leaking A output',!fixture.requests.some(r=>r.method==='turn/interrupt')&&await js(()=>AiPanel.__testParked().backgroundRuns===1&&!document.getElementById('ai-msgs').textContent.includes('HOLD_CODEX')));await js(async root=>{await App.setRoot(root);return true;},roots[0]);await until(()=>js(()=>AiPanel.__testParked().currentRun==='active'),'restore held');
+ await js(()=>{const input=document.getElementById('ai-input');input.value='补充当前轮';input.dispatchEvent(new Event('input',{bubbles:true}));});
+ await until(()=>js(()=>!document.getElementById('ai-steer-submit').disabled),'native steer available');
+ await js(()=>{document.getElementById('ai-steer-submit').click();});
+ await until(()=>js(()=>document.getElementById('ai-msgs').textContent.includes('补充当前轮')&&!document.getElementById('ai-input').value),'steer consumption');
+ check('MyIDE inserts into the exact active Codex turn without starting another turn',
+   fixture.requests.filter(r=>r.method==='turn/steer').length===1&&fixture.requests.filter(r=>r.method==='turn/start').length===3);
+ await js(()=>{document.getElementById('ai-send').click();return true;});await until(()=>fixture.requests.some(r=>r.method==='turn/interrupt')&&js(()=>AiPanel.__testParked().currentRun!=='active'),'interrupt');check('stop targets only the owned thread and no DSH queue is advertised',fixture.requests.find(r=>r.method==='turn/interrupt').params.threadId===firstThread&&await js(()=>document.getElementById('ai-input-queue').classList.contains('hidden')&&document.getElementById('ai-running-input-actions').classList.contains('hidden')));
  const externalId='019caa00-0000-7000-8000-000000000003';
  fs.mkdirSync(process.env.CODEX_HOME,{recursive:true});
  fs.writeFileSync(path.join(process.env.CODEX_HOME,'.codex-global-state.json'),JSON.stringify({
@@ -73,7 +80,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
    const input=document.getElementById('ai-input');
    input.value='等待桌面完成的草稿';
    input.dispatchEvent(new Event('input',{bubbles:true}));
-   input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
+   input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',altKey:true,bubbles:true,cancelable:true}));
    return true;
  });
  check('Codex external activity keeps unsent drafts',fixture.requests.filter(r=>r.method==='turn/start').length===beforeDesktopTurn&&
@@ -84,6 +91,17 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
    document.querySelector('#ai-msgs .ai-msg')===window.__codexHistoryRow &&
    document.getElementById('ai-send').classList.contains('ai-codex-observing') &&
    document.getElementById('ai-input').value==='等待桌面完成的草稿'));
+ await until(()=>js(()=>!document.getElementById('ai-queue-submit').disabled),'native external queue available');
+ await js(()=>{document.getElementById('ai-queue-submit').click();});
+ await until(()=>js(()=>document.getElementById('ai-input-queue').textContent.includes('等待桌面完成的草稿')&&!document.getElementById('ai-input').value),'native queue receipt');
+ check('MyIDE queues on the same Codex desktop chat and leaves the running turn alone',
+   original.inputQueue?.length===1&&fixture.requests.filter(r=>r.method==='turn/start').length===beforeDesktopTurn&&
+   await js(()=>document.getElementById('ai-steer-submit').classList.contains('hidden')));
+ await js(()=>{document.querySelector('#ai-input-queue [data-queue-action="remove"]').click();
+   const input=document.getElementById('ai-input');input.value='等待桌面完成的草稿';input.dispatchEvent(new Event('input',{bubbles:true}));});
+ await until(()=>js(()=>document.getElementById('ai-input-queue').classList.contains('hidden')),'native queue withdrawal');
+ check('Codex removes the selected queued message without losing the new draft',original.inputQueue.length===0&&
+   await js(()=>document.getElementById('ai-input').value==='等待桌面完成的草稿'));
  await capture('codex-desktop-running');
  original.items.push({id:'desktop-final',type:'agentMessage',text:'CODEX_DESKTOP_FINAL'});
  original.desktopRunning=false;
@@ -96,11 +114,26 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  original.writerLocked=true;
  await js(()=>AiPanel.ask('HOLD_CODEX 续接桌面会话'));
  await until(()=>js(()=>document.querySelector('.ai-codex-rejected')?.textContent.includes('另一 Codex 进程占用')),'writer conflict message');
+ await until(()=>js(()=>!document.getElementById('ai-running-input-actions').classList.contains('hidden')&&!document.getElementById('ai-queue-submit').disabled),'queue option after native writer conflict');
  check('a writer conflict restores the original draft and dispatches no turn or fork',
    await js(()=>document.getElementById('ai-input').value==='HOLD_CODEX 续接桌面会话'&&[...document.querySelectorAll('#ai-msgs .ai-user')].every(row=>!row.textContent.includes('HOLD_CODEX')))&&
    !fixture.requests.some(r=>r.method==='thread/fork'||r.method==='turn/start'&&r.params.threadId===externalId));
+ await js(()=>{
+   const input=document.getElementById('ai-input');input.value='补送原会话';input.dispatchEvent(new Event('input',{bubbles:true}));
+   document.getElementById('ai-queue-submit').click();
+ });
+ await until(()=>js(()=>document.querySelector('#ai-input-queue .ai-queue-text')?.textContent.includes('补送原会话')),'queue occupied idle thread');
+ original.inputQueue=[];
+ original.items.push({id:'fast-queued-reply',type:'agentMessage',text:'CODEX_FAST_QUEUED_REPLY'});
+ await until(()=>js(()=>document.getElementById('ai-msgs').textContent.includes('CODEX_FAST_QUEUED_REPLY')),'fast queued reply appears');
+ check('An occupied chat accepts a queued continuation and syncs its reply between running polls',
+   fixture.requests.filter(r=>r.method==='turn/start').length===beforeDesktopTurn&&
+   await js(()=>!document.querySelector('.ai-hist-row.cur.running')));
  original.writerLocked=false;
- await js(()=>{document.getElementById('ai-send').click();return true;});
+ await js(()=>{
+   const input=document.getElementById('ai-input');input.value='HOLD_CODEX 续接桌面会话';input.dispatchEvent(new Event('input',{bubbles:true}));
+   document.getElementById('ai-send').click();return true;
+ });
  await until(()=>fixture.requests.some(r=>r.method==='turn/start'&&r.params.threadId===externalId),'external continuation');
  check('Codex sidebar continuation resumes the exact thread without replaying the old prompt',fixture.requests.some(r=>r.method==='thread/resume'&&r.params.threadId===externalId)&&fixture.requests.filter(r=>r.method==='thread/start').length===1&&fixture.requests.find(r=>r.method==='turn/start'&&r.params.threadId===externalId).params.input[0].text==='HOLD_CODEX 续接桌面会话');
  await js(()=>{document.getElementById('ai-send').click();return true;});
