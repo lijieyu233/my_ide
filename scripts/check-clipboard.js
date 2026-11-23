@@ -1,7 +1,9 @@
 // 端到端：剪贴板历史完整链路（真实主进程 + 真实剪贴板 + 真实 UI）。
 // 覆盖：自动采集文字/图片、去重、列表渲染、编辑保存、固定、删除、按天数/大小清理、监听开关。
 const { app, BrowserWindow, clipboard, nativeImage } = require('electron');
+const { execFile } = require('child_process');
 const fs = require('fs'), path = require('path'), os = require('os');
+const { promisify } = require('util');
 const zlib = require('zlib');
 
 // 生成一张真正有效的 PNG。
@@ -138,6 +140,40 @@ const wait = async (s, ms = 8000) => {
     // ⑤ UI 列表渲染
     const uiRows = await probe(`document.querySelectorAll('#clip-list .clip-row').length`);
     check('列表渲染出条目', uiRows >= 2, 'rows=' + uiRows);
+
+    // 右键复制选中内容走列表选区，日期分组菜单才会显式传条目数组。
+    const selectedImages = await probe(`(async () => {
+      const { data } = await window.myIDE.clipboardHistory.list('');
+      const images = data.entries.filter(entry => entry.kind === 'image').slice(0, 2);
+      const row = id => document.querySelector('#clip-list [data-clip-id="' + id + '"]');
+      row(images[0].id).click();
+      row(images[1].id).dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));
+      row(images[0].id).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+      document.querySelector('#clip-list-state').textContent = '';
+      [...document.querySelectorAll('#ctx-menu .ctx-item')]
+        .find(item => item.textContent === '复制选中内容').click();
+      return images.map(entry => entry.file);
+    })()`);
+    await wait(`!!document.querySelector('#clip-list-state').textContent`);
+    const copyStatus = await probe(`document.querySelector('#clip-list-state').textContent`);
+    check('右键复制选区中的两张图片', copyStatus === '已按文件复制 2 张图（2 个文件）', copyStatus);
+
+    // 独立读取 Windows FileDropList，确保资源管理器可取得完整路径列表。
+    const readFileDropList = [
+      'Add-Type -AssemblyName System.Windows.Forms',
+      '[Console]::OutputEncoding = [Text.Encoding]::UTF8',
+      'for ($i = 0; $i -lt 50; $i++) {',
+      '  $files = [Windows.Forms.Clipboard]::GetFileDropList()',
+      '  if ($files.Count -gt 0) { $files; exit }',
+      '  Start-Sleep -Milliseconds 200',
+      '}',
+    ].join('\n');
+    const { stdout } = await promisify(execFile)('powershell.exe', ['-NoProfile', '-STA', '-Command', readFileDropList],
+      { encoding: 'utf8', windowsHide: true, timeout: 15000 });
+    const copiedFiles = stdout.trim().split(/\r?\n/).sort();
+    const expectedFiles = selectedImages.map(file => path.join(app.getPath('userData'), 'clipboard', file)).sort();
+    check('系统剪贴板包含两张选中图片的文件路径',
+      JSON.stringify(copiedFiles) === JSON.stringify(expectedFiles), 'files=' + copiedFiles.length);
 
     // ⑥ 编辑保存（只改正文 —— 备注输入框已按用户要求移除）
     const edited = await probe(`(async()=>{

@@ -378,7 +378,7 @@ async function copySelection(picked) {
       return;
     }
     // ③ 多张图 / 图文混选：落成文件，按文件列表复制
-    const exported = await window.myIDE.clipboardHistory.exportAsFiles(picked.map(e => e.id));
+    const exported = await window.myIDE.clipboardHistory.exportAsFiles(list.map(e => e.id));
     if (!exported?.ok) { setState('导出为文件失败：' + (exported?.error || '未知原因')); return; }
     const files = exported.data?.files || [];
     if (!files.length) { setState('没有可复制的文件'); return; }
