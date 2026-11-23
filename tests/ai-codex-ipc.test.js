@@ -10,7 +10,8 @@ const result=(kind,context,id,value)=>{calls.push({kind,context,id,value});const
 const codex={abort:id=>aborts.push(id),status:async launcher=>({ok:true,launcher}),hasRun:()=>false,
   inspect:async(cfg,context,tools,apply)=>{calls.push({kind:'inspect',cfg,context,tools,apply});return {ok:true,configOptions:[]};},
   listHistory:async()=>({items:[{threadId:'fixture-thread',projectId:'fixture-project'}],projects:[{id:'fixture-project',title:'Fixture'}]}),
-  openHistory:async(_cfg, threadId)=>({threadId,messages:[]}),
+  openHistory:async(_cfg, threadId, archived)=>({threadId,archived,messages:[]}),
+  setHistoryArchived:async (_cfg,threadId,archived)=>calls.push({kind:'archive',threadId,archived}),
   forkHistory:async(_cfg, threadId)=>({threadId:'fork-'+threadId,messages:[]}),
   toolResult:(...args)=>result('tool',...args),permissionResult:(...args)=>result('permission',...args),questionResult:(...args)=>result('question',...args),
   chat:async(cfg,messages,tools,context,onEvent,onTool)=>{calls.push({kind:'chat',cfg,context});return new Promise(resolve=>pending.set(context.requestId,{context,onEvent,onTool,resolve}));}};
@@ -40,11 +41,15 @@ const settled=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
     const directory=await invoke('ai:codex-sessions',cfg);
     assert.equal(directory.items[0].threadId,'fixture-thread');
     assert.equal(directory.projects[0].id,directory.items[0].projectId);
-    assert.equal((await invoke('ai:codex-history',cfg,'fixture-thread')).threadId,'fixture-thread');
+    assert.equal((await invoke('ai:codex-history',cfg,'fixture-thread',true)).archived,true);
+    assert.equal((await invoke('ai:codex-archive',cfg,'fixture-thread',true)).ok,true);
+    assert.deepEqual(calls.at(-1),{kind:'archive',threadId:'fixture-thread',archived:true});
+    assert.equal((await handlers.get('ai:codex-archive')(fake,cfg,'fixture-thread',true)).ok,false);
     assert.equal((await invoke('ai:codex-fork',cfg,'fixture-thread')).threadId,'fork-fixture-thread');
     state.engine='dsh';
     assert.equal((await invoke('ai:codex-sessions',cfg)).ok,false);
     assert.equal((await invoke('ai:codex-fork',cfg,'fixture-thread')).ok,false);
+    assert.equal((await invoke('ai:codex-archive',cfg,'fixture-thread',true)).ok,false);
     assert.equal((await invoke('ai:codex-history',cfg,'fixture-thread')).ok,false);
     state.engine='codex';
     assert((await handlers.get('ai:chat')(fake,cfg,[],[],c)).error);assert.equal(pending.size,0);

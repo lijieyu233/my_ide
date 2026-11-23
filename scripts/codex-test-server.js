@@ -26,8 +26,12 @@ function createServer(){
    if(message.method==='project/list')return reply(message.id,{data:projects,nextCursor:null});
    if(message.method==='thread/list'){
     if(p.currentAccountOnly!==true)throw Error('Synthetic catalog requires account scope');
-    const data=[...threads.values()].filter(t=>!p.includedThreadIds||p.includedThreadIds.includes(t.id));
+    const data=[...threads.values()].filter(t=>!!t.archived===!!p.archived&&(!p.includedThreadIds||p.includedThreadIds.includes(t.id)));
     return reply(message.id,{data:data.map(t=>({...t,status:{type:t.desktopRunning?'active':'notLoaded'}})),nextCursor:null});
+   }
+   if(message.method==='thread/archive'||message.method==='thread/unarchive'){
+    const t=threads.get(p.threadId);t.archived=message.method==='thread/archive';
+    return reply(message.id,t.archived?{}:{thread:t});
    }
    if(message.method==='thread/read'){
     const t=threads.get(p.threadId);

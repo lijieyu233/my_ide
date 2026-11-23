@@ -65,22 +65,26 @@ async function listProjects(request) {
   return [...projects.values()];
 }
 
-async function listProjectThreads(request) {
+async function listProjectThreads(request, archived = false) {
   const threads = new Map();
-  await pages(request, 'thread/list', accountThreads, 100, maxThreadPages, data => {
+  await pages(request, 'thread/list', { ...accountThreads, archived }, 100, maxThreadPages, data => {
     for (const thread of data) {
       if (isProjectThread(thread) && !threads.has(thread.id)) {
-        threads.set(thread.id, { ...threadSummary(thread), rolloutPath: thread.path, running: thread.status?.type === 'active' });
+        threads.set(thread.id, { ...threadSummary(thread), archived, rolloutPath: thread.path, running: !archived && thread.status?.type === 'active' });
       }
     }
   });
   return [...threads.values()];
 }
 
-async function readProjectThread(request, threadId) {
+async function findProjectThread(request, threadId, archived = false) {
   if (typeof threadId !== 'string' || !nativeId.test(threadId)) throw Error('Codex 会话身份无效');
-  const listed = await request('thread/list', { ...accountThreads, includedThreadIds: [threadId], limit: 1 });
-  if (!listed?.data?.some(thread => thread.id === threadId && isProjectThread(thread))) {
+  const listed = await request('thread/list', { ...accountThreads, includedThreadIds: [threadId], limit: 1, archived });
+  return listed?.data?.find(thread => thread.id === threadId && isProjectThread(thread));
+}
+
+async function readProjectThread(request, threadId, archived = false) {
+  if (!await findProjectThread(request, threadId, archived)) {
     throw Error('当前 Codex 账号的目录中找不到此会话');
   }
   const { thread } = await request('thread/read', { threadId, includeTurns: false });
@@ -134,4 +138,4 @@ async function readMessages(request, thread) {
   return messages.reverse();
 }
 
-module.exports = { isProjectThread, listProjects, listProjectThreads, readProjectThread, threadSummary, readMessages, assertThreadIdle, assertIdle };
+module.exports = { isProjectThread, listProjects, listProjectThreads, findProjectThread, readProjectThread, threadSummary, readMessages, assertThreadIdle, assertIdle };

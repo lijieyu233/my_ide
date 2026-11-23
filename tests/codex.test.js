@@ -33,7 +33,7 @@ function fixture(config={}){
    else if(r.method==='thread/list'&&config.history){
      assert.equal(p.currentAccountOnly,true);
      assert.equal(p.useStateDbOnly,true);
-     const entries=p.includedThreadIds?config.history.filter(t=>p.includedThreadIds.includes(t.id)):config.history;
+     const entries=config.history.filter(t=>!!t.archived===!!p.archived&&(!p.includedThreadIds||p.includedThreadIds.includes(t.id)));
      send(c,{id:r.id,result:{data:entries,nextCursor:null}});
    }else if(r.method==='thread/read'&&config.history){
      const thread=config.history.find(t=>t.id===p.threadId);
@@ -117,6 +117,10 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
    assert.equal(catalog.items[0].projectId,catalog.projects[0].id);
    assert.deepEqual(catalog.projects[0],{id:'desktop-a',title:'桌面项目',roots:[temp]});
    assert.deepEqual(opened.messages,[{role:'user',content:'旧问题'},{role:'assistant',content:'旧回答'}]);
+   assert.equal(opened.archived,false);
+   const unknown='019caa00-0000-7000-8000-000000000099';
+   await assert.rejects(f.service.setHistoryArchived({},unknown,true),/当前 Codex 账号/);
+   assert(!f.requests.some(r=>r.method==='thread/archive'||r.method==='thread/unarchive'));
    assert.equal(f.requests.filter(r=>r.method==='initialize').length,1);
    assert(!f.requests.some(r=>['thread/start','thread/resume','turn/start'].includes(r.method)));
   }finally{await f.service.dispose();}

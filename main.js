@@ -882,10 +882,17 @@ ipcMain.handle('ai:codex-sessions',async (event, cfg) => {
     return { ok: true, ...await CODEX.listHistory(cfg) };
   } catch (error) { return { ok: false, error: error.message }; }
 });
-ipcMain.handle('ai:codex-history',async (event, cfg, threadId) => {
+ipcMain.handle('ai:codex-history',async (event, cfg, threadId, archived) => {
   try {
     await codexHistoryConfig(event, cfg);
-    return { ok: true, ...await CODEX.openHistory(cfg, threadId) };
+    return { ok: true, ...await CODEX.openHistory(cfg, threadId, archived === true) };
+  } catch (error) { return { ok: false, error: error.message }; }
+});
+ipcMain.handle('ai:codex-archive',async (event, cfg, threadId, archived) => {
+  try {
+    await codexHistoryConfig(event, cfg);
+    await CODEX.setHistoryArchived(cfg, threadId, archived);
+    return { ok: true };
   } catch (error) { return { ok: false, error: error.message }; }
 });
 ipcMain.handle('ai:codex-fork',async (event, cfg, threadId) => {

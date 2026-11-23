@@ -49,6 +49,7 @@ function createService(options={}){
   let connection=null,starting=null,loaded=false,loading=null,disposed=false,saving=Promise.resolve();
   const mapping=()=>valueOf(options.mappingFile),explicitHome=()=>valueOf(options.homeDir)||options.home;
   const desktopRunning=desktopState.createDesktopStatusReader();
+  const codexHome = () => explicitHome() || process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
   const workspace=()=>path.join(mapping()?path.dirname(mapping()):path.join(os.tmpdir(),'myide-codex'),'myide-codex-detached');
   const emit=(run,event)=>{if(!disposed&&!run.aborted&&!run.expired)run.onEvent({...event,context:run.context});};
   const live=run=>{if(disposed||run.aborted)throw Error('Codex 请求已停止');};
@@ -202,10 +203,13 @@ function createService(options={}){
   async function listHistory(cfg) {
     const conn = await connect(cfg);
     const request = historyRequest(conn);
-    const home = explicitHome() || process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
-    const [items, projects, desktop] = await Promise.all([
-      history.listProjectThreads(request), history.listProjects(request), desktopState.readDesktopState(home),
+    const home = codexHome();
+    const [active, archived, projects, desktop] = await Promise.all([
+      history.listProjectThreads(request), history.listProjectThreads(request, true),
+      history.listProjects(request), desktopState.readDesktopState(home),
     ]);
+    const archivedIds = new Set(archived.map(item => item.threadId));
+    const items = [...active.filter(item => !archivedIds.has(item.threadId)), ...archived];
     const assignments = desktopState.projectAssignments(projects, desktop);
     const detachedRoot = norm(await canonical(workspace()));
     const projectBindings = new Map();
@@ -218,7 +222,7 @@ function createService(options={}){
     const visible = items.map(item => ({ ...item, localId: 'codex:' + item.threadId, ...projectBindings.get(item.threadId) }))
       .filter(item => norm(item.rootDir) !== detachedRoot);
     return { projects, items: await Promise.all(visible.map(async item => {
-      const running = !locallyRunning.has(item.threadId) && await desktopRunning(home, item);
+      const running = !item.archived && !locallyRunning.has(item.threadId) && await desktopRunning(home, item);
       const { rolloutPath, ...summary } = item;
       return { ...summary, projectId: summary.projectId || assignments.get(summary.threadId) || null, running };
     })) };
@@ -230,10 +234,40 @@ function createService(options={}){
     return rootDir;
   }
 
-  async function openHistory(cfg, threadId) {
+  async function openHistory(cfg, threadId, archived = false) {
     const conn = await connect(cfg), request = historyRequest(conn);
-    const thread = await history.readProjectThread(request, threadId);
-    return adoptHistory(request, thread, await projectThreadRoot(thread));
+    const thread = await history.readProjectThread(request, threadId, archived);
+    return { ...await adoptHistory(request, thread, await projectThreadRoot(thread)), archived };
+  }
+
+  async function setHistoryArchived(cfg, threadId, archived) {
+    if (typeof archived !== 'boolean') throw Error('归档操作无效');
+    const conn = await connect(cfg), request = historyRequest(conn);
+    await locked('archive:' + threadId, async () => {
+      const thread = await history.findProjectThread(request, threadId, !archived);
+      if (!thread) {
+        if (await history.findProjectThread(request, threadId, archived)) return;
+        throw Error('当前 Codex 账号的目录中找不到此会话');
+      }
+      const binding = [...saved].find(([, record]) => record.id === threadId);
+      const update = async () => {
+        const session = binding && sessions.get(binding[0]);
+        if (archived && (session?.run || session?.stopping ||
+          await desktopRunning(codexHome(), { threadId, rolloutPath: thread.path, running: thread.status?.type === 'active' }))) {
+          throw Error('请等会话运行结束后再归档');
+        }
+        try {
+          await request(archived ? 'thread/archive' : 'thread/unarchive', { threadId });
+        } catch (error) {
+          if (error.kind === 'threadInUse') throw Error('此会话仍在 Codex 中打开，请等它释放后重试');
+          throw error;
+        }
+        if (session) session.attached = false;
+      };
+      // Serialize with local attachment when MyIDE already has a binding for this thread.
+      if (binding) await locked(binding[0], update);
+      else await update();
+    });
   }
 
   async function forkHistory(cfg, threadId) {
@@ -379,6 +413,6 @@ function createService(options={}){
   async function status(launcher){try{const runtime=await (options.resolveRuntime||resolveRuntime)(launcher||undefined);return {ok:true,available:true,connected:!!connection&&!connection.rpc.closed,launcher:runtime.launcher||runtime.executable,path:runtime.launcher||runtime.executable,transport:'stdio'};}catch(error){return {ok:false,available:false,connected:false,error:error.message};}}
   function hasRun(context){return [...runs.values()].some(run=>run.context.sessionId===context?.sessionId&&run.context.rootId===context?.rootId);}
   async function dispose(){if(disposed)return;disposed=true;for(const run of runs.values()){run.aborted=true;discardPending(run);resolveRun(run,{status:'interrupted'});}const conn=connection;conn?.rpc.close();conn?.child.kill();if(starting)try{const own=await starting;own.rpc.close();own.child.kill();}catch{}await saving;}
-  return {chat,inspect,listHistory,openHistory,forkHistory,status,abort,toolResult,permissionResult,questionResult,dispose,hasRun};
+  return {chat,inspect,listHistory,openHistory,forkHistory,setHistoryArchived,status,abort,toolResult,permissionResult,questionResult,dispose,hasRun};
 }
 module.exports={createService,promptContent,toolSpecs,configOptions};

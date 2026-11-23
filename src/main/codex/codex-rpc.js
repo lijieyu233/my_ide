@@ -40,7 +40,7 @@ class Rpc extends EventEmitter {
           error.rpcMethod=pending.method;
           error.rpcResponseReceived=true;
           // Codex reports the exclusive writer conflict via a text-only JSON-RPC error.
-          if(pending.method==='thread/resume'&&error.code===-32600&&
+          if(['thread/resume','thread/archive','thread/unarchive'].includes(pending.method)&&error.code===-32600&&
             /\bthread [0-9a-f-]{36} already has an active writer\b/i.test(message.error.message||'')) error.kind='threadInUse';
           pending.reject(error);
         }
