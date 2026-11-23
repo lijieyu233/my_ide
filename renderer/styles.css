@@ -2605,6 +2605,8 @@ body.theme-light #set-box, body.theme-pink #set-box { color-scheme: light; }
    现在 right = 工具条宽 + seam + 8px 间隙 = 50px，玩宠完全落在工具条左侧。 */
 #pet {
   position: fixed; right: 52px; bottom: 14px; z-index: 299;
+  /* AI 面板打开时让出输入区，避免玩偶挡住发送按钮。 */
+  right: min(calc(anchor(--myide-ai-panel left, 44px) + 8px), calc(100vw - 58px));
   width: 52px; height: 52px; cursor: pointer; user-select: none;
   animation: pet-breathe 3s ease-in-out infinite;
   filter: drop-shadow(0 3px 6px rgba(0,0,0,.28));
@@ -3430,6 +3432,7 @@ table.db-grid td.db-cb, table.db-grid th.db-cb { width: 30px; text-align: center
 .qh-item.qh-err .qh-sql { color: var(--danger, #e06c75); }
 /* ---------- AI 助手对话面板（ai-panel.js，右侧停靠） ---------- */
 #ai-panel {
+  anchor-name: --myide-ai-panel;
   /* 窗口缩小或恢复超宽偏好时自然收缩，编辑区可以缩到零，不预留固定宽度。 */
   flex-shrink: 1; width: 380px; min-width: 0; max-width: none;
   display: flex; flex-direction: column; position: relative;
@@ -4827,6 +4830,7 @@ details[open] > .ai-tool-summary > .ai-tool-ic::after { transform: rotate(225deg
 #ai-send { width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0; color: var(--text-bright); background: color-mix(in srgb, var(--accent) 45%, var(--bg)); border: 0; }
 #ai-send:hover { background: var(--bg-selected); }
 #ai-send svg.ic { width: 17px; height: 17px; }
+#ai-send.ai-codex-queue-send { width: auto; min-width: 42px; padding-inline: 8px; font-size: 12px; border-radius: 8px; }
 #ai-codex-activity { padding-left: 12px; }
 #ai-codex-activity .ai-run-text { color: var(--ai-process-text, var(--text-dim)); }
 .ai-input-help { display: flex; justify-content: space-between; gap: 8px; flex-basis: 100%; font-size: .77em; color: var(--text-dim); }

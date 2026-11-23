@@ -36,7 +36,9 @@ function createServer(){
    if(message.method.startsWith('thread/queue/')){
     const t=threads.get(p.threadId);if(!t)return send({id:message.id,error:{code:-32600,message:'No synthetic thread'}});
     t.inputQueue ||= [];
-    if(message.method==='thread/queue/list')return reply(message.id,{data:t.inputQueue,nextCursor:null});
+    if(message.method==='thread/queue/list')return t.queueListUnavailable
+      ? send({id:message.id,error:{code:-32603,message:'Synthetic queue list unavailable'}})
+      : reply(message.id,{data:t.inputQueue,nextCursor:null});
     if(message.method==='thread/queue/delete'){t.inputQueue=t.inputQueue.filter(item=>item.id!==p.queuedSubmissionId);return reply(message.id,{});}
     const queuedSubmission={id:'queued-'+p.clientUserMessageId,clientUserMessageId:p.clientUserMessageId,input:p.input};
     t.inputQueue.push(queuedSubmission);return reply(message.id,{queuedSubmission});

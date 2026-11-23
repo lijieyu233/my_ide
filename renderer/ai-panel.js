@@ -2111,6 +2111,13 @@ const AiPanel = (() => {
   function codexRunningInput() {
     return getConfig().engine === 'codex' && (busy || codexObservedRunning());
   }
+  function codexPrimaryQueues() {
+    if (getConfig().engine !== 'codex' || busy) return false;
+    const item = codexSelectedHistoryItem();
+    return !!item && !item.archived && (item.running ||
+      codexOccupiedView?.key === inputViewKey() && codexOccupiedView.revision === inputDraftRevision &&
+      codexOccupiedView.raw === inputEl.value);
+  }
   function nativeInputTarget(){
     if (getConfig().engine === 'codex') {
       if (busy) {
@@ -2154,18 +2161,19 @@ const AiPanel = (() => {
     const user={...item.draft.message,content:imgs.length?[{type:'text',text},...imgs.map(url=>({type:'image_url',image_url:{url}}))]:text,_text:text,_imgs:imgs,_ui:'u'+(++uiSeq)};msgs.push(user);const row=addMsg('user',text,{imgs});row.dataset.mid=user._ui;lastUserAt=msgs.length-1;
     clearAcceptedDraft(item.draft);if(item.accepted)nativeInputRequests.delete(requestId);
   }
-  function renderNativeInputUI(){
+  function renderNativeInputUI(b = busy){
     if(backgroundView)return;
+    renderSendButton(b);
     const codex = getConfig().engine === 'codex';
     const running = codex ? codexRunningInput() : getConfig().engine === 'dsh' && (busy || dshObservedRunning());
     const target = nativeInputTarget(), queue = nativeQueueSource();
-    const canQueueExternal = codex && !!target && (codexSelectedHistoryItem()?.external || codexOccupiedView === inputViewKey());
-    const showActions = running || canQueueExternal && !!inputEl.value.trim();
+    const canQueueExternal = codex && !!target && (codexSelectedHistoryItem()?.external || codexOccupiedView?.key === inputViewKey());
+    const showActions = !codexPrimaryQueues() && (running || canQueueExternal && !!inputEl.value.trim());
     const actions=document.getElementById('ai-running-input-actions');
     actions?.classList.toggle('hidden', !showActions);
     actions?.querySelector('span')?.classList.toggle('hidden', codex);
     const hasDraft = !!target && !nativeInputPending && !!inputEl.value.trim();
-    const ready = hasDraft && (target.kind === 'run' ? currentRun.inputReady === true : queue?.available === true);
+    const ready = hasDraft && (codex || (target.kind === 'run' ? currentRun.inputReady === true : queue?.available === true));
     const queueButton=document.getElementById('ai-queue-submit'),steerButton=document.getElementById('ai-steer-submit');
     if (queueButton) {
       queueButton.disabled = !ready;
@@ -2239,7 +2247,7 @@ const AiPanel = (() => {
   }
   async function submitCodexInput(mode) {
     const target = nativeInputTarget(), draft = freezeInputDraft();
-    if (!target || !draft || (mode === 'steer' ? !target.run : nativeQueueSource()?.available !== true)) return;
+    if (!target || !draft || mode === 'steer' && !target.run) return;
     const requestId = 'myide-input-' + window.crypto.randomUUID();
     const item = mode === 'steer' ? { requestId, draft, run: currentRun, rendered: false } : null;
     if (item) nativeInputRequests.set(requestId, item);
@@ -2253,7 +2261,7 @@ const AiPanel = (() => {
       if (mode === 'queue' && draft.key === inputViewKey()) {
         followCodexQueue(draft.key);
         msgsEl.querySelector('.ai-codex-rejected')?.remove();
-        await refreshNativeQueue();
+        void refreshNativeQueue(true);
       }
     } catch (error) {
       if (item) nativeInputRequests.delete(requestId);
@@ -2280,7 +2288,7 @@ const AiPanel = (() => {
     finally{if(item.rendered)nativeInputRequests.delete(requestId);else if(run.status!=='active'&&!item.error)item.error='消息接受与运行结束同时发生，消费状态未知。请先刷新原生队列确认，再决定是否恢复草稿。';nativeInputPending=false;renderNativeInputUI();}
   }
   async function send(inputOptions) {
-    if (busy || rejectDshSend()) return;
+    if (busy || getConfig().engine === 'codex' && nativeInputPending || rejectDshSend()) return;
     const text = (inputEl.value || '').trim();
     if (!text) return;
     const cfg = getConfig();
@@ -2412,7 +2420,7 @@ const AiPanel = (() => {
         nativeInputRequests.set(run.identity.requestId, { run,
           draft: { ...draft, text: draft.raw, imgs: draft.images }, error: '原会话正在 Codex 中打开' });
       }
-      if (!backgroundView) codexOccupiedView = draft.key;
+      if (!backgroundView) codexOccupiedView = { key: draft.key, revision: draft.revision, raw: draft.raw };
     }
     stream.element.remove();
     endRun(run, queued ? 'queued' : 'occupied');
@@ -2519,25 +2527,32 @@ const AiPanel = (() => {
     syncPermBtn();
     renderSessionOrigin();
     const external = !b && dshObservedRunning(), stopping = !!dshWatch?.stopping;
-    const codexExternal = !b && codexObservedRunning(), codexArchived = !b && codexSelectedHistoryItem()?.archived;
     if (b && getConfig().engine === 'codex') codexLiveView = null;
     if(getConfig().engine==='codex')for(const id of ['ai-model','ai-dsh-reasoning']){const control=document.getElementById(id);if(control)control.disabled=b||dshOptionsState!=='ready';}
     const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect){reconnect.disabled=b||dshOptionsState==='loading';reconnect.setAttribute('aria-label','重新连接 '+nativeLabel());reconnect.title='重新连接 '+nativeLabel()+'，保留会话，不重发任务';}
-    if (sendBtn) {
-      sendBtn.disabled = codexExternal || codexArchived || stopping || !b && !external && !dshCanSend();
-      if (codexExternal) {
-        sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M4 7l4-4 4 4"/></svg>';
-        sendBtn.title = '此会话正在 Codex 中运行';
-        sendBtn.setAttribute('aria-label', sendBtn.title);
-      } else {
-        sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b || external ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b || external ? '⏹' : '➤') + '</span>';
-        sendBtn.title = codexArchived ? '请先取消归档再发送' : b && currentRun?.engine==='codex' ? '请求中断当前 Codex 轮次，不影响其他会话' : b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : external ? '停止 DSH 当前会话；Enter 排队，Alt+Enter 插入' : '发送（Enter）';
-        sendBtn.setAttribute('aria-label', codexArchived ? sendBtn.title : b || external ? '停止生成' : '发送消息');
-      }
-    }
     renderCodexObservedActivity();
     const headerStop = document.getElementById('ai-stop'); if (headerStop) { headerStop.onclick = stopVisibleRun; headerStop.disabled = stopping; headerStop.classList.toggle('hidden',!b&&!external); }
-    renderNativeInputUI();
+    renderNativeInputUI(b);
+  }
+
+  function renderSendButton(b) {
+    if (!sendBtn) return;
+    const external = !b && dshObservedRunning(), stopping = !!dshWatch?.stopping;
+    const codexArchived = !b && codexSelectedHistoryItem()?.archived;
+    const queueMode = !b && codexPrimaryQueues();
+    sendBtn.classList.toggle('ai-codex-queue-send', queueMode);
+    if (queueMode) {
+      sendBtn.disabled = !inputEl.value.trim() || nativeInputPending || !nativeInputTarget();
+      sendBtn.textContent = nativeInputPending ? '排队中…' : '排队';
+      sendBtn.title = '排队到原会话，沿用该会话权限（Enter）';
+      sendBtn.setAttribute('aria-label', sendBtn.title);
+      return;
+    }
+    sendBtn.disabled = codexArchived || stopping || !b && !external &&
+      (!dshCanSend() || getConfig().engine === 'codex' && nativeInputPending);
+    sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b || external ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b || external ? '⏹' : '➤') + '</span>';
+    sendBtn.title = codexArchived ? '请先取消归档再发送' : b && currentRun?.engine==='codex' ? '请求中断当前 Codex 轮次，不影响其他会话' : b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : external ? '停止 DSH 当前会话；Enter 排队，Alt+Enter 插入' : '发送（Enter）';
+    sendBtn.setAttribute('aria-label', codexArchived ? sendBtn.title : b || external ? '停止生成' : '发送消息');
   }
 
   // ---------- 历史会话（保存 / 切换 / 重命名 / 删除）----------
@@ -5235,6 +5250,7 @@ const AiPanel = (() => {
     if (sendBtn) {
       sendBtn.onclick = () => {
         if (busy || dshObservedRunning()) { stopVisibleRun(); return; }
+        if (codexPrimaryQueues()) { void submitRunningInput('queue'); return; }
         send();
       };
     }
@@ -5254,7 +5270,9 @@ const AiPanel = (() => {
         if (onKeydownMention(e)) return; // @ 补全弹窗接管：↑↓/Enter/Esc
         if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
           e.preventDefault();
-          if(codexRunningInput() || getConfig().engine==='dsh'&&(busy||dshObservedRunning()))submitRunningInput(e.altKey?'steer':'queue');
+          if (codexPrimaryQueues()) {
+            if (!e.altKey) void submitRunningInput('queue');
+          } else if(codexRunningInput() || getConfig().engine==='dsh'&&(busy||dshObservedRunning()))submitRunningInput(e.altKey?'steer':'queue');
           else if (!busy) send();
         }
       });

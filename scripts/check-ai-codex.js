@@ -40,7 +40,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  fixture.projects.push({id:'desktop-empty',name:'桌面空项目',roots:[{path:emptyRoot}]},
    {id:'desktop-b',name:'桌面工程 B',roots:[{path:roots[0]+'-worktree'},{path:roots[1]}]});
  fixture.threads.set(recentId,{id:recentId,projectId:null,cwd:roots[1],model:'offline-codex',historyMode:'paginated',name:'同目录的未分组会话',updatedAt:1710000001,running:false,items:[]});
- fixture.threads.set(externalId,{id:externalId,projectId:null,cwd:roots[1],model:'offline-codex',historyMode:'paginated',name:'桌面 Codex 外部会话',updatedAt:1710000000,running:false,
+ fixture.threads.set(externalId,{id:externalId,projectId:null,cwd:roots[1],model:'offline-codex',historyMode:'paginated',name:'桌面 Codex 外部会话',updatedAt:1710000000,running:false,queueListUnavailable:true,
   items:[{type:'userMessage',content:[{type:'text',text:'CODEX_PREVIOUS_QUESTION'}]},{type:'agentMessage',text:'CODEX_PREVIOUS_ANSWER'}]});
  const earlierTurns=fixture.requests.filter(r=>r.method==='turn/start').length;
  await js(()=>App.showTool('sessions'));
@@ -67,7 +67,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  await capture('codex-history-sidebar');
  const original=fixture.threads.get(externalId);
  const picture=path.join(roots[1],'native-preview.png');
- const pixels=Buffer.alloc(120*80*4);
+  const pixels=Buffer.alloc(120*80*4);
  for(let i=0;i<pixels.length;i+=4){pixels[i]=80;pixels[i+1]=160;pixels[i+2]=55;pixels[i+3]=255;}
  fs.writeFileSync(picture,nativeImage.createFromBitmap(pixels,{width:120,height:80}).toPNG());
  await js(()=>{window.__codexHistoryRow=document.querySelector('#ai-msgs .ai-msg');});
@@ -76,7 +76,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  fixture.threads.set(late.id,late);
  await until(()=>js(()=>document.getElementById('ai-send').disabled&&document.querySelector('.ai-hist-row.cur.running')&&
    [...document.querySelectorAll('[data-codex-project="desktop-b"] .ai-hist-nm')].some(node=>node.textContent==='桌面刚建的会话')),'automatic desktop refresh');
- check('Codex desktop activity disables send and updates the sidebar in place',await js(()=>document.getElementById('ai-send').getAttribute('aria-label').includes('Codex 中运行')&&
+ check('Codex desktop activity switches the composer to native queue and updates the sidebar in place',await js(()=>document.getElementById('ai-send').textContent==='排队'&&
    document.getElementById('ai-stop').classList.contains('hidden')&&
    document.getElementById('ai-codex-activity')?.textContent==='Codex 正在运行'&&
    !document.querySelector('[data-hist-refresh]').disabled));
@@ -97,10 +97,22 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  await until(()=>js(()=>document.getElementById('ai-msgs').textContent.includes('CODEX_DESKTOP_PROGRESS')),'external commentary appears');
  check('Codex desktop commentary appends in place while the composer waits',await js(()=>
    document.querySelector('#ai-msgs .ai-msg')===window.__codexHistoryRow &&
-   document.getElementById('ai-send').disabled &&
+   !document.getElementById('ai-send').disabled &&
    document.getElementById('ai-input').value==='等待桌面完成的草稿'));
- await until(()=>js(()=>!document.getElementById('ai-queue-submit').disabled),'native external queue available');
- await js(()=>{document.getElementById('ai-queue-submit').click();});
+ check('The pet leaves the composer button accessible to the pointer',await js(()=>{
+   const send=document.getElementById('ai-send'),box=send.getBoundingClientRect();
+   return !!document.getElementById('pet')&&send.contains(document.elementFromPoint(box.x+box.width/2,box.y+box.height/2));
+ }));
+ await js(()=>{
+   const send=document.getElementById('ai-send'),box=send.getBoundingClientRect();
+   document.elementFromPoint(box.x+box.width/2,box.y+box.height/2).click();
+   send.click();
+ });
+ await until(()=>original.inputQueue?.length===1&&js(()=>!document.getElementById('ai-input').value),'primary send submits despite unavailable queue list');
+ check('The primary button submits exactly once while the native queue list is unavailable',
+   fixture.requests.filter(r=>r.method==='thread/queue/add'&&r.params.threadId===externalId).length===1&&
+   await js(()=>document.getElementById('ai-running-input-actions').classList.contains('hidden')));
+ original.queueListUnavailable=false;
  await until(()=>js(()=>document.getElementById('ai-input-queue').textContent.includes('等待桌面完成的草稿')&&!document.getElementById('ai-input').value),'native queue receipt');
  check('MyIDE queues on the same Codex desktop chat and leaves the running turn alone',
    original.inputQueue?.length===1&&fixture.requests.filter(r=>r.method==='turn/start').length===beforeDesktopTurn&&
@@ -119,7 +131,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  await until(()=>js(()=>document.getElementById('ai-codex-activity')?.textContent==='正在整理图片预览'&&
    document.querySelector('#ai-msgs img[alt="查看了 1 张图片"]')?.naturalWidth>0),'desktop activity title and image preview');
  check('Codex mirrors the current native summary and viewed image with a static send control',await js(()=>
-   getComputedStyle(document.querySelector('#ai-send svg') || document.getElementById('ai-send')).animationName==='none'&&
+   getComputedStyle(document.getElementById('ai-send')).animationName==='none'&&
    !document.getElementById('ai-msgs').textContent.includes('不得显示这段原始内容')));
  await capture('codex-desktop-running');
  command.status='completed';
@@ -143,7 +155,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  const beforeRestrictedQueue=fixture.requests.filter(r=>r.method==='thread/queue/add').length;
  await js(()=>AiPanel.ask('HOLD_CODEX 续接桌面会话'));
  await until(()=>js(()=>AiPanel.__testParked().currentRun==='occupied'&&document.getElementById('ai-runstate').textContent.includes('正在 Codex 中打开')),'writer conflict stays in the composer');
- await until(()=>js(()=>!document.getElementById('ai-running-input-actions').classList.contains('hidden')&&!document.getElementById('ai-queue-submit').disabled),'queue option after native writer conflict');
+ await until(()=>js(()=>!document.getElementById('ai-send').disabled&&document.getElementById('ai-send').textContent==='排队'),'primary queue action after native writer conflict');
  check('A protected send restores the draft without a red history entry or automatic delegation',
    await js(()=>document.getElementById('ai-input').value==='HOLD_CODEX 续接桌面会话'&&!document.querySelector('.ai-codex-rejected')&&
      [...document.querySelectorAll('#ai-msgs .ai-user')].every(row=>!row.textContent.includes('HOLD_CODEX')))&&
@@ -151,10 +163,9 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
    !fixture.requests.some(r=>r.method==='thread/fork'||r.method==='turn/start'&&r.params.threadId===externalId));
  await capture('codex-occupied-draft');
  await js(()=>{
-   const input=document.getElementById('ai-input');input.value='补送原会话';input.dispatchEvent(new Event('input',{bubbles:true}));
-   document.getElementById('ai-queue-submit').click();
+   document.getElementById('ai-input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
  });
- await until(()=>js(()=>document.querySelector('#ai-input-queue .ai-queue-text')?.textContent.includes('补送原会话')),'queue occupied idle thread');
+ await until(()=>js(()=>document.querySelector('#ai-input-queue .ai-queue-text')?.textContent.includes('HOLD_CODEX 续接桌面会话')),'Enter queues the original draft on an idle occupied thread');
  original.inputQueue=[];
  original.items.push({id:'fast-queued-reply',type:'agentMessage',text:'CODEX_FAST_QUEUED_REPLY'});
  await until(()=>js(()=>document.getElementById('ai-msgs').textContent.includes('CODEX_FAST_QUEUED_REPLY')),'fast queued reply appears');
