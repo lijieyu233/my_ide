@@ -7,7 +7,7 @@ const same=(a,b)=>!!a&&!!b&&['requestId','sessionId','rootId','generation','roun
 const reader=context=>['reader','bookshelf'].includes(context?.page?.id);
 const valueOf=value=>typeof value==='function'?value():value;
 const norm=value=>process.platform==='win32'?path.normalize(value).toLowerCase():path.normalize(value);
-const redact=value=>String(value??'').replace(/\bBearer\s+[^\s"']+/gi,'Bearer [redacted]').replace(/\b(?:sk|sess)-[a-zA-Z0-9_-]{12,}/g,'[redacted]').replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\s*[=:]\s*["']?)[^\s,"'}]+/gi,'$1[redacted]').slice(0,100000);
+const redact=value=>String(value??'').replace(/\bBearer\s+[^\s"']+/gi,'Bearer [redacted]').replace(/\b(?:sk|sess)-[a-zA-Z0-9_-]{12,}/g,'[redacted]').replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)\s*[=:]\s*["']?)[^\s,"'}]+/gi,'$1[redacted]').slice(0,100000);
 // Only protocol-owned categories reach the UI; server message/details may contain credentials, URLs or account data.
 function safeError(error){
   const labels={contextWindowExceeded:'上下文窗口已满',sessionBudgetExceeded:'会话预算已用尽',usageLimitExceeded:'使用额度已用尽',rateLimitExceeded:'请求限流',flexUnavailable:'服务暂不可用',serverOverloaded:'服务繁忙',modelNotFound:'模型不可用',policyCapacityUnavailable:'策略容量不可用',cyberPolicy:'安全策略阻止',misalignmentPolicyViolation:'安全策略阻止',tooManyDenials:'权限请求被多次拒绝',internalServerError:'服务内部错误',unauthorized:'认证失败',badRequest:'请求不兼容',threadRollbackFailed:'会话回滚失败',sandboxError:'沙箱执行失败',other:'原生服务错误',httpConnectionFailed:'HTTP 连接失败',responseStreamConnectionFailed:'回复流连接失败',responseStreamDisconnected:'回复流中断',responseTooManyFailedAttempts:'通信重试已耗尽',activeTurnNotSteerable:'当前轮次无法追加输入'};
@@ -298,7 +298,7 @@ function createService(options={}){
     const threadId = thread.id;
     const localId = localHistoryId(threadId, rootDir);
     const key = JSON.stringify([localId, norm(rootDir), 'project']);
-    const messages = await history.readMessages(request, thread);
+    const messages = await history.readMessages(request, thread, redact);
     await locked(key, async () => {
       const record = saved.get(key);
       if (record && record.id !== threadId) throw Error('Codex 本地会话身份不匹配');

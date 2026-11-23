@@ -86,6 +86,8 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  check('Codex external activity keeps unsent drafts',fixture.requests.filter(r=>r.method==='turn/start').length===beforeDesktopTurn&&
    await js(()=>document.getElementById('ai-input').value==='等待桌面完成的草稿'));
  original.items.push({id:'desktop-progress',type:'agentMessage',text:'CODEX_DESKTOP_PROGRESS'});
+ const command={id:'desktop-command',type:'commandExecution',command:'codex queue --help token=PRIVATE_TOKEN_FIXTURE access_token=PRIVATE_QUEUE_FIXTURE',status:'inProgress'};
+ original.items.push(command);
  await until(()=>js(()=>document.getElementById('ai-msgs').textContent.includes('CODEX_DESKTOP_PROGRESS')),'external commentary appears');
  check('Codex desktop commentary appends in place while the composer waits',await js(()=>
    document.querySelector('#ai-msgs .ai-msg')===window.__codexHistoryRow &&
@@ -102,7 +104,14 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  await until(()=>js(()=>document.getElementById('ai-input-queue').classList.contains('hidden')),'native queue withdrawal');
  check('Codex removes the selected queued message without losing the new draft',original.inputQueue.length===0&&
    await js(()=>document.getElementById('ai-input').value==='等待桌面完成的草稿'));
+ await until(()=>js(()=>document.querySelector('[data-tool-call-id="desktop-command"]')?.dataset.state==='running'),'desktop command appears');
+ check('Codex shows native command activity without exposing credentials or executing it locally',await js(()=>{
+   const row=document.querySelector('[data-tool-call-id="desktop-command"]');
+   const summary=row.closest('.ai-tool-group').querySelector('.ai-tool-group-label').textContent;
+   return summary.includes('正在运行 · codex queue --help')&&!row.textContent.includes('PRIVATE_QUEUE_FIXTURE')&&!row.textContent.includes('PRIVATE_TOKEN_FIXTURE');
+ }));
  await capture('codex-desktop-running');
+ command.status='completed';
  original.items.push({id:'desktop-final',type:'agentMessage',text:'CODEX_DESKTOP_FINAL'});
  original.desktopRunning=false;
  await until(()=>js(()=>!document.getElementById('ai-send').disabled&&!document.querySelector('.ai-hist-row.cur.running')&&
@@ -111,6 +120,10 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
    fixture.requests.filter(r=>r.method==='turn/start').length===beforeDesktopTurn && await js(()=>
      [...document.querySelectorAll('#ai-msgs .ai-msg')].filter(node=>node.textContent.includes('CODEX_DESKTOP_FINAL')).length===1));
  check('Codex desktop completion unlocks sending',await js(()=>document.getElementById('ai-input').value==='等待桌面完成的草稿'));
+ check('Codex marks the mirrored command complete without a duplicate row',await js(()=>{
+   const rows=document.querySelectorAll('[data-tool-call-id="desktop-command"]');
+   return rows.length===1&&rows[0].dataset.state==='completed';
+ }));
  original.writerLocked=true;
  await js(()=>AiPanel.ask('HOLD_CODEX 续接桌面会话'));
  await until(()=>js(()=>document.querySelector('.ai-codex-rejected')?.textContent.includes('另一 Codex 进程占用')),'writer conflict message');

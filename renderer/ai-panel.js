@@ -1034,7 +1034,7 @@ const AiPanel = (() => {
     else if (['glob','list_files'].includes(short)) { kind='search';label=short==='glob'?'查找文件':'列出文件';detail=pick('pattern','path'); }
     else if (['write','write_file'].includes(short)) { kind='write';label='写入';detail=pick('file_path','path'); }
     else if (['edit','replace_edit','apply_patch'].includes(short)) { kind='edit';label='编辑';detail=pick('file_path','path','description'); }
-    else if (['bash','pwsh','run_command','exec_command','write_stdin'].includes(short) || short.startsWith('terminal_')) { kind='commands';label='执行命令';detail=pick('description','command','cmd'); }
+    else if (['bash','pwsh','run_command','exec_command','write_stdin','commandExecution'].includes(short) || short.startsWith('terminal_')) { kind='commands';label='执行命令';detail=pick('description','command','cmd'); }
     else if (short === 'run_code') { kind='code';label='运行代码'; }
     else if (short === 'web_search') { kind='webSearch';label='搜索网页';detail=pick('description','query') || firstActivityLine(args.queries?.join(', ')); }
     else if (short === 'web_fetch') { kind='webFetch';label='读取网页';detail=pick('url'); }
@@ -1058,7 +1058,8 @@ const AiPanel = (() => {
     group.dataset.phase = running ? 'running' : 'closed';
     group.dataset.outcome = running ? 'running' : interrupted && !data.closed ? 'stopped' : counts.failed ? 'failed' : unknown ? 'unknown' : 'completed';
     // 按截图统一分析阶段标题；工具自身的失败/未知状态单独保留，不等同于请求已结束。
-    data.label.textContent = running ? '正在分析请求' : interrupted && !data.closed ? '分析已停止' : unknown ? '分析状态未确认' : '已完成分析';
+    data.label.textContent = data.commandSummary ? (state === 'running' ? '正在运行' : '执行命令') + ' · ' + data.commandSummary
+      : running ? '正在分析请求' : interrupted && !data.closed ? '分析已停止' : unknown ? '分析状态未确认' : '已完成分析';
     data.status.dataset.state = state;
     data.status.textContent = counts.failed ? counts.failed + ' 次失败' : '';
   }
@@ -2356,6 +2357,11 @@ const AiPanel = (() => {
   }
   function renderDshActivity(part, toolId){
     const row=renderToolRow(part.call, toolId);
+    const group = toolRows.get(row).group;
+    const data = toolGroups.get(group);
+    if (part.call.name === 'commandExecution' && !data.owner) {
+      data.commandSummary = firstActivityLine(part.call.args?.command);
+    }
     if(part.status)setDshToolState(row,part.status);
     setDshToolOutput(row,part.output);
     return row;
@@ -2742,13 +2748,13 @@ const AiPanel = (() => {
           pathKey(result.rootDir) !== pathKey(window.App?.root) || !wanted()) return;
       const next = result.messages;
       const samePrefix = msgs.length <= next.length && msgs.every((message, index) =>
-        message.role === next[index].role && message.content === next[index].content);
+        message.role === next[index].role && message.content === next[index].content && message._codexCommand === next[index]._codexCommand);
       if (!samePrefix || msgs.length !== next.length) {
         const appendFrom = samePrefix ? msgs.length : 0;
         const container = msgsEl, top = container.scrollTop;
         const follow = container.scrollHeight - container.clientHeight - top < 36;
         msgs = appendFrom ? msgs.concat(next.slice(appendFrom)) : next;
-        if (!await replayHistory(wanted, false, appendFrom, follow)) return;
+        if (!await replayHistory(wanted, !appendFrom, appendFrom, follow)) return;
         if (!follow && !appendFrom) container.scrollTop = top;
         // Updating an observed history must not clear the user's unsent input or change the active session.
         saveSessions(loadSessions().map(session => session.id === result.localId

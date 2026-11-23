@@ -111,10 +111,19 @@ async function assertThreadIdle(request, thread) {
   }
 }
 
-async function readMessages(request, thread) {
-  let chars = 0;
+async function readMessages(request, thread, redact) {
+  let chars = 0, commands = 0;
   const messages = [];
   const append = item => {
+    if (item?.type === 'commandExecution' && typeof item.id === 'string' && typeof item.command === 'string') {
+      if (commands >= 32) return true;
+      const command = redact(item.command).slice(0, 1600);
+      const status = item.status === 'inProgress' ? 'in_progress' : item.status === 'completed' ? 'completed' : 'failed';
+      messages.push({ role: 'assistant', content: '', _codexCommand: JSON.stringify([item.id, status, command]),
+        _dshTimeline: [{ kind: 'tool', call: { id: item.id, name: 'commandExecution', args: { command } }, status }] });
+      commands++;
+      return messages.length < maxMessages;
+    }
     const role = item?.type === 'userMessage' ? 'user' : item?.type === 'agentMessage' ? 'assistant' : '';
     if (!role) return true;
     const text = role === 'assistant' ? item.text :
