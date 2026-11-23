@@ -57,6 +57,8 @@ function fixture(config={}){
      const {threadId,clientUserMessageId,input}=p;
      assert(config.history.some(thread=>thread.id===threadId));
      send(c,{id:r.id,result:{queuedSubmission:{id:'queued-fixture',clientUserMessageId,input}}});
+   }else if(r.method==='thread/unsubscribe'){
+    send(c,{id:r.id,result:{status:'unsubscribed'}});
    }else if(r.method==='thread/start'||r.method==='thread/resume'){
     if(r.method==='thread/resume'&&config.writerLocked){
      send(c,{id:r.id,error:{code:-32600,message:'thread '+p.threadId+' already has an active writer'}});
@@ -303,7 +305,7 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
   fs.writeFileSync(path.join(root,'package.json'),JSON.stringify({name:'untrusted'}));await assert.rejects(resolveRuntime(wrapper,{env:{}}),/请选择/);
  });
  await test('inspect只initialize/model/account，账号仅type，不创建线程/turn，隔离HOME',async()=>{
-  const f=fixture();try{const r=await f.service.inspect({},context(),[]);assert(r.ok&&r.loggedIn);assert.deepEqual(r.account,{type:'chatgpt'});assert(!JSON.stringify(r).includes('private@'));assert(!JSON.stringify(r).includes('never-expose'));assert.equal(r.models[0].model,'native-model');assert(!f.requests.some(r=>['thread/start','thread/resume','turn/start'].includes(r.method)));assert.deepEqual(f.invocation.args,['app-server','--stdio']);assert.equal(f.invocation.opts.shell,false);assert(f.invocation.opts.windowsHide);assert.equal(f.invocation.opts.env.CODEX_HOME,f.home);assert(f.requests.some(r=>r.method==='initialized'));assert.equal(f.requests.find(r=>r.method==='initialize').params.capabilities.experimentalApi,true);}finally{await f.service.dispose();}
+  const f=fixture();try{const r=await f.service.inspect({},context(),[]);assert(r.ok&&r.loggedIn);assert.deepEqual(r.account,{type:'chatgpt'});assert(!JSON.stringify(r).includes('private@'));assert(!JSON.stringify(r).includes('never-expose'));assert.equal(r.models[0].model,'native-model');assert(!f.requests.some(r=>['thread/start','thread/resume','turn/start'].includes(r.method)));assert.deepEqual(f.invocation.args,['app-server','--stdio','-c','thread_unload_delay_secs=1']);assert.equal(f.invocation.opts.shell,false);assert(f.invocation.opts.windowsHide);assert.equal(f.invocation.opts.env.CODEX_HOME,f.home);assert(f.requests.some(r=>r.method==='initialized'));assert.equal(f.requests.find(r=>r.method==='initialize').params.capabilities.experimentalApi,true);}finally{await f.service.dispose();}
  });
  await test('account null且requiresAuth时发送前明确要求官方登录，不偷建线程',async()=>{const f=fixture({account:{account:null,requiresOpenaiAuth:true}});try{const r=await f.service.chat({},user('x'),[],context(),()=>{},()=>{});assert(!r.ok&&r.error.includes('尚未登录'));assert(!f.requests.some(r=>r.method==='thread/start'));}finally{await f.service.dispose();}});
  await test('原生Agent多轮只送最新输入，不重放历史，native工具仅显示不重复执行',async()=>{
@@ -344,8 +346,18 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
    f.complete(startA.params.threadId,f.turns.get(startA.params.threadId),'过期文本');f.complete(startB.params.threadId,f.turns.get(startB.params.threadId),'B真回复');const rb=await pb;assert(rb.ok);assert.equal(rb.text,'B真回复');assert(!ea.some(e=>e.delta==='过期文本'));assert(!eb.some(e=>e.delta==='过期文本'));
   }finally{await f.service.dispose();}
  });
+ await test('MyIDE 新会话完成后释放写入权，续聊只恢复原会话',async()=>{
+  const f=fixture();
+  try{
+   for(const n of [1,2])assert((await f.service.chat({},user('发送 '+n),[],context(n))).ok);
+   const operations=f.requests.filter(r=>['thread/start','thread/resume','turn/start','thread/unsubscribe'].includes(r.method));
+   assert.deepEqual(operations.map(r=>r.method),['thread/start','turn/start','thread/unsubscribe','thread/resume','turn/start','thread/unsubscribe']);
+   assert(operations.slice(1).every(r=>r.params.threadId==='thread-1'));
+   assert.equal(f.children[0].exitCode,null);
+  }finally{await f.service.dispose();}
+ });
  await test('中断已接受未完成时锁住原线程，迟到完成才允许继续且不换线程',async()=>{
-  const f=fixture({hold:true,delayedStop:true});try{const c=context(),p=f.service.chat({},user('x'),[],c,()=>{},()=>{});await until(()=>f.turns.size>0);f.service.abort(c.requestId);assert((await p).aborted);const blocked=await f.service.chat({},user('仍停止中'),[],context(2),()=>{},()=>{});assert(!blocked.ok&&blocked.error.includes('停止中'));f.complete('thread-1','turn-1','late','interrupted');const next=f.service.chat({},user('恢复'),[],context(3),()=>{},()=>{});await until(()=>f.turns.get('thread-1')==='turn-2');f.complete('thread-1','turn-2');assert((await next).ok);assert.equal(f.requests.filter(r=>r.method==='thread/start').length,1);}finally{await f.service.dispose();}
+  const f=fixture({hold:true,delayedStop:true});try{const c=context(),p=f.service.chat({},user('x'),[],c,()=>{},()=>{});await until(()=>f.turns.size>0);f.service.abort(c.requestId);assert((await p).aborted);const blocked=await f.service.chat({},user('仍停止中'),[],context(2),()=>{},()=>{});assert(!blocked.ok&&blocked.error.includes('停止中'));assert(!f.requests.some(r=>r.method==='thread/unsubscribe'));f.complete('thread-1','turn-1','late','interrupted');await until(()=>f.requests.some(r=>r.method==='thread/unsubscribe'&&r.params.threadId==='thread-1'));const next=f.service.chat({},user('恢复'),[],context(3),()=>{},()=>{});await until(()=>f.turns.get('thread-1')==='turn-2');f.complete('thread-1','turn-2');assert((await next).ok);assert.equal(f.requests.filter(r=>r.method==='thread/start').length,1);}finally{await f.service.dispose();}
  });
  await test('输入支持本地图片，阅读页不偷附项目文件，旧历史不回放',()=>{const blocks=promptContent([{role:'user',content:'旧'},...user('新')],page);assert.equal(blocks[0].text,'新');assert.deepEqual(blocks[0].text_elements,[]);assert.equal(promptContent([{role:'user',content:[{type:'image_url',image_url:{url:'data:image/png;base64,YQ=='}}]}],page)[0].type,'image');assert.throws(()=>promptContent([{role:'user',content:[{type:'image_url',image_url:{url:'https://example.invalid/a.png'}}]}],page),/本地/);assert.equal(promptContent([{role:'user',content:'读书',_dshAttachments:[{path:'secret',kind:'file',content:'project file'}]}],{projectContext:false}).length,1);});
  await test('混合thought/serverrequest/text早期消息按到达顺序回放，持久化等待不打乱顺序',async()=>{

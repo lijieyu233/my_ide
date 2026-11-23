@@ -71,6 +71,14 @@ function createService(options={}){
     saving=saving.catch(()=>{}).then(async()=>{await fs.mkdir(path.dirname(file),{recursive:true});const temp=file+'.tmp';await fs.writeFile(temp,data,'utf8');await fs.rename(temp,file);});return saving;
   }
   async function locked(key,task){const next=(locks.get(key)||Promise.resolve()).catch(()=>{}).then(task);locks.set(key,next);try{return await next;}finally{if(locks.get(key)===next)locks.delete(key);}}
+  async function releaseIdleThread(session) {
+    const conn = session.conn;
+    if (!session.attached || session.run || session.stopping || conn.rpc.closed) return;
+    try {
+      const { status } = await conn.rpc.request('thread/unsubscribe', { threadId: session.id }, 2000);
+      if (['unsubscribed', 'notLoaded', 'notSubscribed'].includes(status)) session.attached = false;
+    } catch {}
+  }
   function reply(conn,id,result){if(!conn.rpc.closed)try{conn.rpc.reply(id,result);}catch{}}
   function statusEvent(run,phase,text,extra={}){emit(run,{type:'status',phase,text,...(run.session?.id?{nativeThreadId:run.session.id}:{}),...(run.turnId?{turnId:run.turnId}:{}),...extra});}
   function resolveRun(run,result){if(run.settled)return;run.settled=true;clearTimeout(run.timer);clearTimeout(run.warningTimer);run.resolveDone(result);}
@@ -125,7 +133,11 @@ function createService(options={}){
   function notification(conn,message,replaying=false){
     const p=message.params||{},session=[...sessions.values()].find(s=>s.id===p.threadId&&s.conn===conn);if(!session)return;
     const tid=p.turnId||p.turn?.id;
-    if(message.method==='turn/completed'&&session.stopping===tid)session.stopping=null;
+    if (message.method === 'thread/closed') session.attached = false;
+    if (message.method === 'turn/completed' && session.stopping === tid) {
+      session.stopping = null;
+      if (!session.run) void locked(session.key, () => releaseIdleThread(session));
+    }
     const run=session.run;if(!run||run.conn!==conn||!run.accepting||run.settled)return;
     if(run.buffering&&!replaying){enqueue(run,'notification',message);return;}
     if(tid!==run.turnId)return;
@@ -212,7 +224,7 @@ function createService(options={}){
       await load();const runtime=await (options.resolveRuntime||resolveRuntime)(launcher||undefined);if(disposed)throw Error('Codex 连接已关闭');
       const env={...process.env,...runtime.env},home=explicitHome();if(typeof home==='string'&&home){env.CODEX_HOME=home;await fs.mkdir(home,{recursive:true});}
       await fs.mkdir(workspace(),{recursive:true});if(disposed)throw Error('Codex 连接已关闭');
-      const child=(options.spawn||spawn)(runtime.executable,[...(runtime.args||[]),'app-server','--stdio'],{env,cwd:workspace(),stdio:['pipe','pipe','pipe'],windowsHide:true,shell:false});
+      const child=(options.spawn||spawn)(runtime.executable,[...(runtime.args||[]),'app-server','--stdio','-c','thread_unload_delay_secs=1'],{env,cwd:workspace(),stdio:['pipe','pipe','pipe'],windowsHide:true,shell:false});
       const conn={child,rpc:new Rpc(child,options.rpcOptions),launcher,runtime};connection=conn;
       conn.rpc.on('notification',message=>notification(conn,message));conn.rpc.on('request',request=>serverRequest(conn,request));
       conn.rpc.on('closed',()=>{if(child.exitCode==null)child.kill();if(connection===conn)connection=null;for(const session of sessions.values())if(session.conn===conn){session.attached=false;session.stopping=null;if(session.run)resolveRun(session.run,{status:'failed'});}});
@@ -527,14 +539,11 @@ function createService(options={}){
       clearTimeout(run.timer); clearTimeout(run.warningTimer); discardPending(run);
       const session = run.session;
       if (session?.run === run) {
-        if (session.external && session.attached && !session.stopping && !session.conn.rpc.closed) {
-          // Imported threads only need our writer while a MyIDE turn is in flight.
-          try {
-            const release = await session.conn.rpc.request('thread/unsubscribe', { threadId: session.id }, 2000);
-            if (['unsubscribed', 'notLoaded', 'notSubscribed'].includes(release.status)) session.attached = false;
-          } catch {}
-        }
-        session.run = null;
+        await locked(session.key, async () => {
+          session.run = null;
+          // Keep the writer until Codex confirms the turn has ended, including after an interrupt.
+          await releaseIdleThread(session);
+        });
       }
       runs.delete(context.requestId);
     }
