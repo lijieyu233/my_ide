@@ -1055,14 +1055,15 @@ const AiPanel = (() => {
     const interrupted = owner && ['cancelled','failed','incomplete','limited'].includes(owner.status);
     const unknown = counts.unknown > 0 || owner && !active && counts.running > 0;
     const state = counts.running && (!owner || active) ? 'running' : counts.failed ? 'failed' : unknown ? 'unknown' : 'completed';
-    const running = !data.closed && (active || state === 'running');
+    const running = data.codexObserved || !data.closed && (active || state === 'running');
+    if (data.codexActivity) group.classList.toggle('hidden', !data.total && !running);
     group.dataset.state = state;
     group.dataset.phase = running ? 'running' : 'closed';
     group.dataset.outcome = running ? 'running' : interrupted && !data.closed ? 'stopped' : counts.failed ? 'failed' : unknown ? 'unknown' : 'completed';
     // 按截图统一分析阶段标题；工具自身的失败/未知状态单独保留，不等同于请求已结束。
-    data.label.textContent = data.commandSummary ? (state === 'running' ? '正在运行' : '执行命令') + ' · ' + data.commandSummary
+    data.label.textContent = data.codexActivity?.label || (data.commandSummary ? (state === 'running' ? '正在运行' : '执行命令') + ' · ' + data.commandSummary
       : data.total === 1 && data.mediaSummary ? data.mediaSummary
-      : running ? '正在分析请求' : interrupted && !data.closed ? '分析已停止' : unknown ? '分析状态未确认' : '已完成分析';
+      : running ? '正在分析请求' : interrupted && !data.closed ? '分析已停止' : unknown ? '分析状态未确认' : '已完成分析');
     data.status.dataset.state = state;
     data.status.textContent = counts.failed ? counts.failed + ' 次失败' : '';
   }
@@ -1106,27 +1107,28 @@ const AiPanel = (() => {
       data.disconnect = () => { observer.disconnect();observers.delete(observer); };
     }
   }
+  function createToolGroup(key) {
+    const group = document.createElement('details'); group.className = 'ai-tool-group';
+    group.dataset.groupKey = key;
+    group.open = replayToolGroupChoices?.get('group:' + key) === true;
+    const summary = document.createElement('summary'); summary.className = 'ai-tool-group-summary';
+    const icon = document.createElement('span'); icon.className = 'ai-tool-group-icon';
+    icon.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 4c-1-3-5-2-5 1-3 1-2 5 0 5-1 3 3 5 5 2m0-8c1-3 5-2 5 1 3 1 2 5 0 5 1 3-3 5-5 2M8 3v10M4 6l2 2-2 2m8-4-2 2 2 2"/></svg>';
+    const label = document.createElement('span'); label.className = 'ai-tool-group-label';
+    const status = document.createElement('span'); status.className = 'ai-tool-group-status';
+    summary.append(icon, label, status);
+    const scrollport = document.createElement('div'); scrollport.className = 'ai-tool-group-items';
+    const items = document.createElement('div'); items.className = 'ai-tool-group-list'; scrollport.appendChild(items);group.append(summary, scrollport);
+    const owner = !replayDepth && nativeEngine(currentRun?.engine||'standard') && currentRun.status === 'active' ? currentRun : null;
+    const data = { items, scrollport, label, status, owner, restoredScroll:replayToolGroupChoices?.get('scroll:'+key), total:0, counts:{running:0,completed:0,failed:0,unknown:0} };
+    toolGroups.set(group,data); observeActivityGroup(group,data);
+    if (owner) { owner.activityGroups ||= new Set(); owner.activityGroups.add(group); }
+    msgsEl.appendChild(group);
+    return group;
+  }
   function appendToolRow(row) {
     const member = toolRows.get(row), last = msgsEl.lastElementChild;
-    let group = toolGroups.has(last) && !toolGroups.get(last).closed ? last : null;
-    if (!group) {
-      group = document.createElement('details'); group.className = 'ai-tool-group';
-      group.dataset.groupKey = member.key;
-      group.open = replayToolGroupChoices?.get('group:' + member.key) === true;
-      const summary = document.createElement('summary'); summary.className = 'ai-tool-group-summary';
-      const icon = document.createElement('span'); icon.className = 'ai-tool-group-icon';
-      icon.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 4c-1-3-5-2-5 1-3 1-2 5 0 5-1 3 3 5 5 2m0-8c1-3 5-2 5 1 3 1 2 5 0 5 1 3-3 5-5 2M8 3v10M4 6l2 2-2 2m8-4-2 2 2 2"/></svg>';
-      const label = document.createElement('span'); label.className = 'ai-tool-group-label';
-      const status = document.createElement('span'); status.className = 'ai-tool-group-status';
-      summary.append(icon, label, status);
-      const scrollport = document.createElement('div'); scrollport.className = 'ai-tool-group-items';
-      const items = document.createElement('div'); items.className = 'ai-tool-group-list'; scrollport.appendChild(items);group.append(summary, scrollport);
-      const owner = !replayDepth && nativeEngine(currentRun?.engine||'standard') && currentRun.status === 'active' ? currentRun : null;
-      const data = { items, scrollport, label, status, owner, restoredScroll:replayToolGroupChoices?.get('scroll:'+member.key), total:0, counts:{running:0,completed:0,failed:0,unknown:0} };
-      toolGroups.set(group,data); observeActivityGroup(group,data);
-      if (owner) { owner.activityGroups ||= new Set(); owner.activityGroups.add(group); }
-      msgsEl.appendChild(group);
-    }
+    const group = toolGroups.has(last) && !toolGroups.get(last).closed ? last : createToolGroup(member.key);
     const data = toolGroups.get(group);
     data.items.appendChild(row); member.group = group;
     data.total++; data.counts[member.state]++;
@@ -2391,11 +2393,28 @@ const AiPanel = (() => {
     }
     detail.querySelector('pre').textContent = output;
   }
+  function codexActivityBoundary(turnId) {
+    const current = toolGroups.get(msgsEl.lastElementChild);
+    if (turnId && current?.codexTurnId && current.codexTurnId !== turnId) sealActivityGroup();
+  }
+  function renderCodexHistoryActivity(activity) {
+    codexActivityBoundary(activity.turnId);
+    const last = msgsEl.lastElementChild;
+    const group = toolGroups.has(last) && !toolGroups.get(last).closed
+      ? last : createToolGroup(activityKey('codexActivity', activity.id));
+    const data = toolGroups.get(group);
+    data.codexActivity = activity;
+    data.codexTurnId = activity.turnId;
+    group.dataset.codexActivityId = activity.id;
+    paintToolGroup(group);
+  }
   function renderDshActivity(part, toolId){
+    codexActivityBoundary(part.turnId);
     const row=renderToolRow(part.call, toolId);
     const group = toolRows.get(row).group;
     const data = toolGroups.get(group);
     if (part.call.name === 'commandExecution' && !data.owner) {
+      data.codexTurnId = part.turnId || data.codexTurnId;
       data.commandSummary = firstActivityLine(part.call.args?.command);
     }
     if(part.status)setDshToolState(row,part.status);
@@ -2643,6 +2662,7 @@ const AiPanel = (() => {
       if (!msgs.length) { showWelcome(); return; }
       for (let i = 0; i < msgs.length; i++) {
         const m = msgs[i];
+        if (m._codexActivity) { renderCodexHistoryActivity(m._codexActivity); continue; }
         if(Array.isArray(m._dshTimeline)){
           for(let j=0;j<m._dshTimeline.length;j++){
             const part=m._dshTimeline[j];replayActivityPosition=[i,j];
@@ -2700,6 +2720,7 @@ const AiPanel = (() => {
             const next=iterator.next();if(next.done){done=true;break;}
             const {m,i,part,j}=next.value;
             if(part){replayActivityPosition=[i,j];if(part.kind==='text')addMsg('assistant',part.text||'');else if(part.kind==='tool'&&part.call)renderDshActivity(part);else if(part.kind==='codexMedia')renderCodexMedia(part.images, part.label, part.id);else if(['thought','reasoning','projection'].includes(part.kind))renderDshThought(part);}
+            else if (m._codexActivity) renderCodexHistoryActivity(m._codexActivity);
             else if(!m._dshTool&&m.role!=='tool'&&!m.tool_calls){
               if(m.role==='user'){const row=addMsg('user',m._text||(typeof m.content==='string'?m.content:'（含图片的消息）'),{imgs:m._imgs||[]});if(m._ui)row.dataset.mid=m._ui;lastUserAt=i;}
               else if(m._codexMedia){replayActivityPosition=[i,0];renderCodexMedia(m._imgs, m._codexMedia, m._codexMediaId);}
@@ -2791,11 +2812,27 @@ const AiPanel = (() => {
     return codexSelectedHistoryItem()?.running === true;
   }
 
+  let codexObservedGroup = null;
   function renderCodexObservedActivity() {
     const selected = codexSelectedHistoryItem();
     const running = !busy && selected?.running === true && !selected.archived;
+    const view = codexLiveView;
+    const current = running && view?.threadId === selected.threadId && view.ticket === sessionLoadTicket ? view : null;
+    const group = current?.activityId ? [...msgsEl.querySelectorAll('[data-codex-activity-id]')].find(
+      item => item.dataset.codexActivityId === current.activityId
+    ) : null;
+    if (codexObservedGroup && codexObservedGroup !== group) {
+      toolGroups.get(codexObservedGroup).codexObserved = false;
+      paintToolGroup(codexObservedGroup);
+    }
+    if (group) {
+      toolGroups.get(group).codexObserved = true;
+      paintToolGroup(group);
+    }
+    codexObservedGroup = group;
+    const showFallback = running && !group;
     let row = document.getElementById('ai-codex-activity');
-    if (!row && running) {
+    if (!row && showFallback) {
       row = document.createElement('div');
       row.id = 'ai-codex-activity'; row.className = 'ai-run-state running';
       row.setAttribute('role', 'status');
@@ -2803,11 +2840,10 @@ const AiPanel = (() => {
       document.getElementById('ai-runstate')?.after(row);
     }
     if (!row) return;
-    row.classList.toggle('hidden', !running);
-    if (!running) return;
-    const view = codexLiveView, text = row.firstElementChild;
-    const title = view?.threadId === selected.threadId && view.ticket === sessionLoadTicket && view.activity;
-    const label = title || 'Codex 正在运行';
+    row.classList.toggle('hidden', !showFallback);
+    if (!showFallback) return;
+    const text = row.firstElementChild;
+    const label = current?.activity || 'Codex 正在运行';
     if (text.textContent !== label) text.textContent = label;
   }
 
@@ -2837,10 +2873,11 @@ const AiPanel = (() => {
       if (!result?.ok || result.threadId !== threadId || result.localId !== curSessionId ||
           pathKey(result.rootDir) !== pathKey(window.App?.root) || !wanted()) return;
       view.activity = result.activity;
-      renderCodexObservedActivity();
+      view.activityId = result.activityId;
       const next = result.messages;
       const samePrefix = msgs.length <= next.length && msgs.every((message, index) =>
         message.role === next[index].role && message.content === next[index].content && message._codexCommand === next[index]._codexCommand &&
+        message._codexActivity?.id === next[index]._codexActivity?.id && message._codexActivity?.label === next[index]._codexActivity?.label &&
         message._codexMedia === next[index]._codexMedia && message._codexMediaId === next[index]._codexMediaId && (message._imgs?.length || 0) === (next[index]._imgs?.length || 0) &&
         (!message._imgs || message._imgs.every((image, i) => image === next[index]._imgs[i])));
       if (!samePrefix || msgs.length !== next.length) {
@@ -2854,6 +2891,7 @@ const AiPanel = (() => {
         saveSessions(loadSessions().map(session => session.id === result.localId
           ? { ...session, msgs: msgs.slice() } : session));
       }
+      renderCodexObservedActivity();
       view.revision = selected.revision;
       view.observed = running;
     } catch {

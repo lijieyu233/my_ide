@@ -94,7 +94,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  original.items.push({id:'desktop-progress',type:'agentMessage',text:'CODEX_DESKTOP_PROGRESS'});
  const command={id:'desktop-command',type:'commandExecution',command:'codex queue --help token=PRIVATE_TOKEN_FIXTURE access_token=PRIVATE_QUEUE_FIXTURE',status:'inProgress'};
  original.items.push(command, {id:'desktop-picture',type:'imageView',path:picture},
-   {id:'desktop-reasoning',type:'reasoning',summary:['**正在整理图片预览**\n\n补充摘要'],content:['不得显示这段原始内容']});
+   {id:'desktop-reasoning',type:'reasoning',summary:['**早先的摘要标题**','**正在整理图片预览**\n\n补充摘要'],content:['不得显示这段原始内容']});
  await until(()=>js(()=>document.getElementById('ai-msgs').textContent.includes('CODEX_DESKTOP_PROGRESS')),'external commentary appears');
  check('Codex desktop commentary appends in place while the composer waits',await js(()=>
    document.querySelector('#ai-msgs .ai-msg')===window.__codexHistoryRow &&
@@ -128,9 +128,11 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  check('Codex shows native command activity without exposing credentials or executing it locally',await js(()=>{
    const row=document.querySelector('[data-tool-call-id="desktop-command"]');
    const summary=row.closest('.ai-tool-group').querySelector('.ai-tool-group-label').textContent;
-   return summary.includes('正在运行 · codex queue --help')&&!row.textContent.includes('PRIVATE_QUEUE_FIXTURE')&&!row.textContent.includes('PRIVATE_TOKEN_FIXTURE');
+   return summary==='正在整理图片预览'&&row.textContent.includes('codex queue --help')&&
+      !row.textContent.includes('PRIVATE_QUEUE_FIXTURE')&&!row.textContent.includes('PRIVATE_TOKEN_FIXTURE');
  }));
- await until(()=>js(()=>document.getElementById('ai-codex-activity')?.textContent==='正在整理图片预览'&&
+ await until(()=>js(()=>document.querySelector('[data-codex-activity-id="desktop-reasoning"][data-phase="running"] .ai-tool-group-label')?.textContent==='正在整理图片预览'&&
+    document.getElementById('ai-codex-activity').classList.contains('hidden')&&
    document.querySelector('#ai-msgs .ai-tool[data-tool-name="codexMedia"]')),'desktop activity title and image tool row');
  const imageRow=await js(()=>{
    const image=document.querySelector('.ai-tool[data-tool-name="codexMedia"]');
@@ -160,17 +162,30 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
    const setMotion=value=>debuggerSession.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value}]});
    await setMotion('no-preference');
    check('Active Codex title shimmers while the send control remains still',await js(()=>
-     getComputedStyle(document.querySelector('#ai-codex-activity .ai-run-text')).animationName==='ai-text-shimmer'&&
+     getComputedStyle(document.querySelector('[data-codex-activity-id="desktop-reasoning"] .ai-tool-group-label')).animationName==='ai-text-shimmer'&&
      getComputedStyle(document.getElementById('ai-send')).animationName==='none'&&
      !document.getElementById('ai-msgs').textContent.includes('不得显示这段原始内容')));
    await capture('codex-desktop-running');
    await setMotion('reduce');
    check('Codex activity respects reduced motion',await js(()=>
-     getComputedStyle(document.querySelector('#ai-codex-activity .ai-run-text')).animationName==='none'));
+     getComputedStyle(document.querySelector('[data-codex-activity-id="desktop-reasoning"] .ai-tool-group-label')).animationName==='none'));
  } finally {
    await debuggerSession.sendCommand('Emulation.setEmulatedMedia',{features:[]});
    debuggerSession.detach();
  }
+ await js(()=>{
+   const group=document.querySelector('[data-codex-activity-id="desktop-reasoning"]');
+   group.open=true;
+   window.__codexProgressGroup=group;
+ });
+ original.items.push({id:'desktop-next-stage',type:'reasoning',summary:['准备核对','核对裁剪位置']});
+ await until(()=>js(()=>document.querySelector('[data-codex-activity-id="desktop-next-stage"][data-phase="running"] .ai-tool-group-label')?.textContent==='核对裁剪位置'),'desktop stage updates within the tool group');
+ check('A newer Codex title updates its tool group in place and keeps it open',await js(()=>{
+   const group=document.querySelector('[data-codex-activity-id="desktop-next-stage"]');
+   return group===window.__codexProgressGroup&&group.open&&
+     !!group.querySelector('[data-tool-call-id="desktop-command"]')&&
+     document.getElementById('ai-codex-activity').classList.contains('hidden');
+ }));
  command.status='completed';
  original.items.push({id:'desktop-final',type:'agentMessage',text:'CODEX_DESKTOP_FINAL'});
  original.desktopRunning=false;
@@ -179,7 +194,10 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  check('Codex desktop completion syncs exactly once without another turn',
    fixture.requests.filter(r=>r.method==='turn/start').length===beforeDesktopTurn && await js(()=>
      [...document.querySelectorAll('#ai-msgs .ai-msg')].filter(node=>node.textContent.includes('CODEX_DESKTOP_FINAL')).length===1));
- check('Codex desktop completion unlocks sending and hides the activity title',await js(()=>document.getElementById('ai-input').value==='等待桌面完成的草稿'&&document.getElementById('ai-codex-activity').classList.contains('hidden')));
+ check('Codex desktop completion keeps the draft and the stage title with its tools',await js(()=>
+    document.getElementById('ai-input').value==='等待桌面完成的草稿'&&
+    document.getElementById('ai-codex-activity').classList.contains('hidden')&&
+    document.querySelector('[data-codex-activity-id="desktop-next-stage"][data-phase="closed"] .ai-tool-group-label')?.textContent==='核对裁剪位置'));
  check('Codex keeps the image preview expanded through a desktop history refresh',await js(()=>{
    const image=document.querySelector('.ai-tool[data-tool-name="codexMedia"]');
    return image?.open&&image.querySelector('img').checkVisibility();

@@ -113,24 +113,31 @@ async function assertThreadIdle(request, thread) {
 }
 
 function activityTitle(summary) {
-  const text = Array.isArray(summary) ? summary.find(part => typeof part === 'string' && part.trim()) : summary;
+  const text = Array.isArray(summary) ? summary.findLast(part => typeof part === 'string' && part.trim()) : summary;
   if (typeof text !== 'string') return '';
   const line = text.trim().split(/\r?\n/, 1)[0];
   return (line.match(/^\s*\*\*(.+?)\*\*/)?.[1] || line.replace(/^(?:#+|[-*])\s+/, '')).trim().slice(0, 120);
 }
 
 async function readMessages(request, thread, redact) {
-  let chars = 0, commands = 0, deferredReads = 0, activity = '', latestTurn, inLatestTurn = true;
+  let chars = 0, commands = 0, titles = 0, deferredReads = 0, activity = '', activityId = '', latestTurn, inLatestTurn = true, runningCommand = false;
   const messages = [], readMedia = createMediaReader();
   const append = async (item, turnId) => {
     if (!item) return true;
     latestTurn ??= turnId;
-    if (inLatestTurn && turnId === latestTurn) {
-      if (item.type === 'userMessage') inLatestTurn = false;
-      else if (!activity && item.type === 'reasoning') activity = redact(activityTitle(item.summary));
-      else if (!activity && item.type === 'commandExecution' && item.status === 'inProgress') activity = '正在执行命令';
+    const latest = inLatestTurn && turnId === latestTurn;
+    if (latest && item.type === 'userMessage') inLatestTurn = false;
+    if (latest && item.type === 'commandExecution' && item.status === 'inProgress') runningCommand = true;
+    if (item.type === 'reasoning') {
+      if (titles >= 32) return true;
+      const label = redact(activityTitle(item.summary));
+      const id = typeof item.id === 'string' ? item.id.slice(0, 200) : '';
+      if (!label || !id) return true;
+      if (latest && !activityId) { activity = label; activityId = id; }
+      messages.push({ role: 'assistant', content: '', _codexActivity: { id, label, turnId } });
+      titles++;
+      return messages.length < maxMessages;
     }
-    if (item.type === 'reasoning') return true;
     const imgs = await readMedia(item);
     if (imgs.length && item.type !== 'userMessage') {
       const _codexMedia = mediaLabel(item, imgs.length);
@@ -142,7 +149,7 @@ async function readMessages(request, thread, redact) {
       const command = redact(item.command).slice(0, 1600);
       const status = item.status === 'inProgress' ? 'in_progress' : item.status === 'completed' ? 'completed' : 'failed';
       messages.push({ role: 'assistant', content: '', _codexCommand: JSON.stringify([item.id, status, command]),
-        _dshTimeline: [{ kind: 'tool', call: { id: item.id, name: 'commandExecution', args: { command } }, status }] });
+        _dshTimeline: [{ kind: 'tool', call: { id: item.id, name: 'commandExecution', args: { command } }, status, turnId }] });
       commands++;
       return messages.length < maxMessages;
     }
@@ -179,7 +186,7 @@ async function readMessages(request, thread, redact) {
       }
     }
   }
-  return { messages: messages.reverse(), activity };
+  return { messages: messages.reverse(), activity: activity || (runningCommand ? '正在执行命令' : ''), activityId };
 }
 
 module.exports = { isProjectThread, listProjects, listProjectThreads, findProjectThread, readProjectThread, threadSummary, readMessages, activityTitle, assertThreadIdle, assertIdle };
