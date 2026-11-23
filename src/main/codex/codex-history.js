@@ -2,6 +2,8 @@ const path = require('node:path');
 const { createMediaReader, isMediaItem, mediaLabel } = require('./codex-media');
 
 const nativeId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+const myideInputId = /^myide-input-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+const inputId = value => typeof value === 'string' && myideInputId.test(value) ? value : undefined;
 const accountThreads = {
   currentAccountOnly: true,
   useStateDbOnly: true,
@@ -98,7 +100,7 @@ async function readProjectThread(request, threadId, archived = false) {
 
 function assertIdle(thread, latestTurn) {
   if (thread.status?.type === 'active' || latestTurn?.status === 'inProgress') {
-    throw Error('此 Codex 会话仍在运行，请等当前轮次结束');
+    throw Object.assign(Error('此 Codex 会话仍在运行，请等当前轮次结束'), { kind: 'threadBusy' });
   }
 }
 
@@ -162,7 +164,9 @@ async function readMessages(request, thread, redact) {
       (item.content || []).filter(block => block.type === 'text').map(block => block.text).join('\n');
     if (typeof text !== 'string' || !text.trim() && !imgs.length) return true;
     const content = text.slice(0, Math.min(120000, maxHistoryChars - chars));
-    messages.push({ role, content, ...(imgs.length ? { _imgs: imgs } : {}) });
+    const submissionId = role === 'user' ? inputId(item.clientId) : undefined;
+    messages.push({ role, content, ...(imgs.length ? { _imgs: imgs } : {}),
+      ...(submissionId ? { _codexInputId: submissionId } : {}) });
     chars += content.length;
     return messages.length < maxMessages && chars < maxHistoryChars;
   };
@@ -192,4 +196,4 @@ async function readMessages(request, thread, redact) {
   return { messages: messages.reverse(), activity: activity || (runningCommand ? '正在执行命令' : ''), activityId };
 }
 
-module.exports = { provisionalProjectKey, isProjectThread, listProjects, listProjectThreads, findProjectThread, readProjectThread, threadSummary, readMessages, activityTitle, assertThreadIdle, assertIdle };
+module.exports = { provisionalProjectKey, isProjectThread, listProjects, listProjectThreads, findProjectThread, readProjectThread, threadSummary, readMessages, activityTitle, assertThreadIdle, assertIdle, inputId };

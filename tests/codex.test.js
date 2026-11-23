@@ -53,7 +53,15 @@ function fixture(config={}){
    }else if(r.method==='thread/turns/list'&&config.history){
      assert.equal(p.itemsView,'notLoaded');
      send(c,{id:r.id,result:{data:[{status:config.activeHistory?'inProgress':'completed'}],nextCursor:null}});
+   }else if(r.method==='thread/queue/add'&&config.history){
+     const {threadId,clientUserMessageId,input}=p;
+     assert(config.history.some(thread=>thread.id===threadId));
+     send(c,{id:r.id,result:{queuedSubmission:{id:'queued-fixture',clientUserMessageId,input}}});
    }else if(r.method==='thread/start'||r.method==='thread/resume'){
+    if(r.method==='thread/resume'&&config.writerLocked){
+     send(c,{id:r.id,error:{code:-32600,message:'thread '+p.threadId+' already has an active writer'}});
+     continue;
+    }
     const id=r.method==='thread/start'?'thread-'+ ++counter:p.threadId,savedCwd=config.map&&fs.existsSync(config.map)?Object.values(JSON.parse(fs.readFileSync(config.map,'utf8'))).find(v=>v.id===id)?.cwd:null,cwd=config.wrongCwd||p.cwd||threads.get(id)?.cwd||savedCwd||temp,model=r.method==='thread/start'?(p.model||'native-model'):(config.resumeModel||'native-model');threads.set(id,{id,cwd,model});
     send(c,{id:r.id,result:{thread:{id:config.wrongId?'wrong-id':id,cwd},cwd,model,reasoningEffort:'medium'}});
    }else if(r.method==='turn/start'){
@@ -200,6 +208,32 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
   fs.utimesSync(file,earlier,earlier);
   assert.equal((await probe(home,item)).running,false);
   assert.deepEqual(await probe(path.join(temp,'other-codex-home'),item),{running:false});
+ });
+ await test('旧运行状态收到原生空闲回执后，已确认占用的本地会话仍可入原队列',async()=>{
+  const id='019caa00-0000-7000-8000-000000000008';
+  const root=fs.realpathSync(temp);
+  const c=context(1,{sessionId:'myide-created-before-taking-writer',rootId:root});
+  const map=path.join(temp,'local-to-desktop-history.json');
+  const normalized=process.platform==='win32'?root.toLowerCase():root;
+  const key=JSON.stringify([c.sessionId,normalized,'project']);
+  fs.writeFileSync(map,JSON.stringify({[key]:{id,cwd:root,model:'native-model'}}));
+  const config={map,writerLocked:true,history:[{id,cwd:root,historyMode:'paginated',status:{type:'notLoaded'}}]};
+  const f=fixture(config);
+  const [message]=user('续聊原会话');
+  try{
+   const target={threadId:id,sessionId:c.sessionId};
+   const requestId='myide-input-019caa00-0000-7000-8000-000000000010';
+   assert.deepEqual(await f.service.changeInput({},c,target,{kind:'queue',requestId,message,checkIdle:true}),
+    {ok:true,idle:true});
+   assert(!f.requests.some(r=>r.method==='thread/queue/add'||r.method==='turn/start'));
+   const result=await f.service.chat({codexQueueOnConflict:true},[message],[],c);
+   assert.equal(result.status,'queued');
+   assert.equal(result.threadId,id);
+   const submissions=f.requests.filter(r=>r.method==='thread/queue/add');
+   assert.equal(submissions.length,1);
+   assert.equal(submissions[0].params.clientUserMessageId,result.clientUserMessageId);
+   assert(!f.requests.some(r=>r.method==='thread/start'||r.method==='turn/start'));
+  }finally{await f.service.dispose();}
  });
  await test('从当前账号读取 Codex 原生历史，续聊只恢复同一个线程',async()=>{
   const id='019caa00-0000-7000-8000-000000000001',history=[{id,projectId:'desktop-a',cwd:temp,name:'外部会话',model:'native-model',historyMode:'paginated',status:{type:'notLoaded'}}];

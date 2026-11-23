@@ -237,14 +237,14 @@ const AiPanel = (() => {
   const dshScopeMismatch = () => !!dshSessionAccess && dshSessionAccess.scope !== dshScope();
   const dshScopeError = () => dshScope() === 'reader' ? '阅读页使用独立对话，请新建会话' : '当前是阅读页的独立对话，请新建项目会话';
   const dshModelUnavailable = () => dshConfigOptions.find(option=>option.id==='model')?.available === false;
-  const dshCanSend = () => !nativeEngine() || !codexObservedRunning() && (getConfig().engine!=='codex'||dshOptionsState==='ready') && !historyReplayJob && (!dshSessionAccess || dshSessionAccess.state === 'ready' && !dshScopeMismatch()) && !dshModelUnavailable();
-  function rejectDshSend() {
-    if (codexObservedRunning()) return true;
+  const dshCanSend = (codexIdle = false) => !nativeEngine() || (codexIdle || !codexObservedRunning()) && (getConfig().engine!=='codex'||dshOptionsState==='ready') && !historyReplayJob && (!dshSessionAccess || dshSessionAccess.state === 'ready' && !dshScopeMismatch()) && !dshModelUnavailable();
+  function rejectDshSend(codexIdle = false) {
+    if (!codexIdle && codexObservedRunning()) return true;
     if (codexSelectedHistoryItem()?.archived) {
       MI.toast('请先取消归档再发送', 'err');
       return true;
     }
-    if (dshCanSend()) return false;
+    if (dshCanSend(codexIdle)) return false;
     MI.toast(dshScopeMismatch() ? dshScopeError() : dshSessionAccess?.state === 'loading' ? '正在读取并确认 DSH 会话，请稍后发送' : dshSessionAccess && dshSessionAccess.state !== 'ready' ? dshSessionAccess.error || '无法确认续聊身份，请重新连接或新建对话' : '原模型不可用，请先选择可用模型后再发送', 'err');
     return true;
   }
@@ -2212,29 +2212,55 @@ const AiPanel = (() => {
     const refresh=document.createElement('button');refresh.type='button';refresh.className='ai-queue-action';refresh.textContent='刷新';refresh.disabled=!target||nativeInputPending;refresh.onclick=()=>refreshNativeQueue();head.appendChild(refresh);box.appendChild(head);
     for(const item of items){
       const row=document.createElement('div');row.className='ai-queue-item';row.dataset.queueId=item.id;
-      const mode=document.createElement('span');mode.className='ai-queue-mode';mode.textContent=item.mode==='steer'?'下一步':'下一轮';const text=document.createElement('span');text.className='ai-queue-text';text.textContent=item.text||'（图片或附件）';text.title=text.textContent;row.append(mode,text);
+      const mode=document.createElement('span');mode.className='ai-queue-mode';mode.textContent=item.syncing?'确认中':item.mode==='steer'?'下一步':'下一轮';const text=document.createElement('span');text.className='ai-queue-text';text.textContent=item.text||'（图片或附件）';text.title=text.textContent;row.append(mode,text);
       const add=(name,kind,disabled=false)=>{const button=document.createElement('button');button.type='button';button.className='ai-queue-action';button.textContent=name;button.disabled=!target||nativeInputPending||disabled;button.dataset.queueAction=kind;button.onclick=()=>updateNativeQueue(item,kind);row.appendChild(button);};
-      if(item.editable)add('编辑','edit');if(!codex&&item.mode==='queue'&&running)add('插入','steer',target?.kind==='run'?!currentRun?.inputActive:!dshWatch?.state?.running);add('撤回','remove');box.appendChild(row);
+      if(item.editable)add('编辑','edit');if(!codex&&item.mode==='queue'&&running)add('插入','steer',target?.kind==='run'?!currentRun?.inputActive:!dshWatch?.state?.running);if (!item.syncing) add('撤回','remove');box.appendChild(row);
     }
     for(const item of failed){const row=document.createElement('div');row.className='ai-queue-item ai-queue-failed';const text=document.createElement('span');text.className='ai-queue-text';text.textContent='待确认／可恢复：'+item.draft.text;text.title=item.error;const restore=document.createElement('button');restore.type='button';restore.className='ai-queue-action';restore.textContent='恢复草稿';restore.onclick=async()=>{if(inputEl.value.trim()&&inputEl.value!==item.draft.raw&&(!await Modal.confirm('恢复草稿','输入框已有其他内容，确定替换为这条未确认的消息？')))return;if(item.draft.scope!==inputScopeKey())return;inputEl.value=item.draft.raw;pendingImages=item.draft.imgs.slice();autoGrowInput();renderImages();nativeInputRequests.delete(item.requestId);renderNativeInputUI();};row.append(text,restore);box.appendChild(row);}
   }
-  function rememberCodexSubmission(key, itemId, text) {
+  const codexReceiptWaitMs = 60_000;
+  function rememberCodexSubmission(key, itemId, clientUserMessageId, text) {
     // A list response started before the submission may omit its confirmed receipt.
     nativeQueueReadTicket++;
-    const current = codexQueue?.key === key ? codexQueue.value?.items || [] : [];
-    const items = current.some(item => item.id === itemId) ? current : [...current, { id: itemId, mode: 'queue', text }];
-    codexQueue = { key, value: { available: true, items }, followUntil: Date.now() + 15000 };
+    if (codexQueue?.key !== key) codexQueue = { key, receipts: new Map(), value: { available: true, items: [] } };
+    const item = { id: itemId, mode: 'queue', text, clientUserMessageId };
+    codexQueue.receipts.set(itemId, { item, missingSince: null });
+    if (!codexQueue.value.items.some(previous => previous.id === itemId)) codexQueue.value.items.push(item);
+  }
+  function acknowledgedCodexInputs(messages = msgs) {
+    return new Set(messages.map(message => message._codexInputId).filter(Boolean));
+  }
+  function reconcileCodexReceipts(messages) {
+    if (codexQueue?.key !== inputViewKey()) return;
+    const accepted = acknowledgedCodexInputs(messages);
+    const items = codexQueue.value.items.filter(item => !accepted.has(item.clientUserMessageId));
+    if (items.length === codexQueue.value.items.length) return;
+    for (const [id, receipt] of codexQueue.receipts) {
+      if (accepted.has(receipt.item.clientUserMessageId)) codexQueue.receipts.delete(id);
+    }
+    codexQueue.value.items = items;
+    renderNativeInputUI();
   }
   function acceptNativeQueue(result,target){
     if(!result.queue)return;
     if (target.kind === 'codex') {
-      const key = inputViewKey();
-      const previous = codexQueue?.key === key ? codexQueue : null;
-      const followUntil = result.queue.items.length ? Date.now() + 15000 : previous?.followUntil || 0;
-      const nextIds = new Set(result.queue.items.map(item => item.id));
-      const changed = previous?.value?.items.some(item => !nextIds.has(item.id));
-      codexQueue = { key, value: result.queue, followUntil };
-      if (changed) void syncCodexLiveHistory(codexSelectedHistoryItem(), getConfig(), { refresh: true });
+      const key = inputViewKey(), accepted = acknowledgedCodexInputs();
+      if (codexQueue?.key !== key) codexQueue = { key, receipts: new Map() };
+      const items = result.queue.items.filter(item => !accepted.has(item.clientUserMessageId));
+      const queued = new Set(items.map(item => item.id)), now = Date.now();
+      for (const [id, receipt] of codexQueue.receipts) {
+        if (accepted.has(receipt.item.clientUserMessageId)) {
+          codexQueue.receipts.delete(id);
+        } else if (queued.has(id)) {
+          receipt.missingSince = null;
+        } else {
+          receipt.missingSince ??= now;
+          if (now - receipt.missingSince < codexReceiptWaitMs) items.push({ ...receipt.item, syncing: true });
+          else codexQueue.receipts.delete(id);
+        }
+      }
+      codexQueue.value = { ...result.queue, items };
+      if (items.some(item => item.syncing)) void syncCodexLiveHistory(codexSelectedHistoryItem(), getConfig(), { refresh: true });
     }
     else if(target.kind==='run'){if(currentRun?.stream&&identityMatches(target.context,currentRun.stream.context))currentRun.inputQueue=result.queue;}
     else if(dshWatch?.watchId===target.watchId)dshWatch.state={...dshWatch.state,queue:result.queue};
@@ -2263,7 +2289,10 @@ const AiPanel = (() => {
         nativeInputPending = true; renderNativeInputUI();
         const result = await window.myIDE.ai.codexInput(getConfig(), target, { kind, itemId: item.id });
         if (!result?.ok) throw Error(result?.error || '撤回失败');
-        if (key === inputViewKey()) await refreshNativeQueue();
+        if (key === inputViewKey()) {
+          if (codexQueue?.key === key) codexQueue.receipts.delete(item.id);
+          await refreshNativeQueue();
+        }
       } catch (error) { if (key === inputViewKey()) MI.toast(error.message, 'err'); }
       finally { nativeInputPending = false; renderNativeInputUI(); }
       return;
@@ -2273,32 +2302,43 @@ const AiPanel = (() => {
     nativeInputPending=true;renderNativeInputUI();
     try{const result=await window.myIDE.ai.dshQueueUpdate(getConfig(),target,{itemId:item.id,kind,...(kind==='edit'?{text}: {})});if(!result?.ok||result.accepted!==true)throw Error(result?.error||'原生队列未确认修改');const pending=nativeInputRequests.get(item.requestId);if(pending&&kind==='edit'){pending.draft={...pending.draft,text,raw:text,imgs:[],message:{role:'user',content:text,_text:text,_imgs:[],_dshAttachments:[]}};}if(pending&&kind==='remove')nativeInputRequests.delete(item.requestId);if(key===inputViewKey())acceptNativeQueue(result,target);}catch(error){if(key===inputViewKey())MI.toast(error.message,'err');}finally{nativeInputPending=false;renderNativeInputUI();}
   }
-  async function submitCodexInput(mode) {
+  async function submitCodexInput(mode, checkIdle = false) {
     const target = nativeInputTarget(), draft = freezeInputDraft();
     if (!target || !draft || mode === 'steer' && !target.run) return;
     const requestId = 'myide-input-' + window.crypto.randomUUID();
     const item = mode === 'steer' ? { requestId, draft, run: currentRun, rendered: false } : null;
     if (item) nativeInputRequests.set(requestId, item);
     nativeInputPending = true; renderNativeInputUI();
+    let idle = false;
     try {
-      const result = await window.myIDE.ai.codexInput(getConfig(), target, { kind: mode, requestId, message: draft.message });
+      const result = await window.myIDE.ai.codexInput(getConfig(), target, {
+        kind: mode, requestId, message: draft.message, ...(checkIdle ? { checkIdle } : {}),
+      });
       if (!result?.ok) throw Error(result?.error || 'Codex 未确认接收');
-      if (item) item.accepted = true;
-      clearAcceptedDraft(draft);
-      if (item?.rendered) nativeInputRequests.delete(requestId);
-      if (mode === 'queue' && draft.key === inputViewKey()) {
-        rememberCodexSubmission(draft.key, result.itemId, draft.text);
-        msgsEl.querySelector('.ai-codex-rejected')?.remove();
-        void refreshNativeQueue(true);
+      idle = checkIdle && result.idle === true;
+      if (!idle) {
+        if (item) item.accepted = true;
+        clearAcceptedDraft(draft);
+        if (item?.rendered) nativeInputRequests.delete(requestId);
+        if (mode === 'queue' && draft.key === inputViewKey()) {
+          rememberCodexSubmission(draft.key, result.itemId, requestId, draft.text);
+          msgsEl.querySelector('.ai-codex-rejected')?.remove();
+          void refreshNativeQueue(true);
+        }
       }
     } catch (error) {
       if (item) nativeInputRequests.delete(requestId);
       if (draft.key === inputViewKey()) MI.toast(error.message, 'err');
     } finally { nativeInputPending = false; renderNativeInputUI(); }
+    // The preflight has performed no write. Reuse the click only while the original draft is still selected.
+    if (idle && draft.key === inputViewKey() && draft.revision === inputDraftRevision && draft.raw === inputEl.value &&
+        draft.imgs.length === pendingImages.length && draft.imgs.every((image, i) => image === pendingImages[i])) {
+      await send({ codexIdle: true });
+    }
   }
-  async function submitRunningInput(mode='queue'){
+  async function submitRunningInput(mode='queue', checkIdle = false){
     if(nativeInputPending)return;
-    if (getConfig().engine === 'codex') return submitCodexInput(mode);
+    if (getConfig().engine === 'codex') return submitCodexInput(mode, checkIdle);
     if(rejectDshSend())return;
     const target=nativeInputTarget(),draft=freezeInputDraft();if(!target||!draft)return;
     if(target.kind==='watch'){
@@ -2316,7 +2356,7 @@ const AiPanel = (() => {
     finally{if(item.rendered)nativeInputRequests.delete(requestId);else if(run.status!=='active'&&!item.error)item.error='消息接受与运行结束同时发生，消费状态未知。请先刷新原生队列确认，再决定是否恢复草稿。';nativeInputPending=false;renderNativeInputUI();}
   }
   async function send(inputOptions) {
-    if (busy || getConfig().engine === 'codex' && nativeInputPending || rejectDshSend()) return;
+    if (busy || getConfig().engine === 'codex' && nativeInputPending || rejectDshSend(inputOptions?.codexIdle)) return;
     const text = (inputEl.value || '').trim();
     if (!text) return;
     const cfg = getConfig();
@@ -2328,6 +2368,7 @@ const AiPanel = (() => {
     busy = true;
     setBusyUI(true);
     const run = beginRun();
+    if (inputOptions?.codexIdle) run.inputTransport = { codexQueueOnConflict: true };
     if(inputOptions?.draft){run.initialInputDraft=inputOptions.draft;run.inputTransport={dshWatchId:inputOptions.dshWatchId,dshInputMode:inputOptions.dshInputMode,expectedRunId:inputOptions.expectedRunId};}
     if (!run.initialInputDraft && cfg.engine !== 'codex') await followActive();
     if (!runIsLive(run)) return;
@@ -2454,11 +2495,11 @@ const AiPanel = (() => {
     const draft = run.codexDraft;
     if (!draft) return false;
     const queued = result?.status === 'queued' && result.ok === true;
-    const occupied = result?.errorCode === 'threadInUse' && result.rejectedBeforeTurn;
+    const occupied = ['threadInUse','threadBusy'].includes(result?.errorCode) && result.rejectedBeforeTurn;
     if (!queued && !occupied) return false;
     if (queued) {
       removeCodexDraftMessage(draft);
-      if (!backgroundView) rememberCodexSubmission(draft.key, result.itemId, draft.raw.trim());
+      if (!backgroundView) rememberCodexSubmission(draft.key, result.itemId, result.clientUserMessageId, draft.raw.trim());
     } else {
       if (!recoverRejectedCodexDraft(run, result)) {
         removeCodexDraftMessage(draft);
@@ -2869,11 +2910,10 @@ const AiPanel = (() => {
     }
     const view = codexLiveView;
     const running = selected.running === true;
-    const waitingForQueuedReply = codexQueue?.key === inputViewKey() && codexQueue.followUntil > Date.now();
-    const unchanged = selected.revision && view.revision === selected.revision;
+    const waitingForQueuedReply = codexQueue?.key === inputViewKey() && codexQueue.value.items.some(item => item.syncing);
+    const unchanged = selected.revision ? view.revision === selected.revision : !running;
     if (view.pending || historyReplayJob) return;
-    if (!refresh && (!running && !view.observed && (!waitingForQueuedReply || unchanged) ||
-        running && view.observed && unchanged)) return;
+    if (!refresh && !waitingForQueuedReply && unchanged && running === view.observed) return;
     const wanted = () => codexLiveView === view && !busy && sessionLoadTicket === ticket &&
       sessKey() === scope && currentCodexCatalog()?.launcher === launcher &&
       codexSelectedHistoryItem()?.threadId === threadId && !codexSelectedHistoryItem()?.archived;
@@ -2889,6 +2929,7 @@ const AiPanel = (() => {
       const next = result.messages;
       const samePrefix = msgs.length <= next.length && msgs.every((message, index) =>
         message.role === next[index].role && message.content === next[index].content && message._codexCommand === next[index]._codexCommand &&
+        message._codexInputId === next[index]._codexInputId &&
         message._codexActivity?.id === next[index]._codexActivity?.id && message._codexActivity?.label === next[index]._codexActivity?.label &&
         message._codexMedia === next[index]._codexMedia && message._codexMediaId === next[index]._codexMediaId && (message._imgs?.length || 0) === (next[index]._imgs?.length || 0) &&
         (!message._imgs || message._imgs.every((image, i) => image === next[index]._imgs[i])));
@@ -2903,6 +2944,7 @@ const AiPanel = (() => {
         saveSessions(loadSessions().map(session => session.id === result.localId
           ? { ...session, msgs: msgs.slice() } : session));
       }
+      reconcileCodexReceipts(next);
       renderCodexObservedActivity();
       view.revision = selected.revision;
       view.observed = running;
@@ -5325,7 +5367,7 @@ const AiPanel = (() => {
     if (sendBtn) {
       sendBtn.onclick = () => {
         if (busy || dshObservedRunning()) { stopVisibleRun(); return; }
-        if (codexPrimaryQueues()) { void submitRunningInput('queue'); return; }
+        if (codexPrimaryQueues()) { void submitRunningInput('queue', true); return; }
         send();
       };
     }
@@ -5346,7 +5388,7 @@ const AiPanel = (() => {
         if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
           e.preventDefault();
           if (codexPrimaryQueues()) {
-            if (!e.altKey) void submitRunningInput('queue');
+            if (!e.altKey) void submitRunningInput('queue', true);
           } else if(codexRunningInput() || getConfig().engine==='dsh'&&(busy||dshObservedRunning()))submitRunningInput(e.altKey?'steer':'queue');
           else if (!busy) send();
         }

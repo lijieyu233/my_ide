@@ -257,22 +257,35 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
    document.getElementById('ai-input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
  });
  await until(()=>js(()=>document.querySelector('#ai-input-queue .ai-queue-text')?.textContent.includes('HOLD_CODEX 续接桌面会话')),'Enter queues the original draft on an idle occupied thread');
- original.inputQueue=[];
- original.items.push({id:'fast-queued-reply',type:'agentMessage',text:'CODEX_FAST_QUEUED_REPLY'});
- await until(()=>js(()=>document.getElementById('ai-msgs').textContent.includes('CODEX_FAST_QUEUED_REPLY')),'fast queued reply appears');
- check('An occupied chat accepts a queued continuation and syncs its reply between running polls',
+ const claimedSubmission=original.inputQueue.shift();
+ await until(()=>js(()=>document.querySelector('#ai-input-queue .ai-queue-mode')?.textContent==='确认中'),
+   'a removed queue item waits for the exact native message');
+ original.items.push({id:'fast-queued-user',type:'userMessage',clientId:claimedSubmission.clientUserMessageId,
+   content:claimedSubmission.input},{id:'fast-queued-reply',type:'agentMessage',text:'CODEX_FAST_QUEUED_REPLY'});
+ await until(()=>js(()=>document.getElementById('ai-msgs').textContent.includes('CODEX_FAST_QUEUED_REPLY')&&
+   document.getElementById('ai-input-queue').classList.contains('hidden')),'exact echo and fast queued reply appear');
+ check('An occupied chat syncs exactly one queued message and its reply after the queue disappears',
    fixture.requests.filter(r=>r.method==='turn/start').length===beforeDesktopTurn&&
-   await js(()=>!document.querySelector('.ai-hist-row.cur.running')));
+   await js(()=>!document.querySelector('.ai-hist-row.cur.running')&&
+     [...document.querySelectorAll('#ai-msgs .ai-user')].filter(row=>row.textContent.includes('HOLD_CODEX 续接桌面会话')).length===1));
  original.writerLocked=false;
+ original.desktopRunning=true;
+ await until(()=>js(()=>!!document.querySelector('.ai-hist-row.cur.running')),'catalog observes the desktop running state');
+ // The owner finishes before MyIDE sees the next catalog update.
+ original.desktopRunning=false;
+ const queuedBeforeIdle=fixture.requests.filter(r=>r.method==='thread/queue/add').length;
  await js(()=>{
    const input=document.getElementById('ai-input');input.value='HOLD_CODEX 续接桌面会话';input.dispatchEvent(new Event('input',{bubbles:true}));
    document.getElementById('ai-send').click();return true;
  });
  await until(()=>fixture.requests.some(r=>r.method==='turn/start'&&r.params.threadId===externalId),'external continuation');
- check('Codex sidebar continuation resumes the exact thread without replaying the old prompt',fixture.requests.some(r=>r.method==='thread/resume'&&r.params.threadId===externalId)&&fixture.requests.filter(r=>r.method==='thread/start').length===1&&fixture.requests.find(r=>r.method==='turn/start'&&r.params.threadId===externalId).params.input[0].text==='HOLD_CODEX 续接桌面会话');
+ check('Codex sends into the exact idle thread even if the sidebar still shows running',
+   fixture.requests.filter(r=>r.method==='thread/queue/add').length===queuedBeforeIdle&&fixture.requests.some(r=>r.method==='thread/resume'&&r.params.threadId===externalId)&&fixture.requests.filter(r=>r.method==='thread/start').length===1&&fixture.requests.find(r=>r.method==='turn/start'&&r.params.threadId===externalId).params.input[0].text==='HOLD_CODEX 续接桌面会话');
  await js(()=>{document.getElementById('ai-send').click();return true;});
  await until(()=>fixture.requests.some(r=>r.method==='turn/interrupt'&&r.params.threadId===externalId),'external interrupt');
- await until(()=>js(()=>AiPanel.__testParked().currentRun!=='active'),'original stopped after retry');
+ await until(()=>fixture.requests.some(r=>r.method==='thread/unsubscribe'&&r.params.threadId===externalId)&&
+   js(()=>AiPanel.__testParked().currentRun==='cancelled'&&AiPanel.aiState().dshSession.canSend),
+   'original stopped, released and refreshed after retry');
  original.writerLocked=true;
  await js(()=>AiPanel.ask('HOLD_CODEX 接着讨论'));
  await until(()=>js(()=>AiPanel.__testParked().currentRun==='occupied'&&document.getElementById('ai-input').value==='HOLD_CODEX 接着讨论'),'original writer locked again');

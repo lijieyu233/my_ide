@@ -479,17 +479,23 @@ function createService(options={}){
       let attached;
       try { attached = await attach(conn,cfg,context,tools,run,data,info,permission.thread); }
       catch (error) {
-        // The native queue inherits the existing owner's permissions and model. Only a confirmed
-        // writer rejection, with full access already granted and no pending model switch, can use it automatically.
-        if (error.kind !== 'threadInUse' || error.rpcMethod !== 'thread/resume' || error.rpcResponseReceived !== true ||
-            permission.thread.sandbox !== 'danger-full-access' || info.scope !== 'project' ||
-            !binding?.external || saved.get(info.key) !== binding || pendingChoices.has(info.key)) throw error;
+        // Queue input inherits the writer's configuration. Only an explicit queue click or full access
+        // authorizes that fallback after verifying the same imported session and its ownership conflict.
+        const sessionBusy = error.kind === 'threadBusy' || (error.kind === 'threadInUse' &&
+          error.rpcMethod === 'thread/resume' && error.rpcResponseReceived === true);
+        const queueAllowed = cfg.codexQueueOnConflict === true || permission.thread.sandbox === 'danger-full-access';
+        if (!sessionBusy || !queueAllowed || info.scope !== 'project' ||
+            !binding?.id || binding.blocked || saved.get(info.key) !== binding || pendingChoices.has(info.key)) throw error;
+        const request = historyRequest(conn);
+        if (!binding.external) {
+          const listed = await history.findProjectThread(request, binding.id);
+          if (!listed || norm(await projectThreadRoot(listed)) !== norm(info.cwd)) throw error;
+        }
         live(run);
         queueing = true;
-        const itemId = await enqueueInput(historyRequest(conn), {
-          threadId: binding.id, input, clientUserMessageId: 'myide-input-' + crypto.randomUUID(),
-        });
-        return { ...result('queued'), ok: true, threadId: binding.id, itemId };
+        const clientUserMessageId = 'myide-input-' + crypto.randomUUID();
+        const itemId = await enqueueInput(request, { threadId: binding.id, input, clientUserMessageId });
+        return { ...result('queued'), ok: true, threadId: binding.id, itemId, clientUserMessageId };
       }
       const {session,model,effort,pending} = attached;
       live(run);
@@ -573,13 +579,24 @@ function createService(options={}){
       const listed = await history.findProjectThread(historyRequest(conn), record.id);
       if (!listed || norm(await projectThreadRoot(listed)) !== norm(info.cwd)) throw Error('无法核对原 Codex 会话');
       threadId = record.id;
+      if (action.kind === 'queue' && action.checkIdle === true) {
+        const request = historyRequest(conn);
+        try {
+          await history.assertThreadIdle(request, listed);
+          // The renderer may be holding an older "running" state. No input has been enqueued yet.
+          return { ok: true, idle: true };
+        } catch (error) {
+          if (error.kind !== 'threadBusy') throw error;
+        }
+      }
     }
     const request = historyRequest(conn);
     if (action.kind === 'list') {
       const { data } = await request('thread/queue/list', { threadId, limit: 100 });
       if (!Array.isArray(data)) throw Error('Codex 未返回原生队列');
-      return { ok: true, queue: { available: true, items: data.map(({ id, input }) => ({
-        id, mode: 'queue', text: (input || []).find(block => block.type === 'text')?.text?.slice(0, 20000) || '',
+      return { ok: true, queue: { available: true, items: data.map(({ id, input, clientUserMessageId }) => ({
+        id, mode: 'queue', clientUserMessageId: history.inputId(clientUserMessageId),
+        text: (input || []).find(block => block.type === 'text')?.text?.slice(0, 20000) || '',
       })) } };
     }
     if (action.kind === 'remove') {
@@ -587,7 +604,7 @@ function createService(options={}){
       await request('thread/queue/delete', { threadId, queuedSubmissionId: action.itemId });
       return { ok: true };
     }
-    if (!/^myide-input-[0-9a-f-]{36}$/i.test(action.requestId || '')) throw Error('补充消息身份无效');
+    if (!history.inputId(action.requestId)) throw Error('补充消息身份无效');
     const input = promptContent([action.message], context.page);
     const params = { threadId, input, clientUserMessageId: action.requestId };
     if (action.kind === 'steer') {
