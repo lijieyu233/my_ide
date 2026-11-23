@@ -191,7 +191,7 @@ const Search = (() => {
   function open(){
     if(!App.root){MI.toast('请先打开一个文件夹','err');return;}if(panel&&live(panel)){if(usable(panel))panel.input.focus();return;}
     const box=document.createElement('div');box.id='sr-box';box.dataset.selfEsc='1';box.setAttribute('role','dialog');box.setAttribute('aria-modal','true');box.setAttribute('aria-labelledby','sr-title');Modal.show(box);
-    const view=build(box,'modal');panel=view;view.mask=document.querySelector('#modal-mask');view.inert=[...document.body.children,...Modal.stack.filter(el=>el!==box)].filter(el=>!['modal-mask','toast-wrap'].includes(el.id)).map(el=>[el,el.hasAttribute('inert')]);view.inert.forEach(([el])=>el.setAttribute('inert',''));
+    const view=build(box,'modal');panel=view;view.mask=document.querySelector('#modal-mask');view.inert=[...document.body.children,...Modal.stack.filter(el=>el!==box)].filter(el=>!['modal-mask','message-overlay'].includes(el.id)).map(el=>[el,el.hasAttribute('inert')]);view.inert.forEach(([el])=>el.setAttribute('inert',''));
     view.onFocus=event=>{if(usable(view)&&!box.contains(event.target))view.input.focus();};view.onMask=event=>{if(event.target===view.mask)close(view);};box.onModalHide=()=>cleanup(view);
     document.addEventListener('focusin',view.onFocus,true);view.mask.addEventListener('click',view.onMask);view.input.focus();
   }

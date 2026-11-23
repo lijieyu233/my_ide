@@ -150,7 +150,7 @@ const QuickOpen = (() => {
       input: box.querySelector('#qo-input'), list: box.querySelector('#qo-list'), status: box.querySelector('#qo-status'),
       retry: box.querySelector('#qo-retry'), index: cache, results: [], selected: -1, loading: false, error: '', composing: false, restore: true };
     panel = state;
-    state.inert = [...document.body.children, ...Modal.stack].filter(element => element.id !== 'modal-mask' && element.id !== 'toast-wrap')
+    state.inert = [...document.body.children, ...Modal.stack].filter(element => element.id !== 'modal-mask' && element.id !== 'message-overlay')
       .map(element => [element, element.hasAttribute('inert')]);
     state.inert.forEach(([element]) => element.setAttribute('inert', ''));
     box.onModalHide = () => cleanup(state); Modal.show(box);

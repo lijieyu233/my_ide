@@ -106,7 +106,7 @@ const CommandPalette = (() => {
       failure: box.querySelector('#command-failure'), failureText: box.querySelector('#command-failure-text'), results: [], selected: -1, composing: false, restore: true };
     panel = state;
     const location = box.querySelector('#command-context'); location.textContent = state.context.path || state.context.root || '未打开项目'; location.title = location.textContent;
-    state.inert = [...document.body.children, ...Modal.stack].filter(element => element.id !== 'modal-mask' && element.id !== 'toast-wrap').map(element => [element, element.hasAttribute('inert')]);
+    state.inert = [...document.body.children, ...Modal.stack].filter(element => element.id !== 'modal-mask' && element.id !== 'message-overlay').map(element => [element, element.hasAttribute('inert')]);
     state.inert.forEach(([element]) => element.setAttribute('inert', ''));
     box.onModalHide = () => cleanup(state); Modal.show(box);
     state.onKey = event => {

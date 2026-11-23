@@ -1,5 +1,5 @@
 // pet.js —— 右下角桌面玩偶：MI.toast 的消息由它播报
-// 机制：包装 MI.toast —— 消息照常进入 #toast-wrap（气泡出现在玩偶头顶），玩偶跳一下表示"我在说"
+// 机制：包装 MI.toast —— 消息照常进入 #toast-wrap，玩偶跳一下表示"我在说"
 // 点击玩偶：弹出菜单（切换玩偶 / 退出玩偶）
 const Pet = (() => {
   let el = null;

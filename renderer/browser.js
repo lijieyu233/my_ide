@@ -1066,7 +1066,11 @@ const BrowserPanel = (() => {
     if (!viewEl || viewEl.classList.contains('hidden')) return;
     const r = viewEl.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) return; // 布局未就绪/不可见不报
-    const b = B(); if (b) b.viewBounds({ x: r.x, y: r.y, width: r.width, height: r.height });
+    // 网页的原生视图盖在 HTML 上方。提示出现时让出底部空间，网页其余区域仍可操作。
+    const notice = document.getElementById('message-overlay')?.getBoundingClientRect();
+    const overlaps = notice?.height > 0 && notice.left < r.right && notice.right > r.left;
+    const height = overlaps ? Math.max(1, Math.min(r.height, notice.top - r.top - 8)) : r.height;
+    const b = B(); if (b) b.viewBounds({ x: r.x, y: r.y, width: r.width, height });
   }
   // 容器刚从 display:none 恢复时 rect 要下一帧才有效
   function mountView(url) {
@@ -1924,9 +1928,12 @@ const BrowserPanel = (() => {
     urlInput.addEventListener('input', () => renderDd(urlInput.value));
     urlInput.addEventListener('blur', () => setTimeout(closeDd, 150));
 
-    // 占位区尺寸变化（窗口 resize / 侧栏拖宽 / 面板显隐）→ 同步 view bounds
+    // 占位区或消息区尺寸变化时同步原生视图。
     if (typeof ResizeObserver === 'function') {
-      new ResizeObserver(() => syncBounds()).observe(viewEl);
+      const boundsObserver = new ResizeObserver(syncBounds);
+      boundsObserver.observe(viewEl);
+      const messageOverlay = document.getElementById('message-overlay');
+      if (messageOverlay) boundsObserver.observe(messageOverlay);
     }
     window.addEventListener('resize', () => syncBounds());
     // 浮层（Modal / ctx-menu）显隐 → 摘掉或挂回 WebContentsView（见 syncOverlay 注释）

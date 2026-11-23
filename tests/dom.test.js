@@ -4336,15 +4336,19 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_($allIn(dom.window.document, '.toast').some((t) => t.textContent.includes('测试提示')), 'toast 出现');
   });
 
-  await okAsync('右下角玩宠：toast 由它播报（跳跃动画 + 头顶气泡位置）', async () => {
+  await okAsync('Toast 在底部消息区显示并触发玩宠跳跃', async () => {
     const pet = $(dom, '#pet');
     assert_(pet, '玩宠 #pet 存在');
     assert_(pet.querySelector('svg'), '玩宠是 SVG 小猫');
     g(dom, 'MI.toast("喵播报", "ok")');
     await tick();
     assert_(pet.classList.contains('speaking'), 'toast 触发玩宠说话动画');
-    const wrapCss = dom.window.getComputedStyle($(dom, '#toast-wrap'));
-    assert_(parseInt(wrapCss.bottom, 10) >= 80, '气泡定位在玩宠头顶（bottom ≥ 80px）, got: ' + wrapCss.bottom);
+    const overlay = $(dom, '#message-overlay');
+    assert_(overlay.firstElementChild.id === 'toast-wrap', '短提示在进度面板上方');
+    assert_(overlay.lastElementChild.id === 'sb-progress', '进度面板与短提示共用浮层');
+    const overlayCss = dom.window.getComputedStyle(overlay);
+    assert_(overlayCss.position === 'fixed' && overlayCss.bottom === '34px', '消息固定在状态栏上方');
+    assert_(overlayCss.alignItems === 'center' && overlayCss.pointerEvents === 'none', '消息水平居中且不拦截操作');
   });
 
   await okAsync('大纲面板键盘导航：↑↓ 选择 + Enter 跳转', async () => {

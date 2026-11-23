@@ -35,7 +35,7 @@ api.registerRenderer(['pdf', 'docx'], ({ path, name, ext, content }) => {
 | API | 说明 |
 | --- | --- |
 | `MI.registerRenderer(exts, fn)` | 注册渲染器 |
-| `MI.toast(msg, type)` | 右下角提示（type: ok / err） |
+| `MI.toast(msg, type)` | 底部居中提示（type: ok / err） |
 | `MI.copyText(text)` | 复制文本到剪贴板 |
 | `window.myIDE.fs.readFile(path)` | 读取任意文件内容 |
 | `window.myIDE.fs.readDir(path, showHidden)` | 列目录 |

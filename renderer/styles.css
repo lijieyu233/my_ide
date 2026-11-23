@@ -1970,17 +1970,17 @@ table.diff-table { border-collapse: collapse; width: 100%; table-layout: fixed; 
 
 /* ---------- 长任务进度（删除/复制/恢复） ---------- */
 /* 4078 项删除实测 12 分钟，原来界面毫无反馈 → 用户以为卡死又点了一次删除（开发文档-243）。
-   放右下角悬浮、不吃焦点、不挡操作；阶段切换时改标题，完成后淡出。 */
+   阶段切换时改标题，完成后淡出。 */
 #sb-progress {
-  position: fixed; right: 16px; bottom: 34px; z-index: 900;
-  min-width: 240px; max-width: 340px;
+  width: max-content;
+  min-width: min(240px, 100%); max-width: min(340px, 100%);
+  overflow-wrap: anywhere;
   padding: 9px 12px 10px;
   border: 1px solid var(--btn-border);
   border-radius: 6px;
   background: var(--bg-title);
   box-shadow: 0 6px 20px rgba(0, 0, 0, .35);
   font-size: 11px; color: var(--text-dim);
-  pointer-events: none; /* 只是反馈，不拦截点击 */
 }
 #sb-progress.hidden { display: none; }
 .sb-progress-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
@@ -2593,9 +2593,20 @@ body.theme-light #set-box, body.theme-pink #set-box { color-scheme: light; }
   border-top: 1px solid var(--border);
 }
 
-/* ---------- Toast ---------- */
-/* 提示只有文本，淡出期间也不能拦住下方的阅读和编辑按钮。 */
-#toast-wrap { pointer-events: none; position: fixed; right: 18px; bottom: 86px; z-index: 300; display: flex; flex-direction: column; gap: 8px; }
+/* ---------- 浮动消息 ---------- */
+/* 提示在文件操作进度上方堆叠，淡出期间也可操作下方控件。 */
+#message-overlay {
+  position: fixed; left: 50%; bottom: 34px; z-index: 900;
+  transform: translateX(-50%);
+  width: min(420px, calc(100% - 24px));
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  pointer-events: none;
+}
+#toast-wrap {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  max-width: 100%;
+}
+#toast-wrap:empty { display: none; }
 
 /* ---------- 右下角玩宠（小橘猫，消息由它播报） ---------- */
 /* 右下角玩宠（小橘猫）。
@@ -2627,8 +2638,8 @@ body.theme-light #set-box, body.theme-pink #set-box { color-scheme: light; }
 .toast {
   background: var(--btn-bg); border: 1px solid var(--menu-border); border-left: 3px solid var(--accent);
   color: var(--text-bright); padding: 8px 14px; border-radius: 5px; font-size: 12px;
-  box-shadow: 0 4px 16px rgba(0,0,0,.4); max-width: 420px;
-  word-break: break-all;
+  box-shadow: 0 4px 16px rgba(0,0,0,.4); max-width: 100%;
+  overflow-wrap: anywhere;
   animation: toast-in .18s ease-out;
 }
 .toast.ok { border-left-color: var(--green); }
@@ -4439,14 +4450,6 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 .lp-foot-btn:hover { background: var(--btn-hover); }
 .lp-foot-btn.primary { border-color: color-mix(in srgb, var(--accent) 55%, var(--btn-border)); }
 .lp-foot-btn.danger { border-color: color-mix(in srgb, var(--del-text, #e06c75) 50%, var(--btn-border)); }
-#launch-toast { position: fixed; right: 12px; bottom: 12px; z-index: 60; display: flex; flex-direction: column; gap: 6px; }
-.launch-toast-item {
-  padding: 5px 12px; border-radius: 5px; font-size: 0.92em;
-  background: var(--panel-strong); color: var(--text);
-  border: 1px solid var(--btn-border); box-shadow: 0 3px 10px rgba(0,0,0,.25);
-}
-.launch-toast-item.err { border-color: color-mix(in srgb, var(--del-text, #e06c75) 60%, var(--btn-border)); }
-
 
 /* ===== 启动面板·主区（#launch-main，照 #db-panel 的覆盖模式）===== */
 #launch-main {
