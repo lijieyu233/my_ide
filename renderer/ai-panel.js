@@ -1061,6 +1061,7 @@ const AiPanel = (() => {
     group.dataset.outcome = running ? 'running' : interrupted && !data.closed ? 'stopped' : counts.failed ? 'failed' : unknown ? 'unknown' : 'completed';
     // 按截图统一分析阶段标题；工具自身的失败/未知状态单独保留，不等同于请求已结束。
     data.label.textContent = data.commandSummary ? (state === 'running' ? '正在运行' : '执行命令') + ' · ' + data.commandSummary
+      : data.total === 1 && data.mediaSummary ? data.mediaSummary
       : running ? '正在分析请求' : interrupted && !data.closed ? '分析已停止' : unknown ? '分析状态未确认' : '已完成分析';
     data.status.dataset.state = state;
     data.status.textContent = counts.failed ? counts.failed + ' 次失败' : '';
@@ -1156,6 +1157,17 @@ const AiPanel = (() => {
     const input = document.createElement('pre'); input.className = 'ai-tool-input';
     input.textContent = typeof call.args === 'string' ? call.args : JSON.stringify(call.args ?? {},null,2);
     toolRows.get(row).body.appendChild(input);
+    scrollBottom();
+    return row;
+  }
+  function renderCodexMedia(images, label, id) {
+    const row = createActivityRow('ai-tool', label, '', activityKey('codexMedia', id), 'readImage');
+    const { body, group } = toolRows.get(row);
+    row.dataset.toolName = 'codexMedia';
+    const data = toolGroups.get(group);
+    if (data.total === 1) data.mediaSummary = label;
+    appendMessageImages(body, images, label);
+    setDshToolState(row, 'completed');
     scrollBottom();
     return row;
   }
@@ -1616,6 +1628,16 @@ const AiPanel = (() => {
     return div.innerHTML;
   }
 
+  function appendMessageImages(container, images, label) {
+    for (const source of images || []) {
+      const img = document.createElement('img');
+      img.className = 'ai-msg-img';
+      img.src = source;
+      img.alt = label;
+      container.appendChild(img);
+    }
+  }
+
   // 消息气泡（含悬停复制按钮：一键复制原始 markdown 文本）
   function addMsg(role, text, opts) {
     if (role === 'user' || text) sealActivityGroup();
@@ -1628,22 +1650,7 @@ const AiPanel = (() => {
     } else {
       pre.innerHTML = renderMd(text);
     }
-    const imgs = opts?.imgs || [];
-    if (imgs.length) {
-      const media = opts?.mediaLabel ? document.createElement('details') : pre;
-      if (opts?.mediaLabel) {
-        const summary = document.createElement('summary');
-        summary.textContent = opts.mediaLabel;
-        media.open = true; media.appendChild(summary); pre.appendChild(media);
-      }
-      for (const u of imgs) {
-        const im = document.createElement('img');
-        im.className = 'ai-msg-img';
-        im.src = u;
-        im.alt = opts?.mediaLabel || '发送的图片';
-        media.appendChild(im);
-      }
-    }
+    appendMessageImages(pre, opts?.imgs, '发送的图片');
     row.appendChild(pre);
     // 复制按钮（PyCharm AI Assistant 式悬停出现；文本可选中 + 一键复制双通道）
     const cp = document.createElement('button');
@@ -2641,7 +2648,7 @@ const AiPanel = (() => {
             const part=m._dshTimeline[j];replayActivityPosition=[i,j];
             if(part.kind==='text')decorateCodeBlocks(addMsg('assistant',part.text||''));
             else if(part.kind==='tool'&&part.call)renderDshActivity(part);
-            else if(part.kind==='codexMedia')addMsg('assistant', '', { imgs: part.images, mediaLabel: part.label });
+            else if(part.kind==='codexMedia')renderCodexMedia(part.images, part.label, part.id);
             else if(['thought','reasoning','projection'].includes(part.kind))renderDshThought(part);
           }
           continue;
@@ -2652,8 +2659,11 @@ const AiPanel = (() => {
           const row = addMsg('user', t, { imgs: m._imgs || [] });
           if (m._ui) row.dataset.mid = m._ui;
           lastUserAt = i;
+        } else if (m._codexMedia) {
+          replayActivityPosition = [i, 0];
+          renderCodexMedia(m._imgs, m._codexMedia, m._codexMediaId);
         } else if (m.role === 'assistant') {
-          const row = addMsg('assistant', m.content || '', { imgs: m._imgs, mediaLabel: m._codexMedia });
+          const row = addMsg('assistant', m.content || '', { imgs: m._imgs });
           decorateCodeBlocks(row);
         }
       }
@@ -2689,10 +2699,11 @@ const AiPanel = (() => {
           for(let count=0;count<24;count++){
             const next=iterator.next();if(next.done){done=true;break;}
             const {m,i,part,j}=next.value;
-            if(part){replayActivityPosition=[i,j];if(part.kind==='text')addMsg('assistant',part.text||'');else if(part.kind==='tool'&&part.call)renderDshActivity(part);else if(part.kind==='codexMedia')addMsg('assistant', '', { imgs: part.images, mediaLabel: part.label });else if(['thought','reasoning','projection'].includes(part.kind))renderDshThought(part);}
+            if(part){replayActivityPosition=[i,j];if(part.kind==='text')addMsg('assistant',part.text||'');else if(part.kind==='tool'&&part.call)renderDshActivity(part);else if(part.kind==='codexMedia')renderCodexMedia(part.images, part.label, part.id);else if(['thought','reasoning','projection'].includes(part.kind))renderDshThought(part);}
             else if(!m._dshTool&&m.role!=='tool'&&!m.tool_calls){
               if(m.role==='user'){const row=addMsg('user',m._text||(typeof m.content==='string'?m.content:'（含图片的消息）'),{imgs:m._imgs||[]});if(m._ui)row.dataset.mid=m._ui;lastUserAt=i;}
-              else if(m.role==='assistant')decorateCodeBlocks(addMsg('assistant', m.content || '', { imgs: m._imgs, mediaLabel: m._codexMedia }));
+              else if(m._codexMedia){replayActivityPosition=[i,0];renderCodexMedia(m._imgs, m._codexMedia, m._codexMediaId);}
+              else if(m.role==='assistant')decorateCodeBlocks(addMsg('assistant', m.content || '', { imgs: m._imgs }));
             }
             if(performance.now()-start>=8)break;
           }
@@ -2830,7 +2841,7 @@ const AiPanel = (() => {
       const next = result.messages;
       const samePrefix = msgs.length <= next.length && msgs.every((message, index) =>
         message.role === next[index].role && message.content === next[index].content && message._codexCommand === next[index]._codexCommand &&
-        message._codexMedia === next[index]._codexMedia && (message._imgs?.length || 0) === (next[index]._imgs?.length || 0) &&
+        message._codexMedia === next[index]._codexMedia && message._codexMediaId === next[index]._codexMediaId && (message._imgs?.length || 0) === (next[index]._imgs?.length || 0) &&
         (!message._imgs || message._imgs.every((image, i) => image === next[index]._imgs[i])));
       if (!samePrefix || msgs.length !== next.length) {
         const appendFrom = samePrefix ? msgs.length : 0;
@@ -5083,8 +5094,8 @@ const AiPanel = (() => {
     }
     if (event.type === 'codexMedia') {
       sealDshSegment(run);
-      run.stream.timeline.push({ kind: 'codexMedia', images: event.images, label: event.label });
-      addMsg('assistant', '', { imgs: event.images, mediaLabel: event.label });
+      run.stream.timeline.push({ kind: 'codexMedia', images: event.images, label: event.label, id: event.id });
+      renderCodexMedia(event.images, event.label, event.id);
       return;
     }
     if (event.type === 'codexInputConsumed') { showConsumedInput(run, event.requestId, event.content); return; }

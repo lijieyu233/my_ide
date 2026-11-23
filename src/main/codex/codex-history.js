@@ -134,7 +134,7 @@ async function readMessages(request, thread, redact) {
     const imgs = await readMedia(item);
     if (imgs.length && item.type !== 'userMessage') {
       const _codexMedia = mediaLabel(item, imgs.length);
-      messages.push({ role: 'assistant', content: '', _imgs: imgs, _codexMedia });
+      messages.push({ role: 'assistant', content: '', _imgs: imgs, _codexMedia, _codexMediaId: item.id });
       return messages.length < maxMessages;
     }
     if (item?.type === 'commandExecution' && typeof item.id === 'string' && typeof item.command === 'string') {

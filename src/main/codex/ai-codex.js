@@ -91,7 +91,7 @@ function createService(options={}){
     run.readPreview ||= media.createMediaReader();
     const next = (run.previewTail || Promise.resolve()).then(async () => {
       const images = await run.readPreview(item);
-      if (images.length) emit(run, { type: 'codexMedia', images, label: media.mediaLabel(item, images.length) });
+      if (images.length) emit(run, { type: 'codexMedia', id: item.id, images, label: media.mediaLabel(item, images.length) });
     }).catch(() => {}).finally(() => { if (run.previewTail === next) run.previewTail = null; });
     run.previewTail = next;
   }

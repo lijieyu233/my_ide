@@ -131,7 +131,29 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
    return summary.includes('正在运行 · codex queue --help')&&!row.textContent.includes('PRIVATE_QUEUE_FIXTURE')&&!row.textContent.includes('PRIVATE_TOKEN_FIXTURE');
  }));
  await until(()=>js(()=>document.getElementById('ai-codex-activity')?.textContent==='正在整理图片预览'&&
-   document.querySelector('#ai-msgs img[alt="查看了 1 张图片"]')?.naturalWidth>0),'desktop activity title and image preview');
+   document.querySelector('#ai-msgs .ai-tool[data-tool-name="codexMedia"]')),'desktop activity title and image tool row');
+ const imageRow=await js(()=>{
+   const image=document.querySelector('.ai-tool[data-tool-name="codexMedia"]');
+   const command=document.querySelector('[data-tool-call-id="desktop-command"]');
+   const group=command.closest('.ai-tool-group');
+   if(!group.open)group.querySelector(':scope > .ai-tool-group-summary').click();
+   return {sameGroup:image.closest('.ai-tool-group')===group, open:image.open,
+     visible:image.querySelector('.ai-tool-body img').checkVisibility(),
+     sameFont:getComputedStyle(image.querySelector('.ai-tool-summary')).fontSize===getComputedStyle(command.querySelector('.ai-tool-summary')).fontSize};
+ });
+ check('Codex image viewing uses the command activity group and starts collapsed',imageRow.sameGroup&&!imageRow.open&&!imageRow.visible&&imageRow.sameFont,imageRow);
+ await js(()=>document.querySelector('.ai-tool[data-tool-name="codexMedia"] > .ai-tool-summary').click());
+ await until(()=>js(()=>{
+   const image=document.querySelector('.ai-tool[data-tool-name="codexMedia"] .ai-tool-body img');
+   return image?.naturalWidth>0 && image.checkVisibility();
+ }),'image preview after expanding the tool row');
+ check('Closing the image tool row hides its preview',await js(()=>{
+   const row=document.querySelector('.ai-tool[data-tool-name="codexMedia"]');
+   row.querySelector('.ai-tool-summary').click();
+   const collapsed=!row.open && !row.querySelector('img').checkVisibility();
+   row.querySelector('.ai-tool-summary').click();
+   return collapsed;
+ }));
  const debuggerSession=win.webContents.debugger;
  debuggerSession.attach('1.3');
  try {
@@ -158,6 +180,10 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
    fixture.requests.filter(r=>r.method==='turn/start').length===beforeDesktopTurn && await js(()=>
      [...document.querySelectorAll('#ai-msgs .ai-msg')].filter(node=>node.textContent.includes('CODEX_DESKTOP_FINAL')).length===1));
  check('Codex desktop completion unlocks sending and hides the activity title',await js(()=>document.getElementById('ai-input').value==='等待桌面完成的草稿'&&document.getElementById('ai-codex-activity').classList.contains('hidden')));
+ check('Codex keeps the image preview expanded through a desktop history refresh',await js(()=>{
+   const image=document.querySelector('.ai-tool[data-tool-name="codexMedia"]');
+   return image?.open&&image.querySelector('img').checkVisibility();
+ }));
  check('Codex marks the mirrored command complete without a duplicate row',await js(()=>{
    const rows=document.querySelectorAll('[data-tool-call-id="desktop-command"]');
    return rows.length===1&&rows[0].dataset.state==='completed';
