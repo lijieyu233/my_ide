@@ -199,7 +199,8 @@ function createService(options={}){
 
   async function listHistory(cfg) {
     const conn = await connect(cfg);
-    const items = await history.listProjectThreads(historyRequest(conn));
+    const request = historyRequest(conn);
+    const [items, projects] = await Promise.all([history.listProjectThreads(request), history.listProjects(request)]);
     const detachedRoot = norm(await canonical(workspace()));
     const projectBindings = new Map();
     for (const [key, record] of saved) {
@@ -207,8 +208,8 @@ function createService(options={}){
       if (scope === 'project' && !record.blocked) projectBindings.set(record.id, { localId, rootDir: record.cwd });
     }
     // The catalog may list a worktree alias. Prefer the verified cwd from the saved binding.
-    return items.map(item => ({ ...item, localId: 'codex:' + item.threadId, ...projectBindings.get(item.threadId) }))
-      .filter(item => norm(item.rootDir) !== detachedRoot);
+    return { projects, items: items.map(item => ({ ...item, localId: 'codex:' + item.threadId, ...projectBindings.get(item.threadId) }))
+      .filter(item => norm(item.rootDir) !== detachedRoot) };
   }
 
   async function projectThreadRoot(thread) {

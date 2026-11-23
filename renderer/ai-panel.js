@@ -2597,10 +2597,11 @@ const AiPanel = (() => {
   let codexOpenIntent = 0;
   const codexForksInFlight = new Set();
   const codexProjectHistory = () => getConfig().engine === 'codex' && dshScope() !== 'reader';
+  const currentCodexCatalog = () => codexProjectHistory() && codexCatalog?.launcher === (getConfig().codexPath || '') ? codexCatalog : null;
 
   function refreshCodexCatalog() {
     if (!codexProjectHistory()) return;
-    const { codexPath = '', engine } = getConfig();
+    const config = getConfig(), codexPath = config.codexPath || '';
     if (codexCatalogRequest?.launcher === codexPath) return codexCatalogRequest.promise;
 
     const request = { launcher: codexPath };
@@ -2609,10 +2610,10 @@ const AiPanel = (() => {
     refreshHistInPlace();
     request.promise = (async () => {
       try {
-        const result = await window.myIDE.ai.codexSessions({ engine, codexPath });
+        const result = await window.myIDE.ai.codexSessions({ engine: 'codex', codexPath });
         if (codexCatalogRequest !== request) return;
         if (!result?.ok) throw Error(result?.error || '无法读取 Codex 会话');
-        codexCatalog = { launcher: codexPath, items: result.items };
+        codexCatalog = { launcher: codexPath, items: result.items, projects: result.projects || [] };
       } catch (error) {
         if (codexCatalogRequest === request) codexCatalogError = { launcher: codexPath, message: error.message };
       } finally {
@@ -2764,13 +2765,14 @@ const AiPanel = (() => {
       all.push({id,hostId:item.sessionId,title:item.title || '（未命名会话）',ts:item.updatedAt || 0,
         cwd:item.cwd || '',rootDir,archived:archived.has(item.sessionId),foreign:true,unknownRoot:!rootDir,running:running.has(id),virtual:true});
     }
-    if (codexProjectHistory() && codexCatalog?.launcher === (getConfig().codexPath || '')) {
+    const desktop = currentCodexCatalog();
+    if (desktop) {
       const currentRows = new Map(all.map(item => [item.id, item]));
       const archivedLocalIds = new Set(loadSessions().filter(item => item.archived).map(item => item.id));
-      for (const item of codexCatalog.items) {
+      for (const item of desktop.items) {
         const here = pathKey(item.rootDir) === pathKey(root);
         if (here && archivedLocalIds.has(item.localId)) continue;
-        const native = { id: item.localId, codexThreadId: item.threadId, title: item.title,
+        const native = { id: item.localId, codexThreadId: item.threadId, codexProjectId: item.projectId, title: item.title,
           rootDir: here ? root : item.rootDir, ts: item.ts, virtual: true };
         const localRow = here && currentRows.get(item.localId);
         if (localRow) Object.assign(localRow, native);
@@ -2778,7 +2780,7 @@ const AiPanel = (() => {
       }
     }
     // 全部工作区列表按时间排列，避免当前会话换到别的项目时行顺序跟着跳动。
-    const currentOnly = getConfig().engine !== 'dsh';
+    const currentOnly = getConfig().engine !== 'dsh' && !codexProjectHistory();
     all.sort((a, b) => (currentOnly ? Number(b.id === curSessionId) - Number(a.id === curSessionId)
       || Number(!!b.running) - Number(!!a.running) : 0) || (b.ts || 0) - (a.ts || 0)
       || String(a.hostId || a.id || '').localeCompare(String(b.hostId || b.id || '')));
@@ -2788,7 +2790,11 @@ const AiPanel = (() => {
   const historyIcon = path => '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="' + path + '"/></svg>';
   const historyFolderPath = expanded => expanded ? 'M3 6V3h4l2 2h4v1m-10 0h12l-2 7H2z' : 'M2 5V3h4l2 2h6v8H2z';
   const historyRowsMarkup = new WeakMap();
-  const otherWorkspacesKey = Symbol(), flatHistoryKey = Symbol();
+  const otherWorkspacesKey = Symbol(), flatHistoryKey = Symbol(), codexRecentKey = Symbol();
+  const codexProjectKey = id => 'codex-project:' + id;
+  const historyGroupIcon = (expanded, recent) => recent
+    ? (expanded ? 'M4 6l4 4 4-4' : 'M6 4l4 4-4 4')
+    : historyFolderPath(expanded);
   const historyPreferencesKey = 'myide-session-list-preferences';
   const historyChoices = {
     group: [['workspace', '按工作区'], ['tree', '按工作区树'], ['flat', '单列表']],
@@ -3029,14 +3035,20 @@ const AiPanel = (() => {
     const flat = dsh && historyPrefs.group === 'flat', tree = dsh && historyPrefs.group === 'tree';
     const query = historySearch.toLowerCase();
     const narrow = !!query || (dsh && historyPrefs.archive === 'archived');
+    const opened = dsh ? openWorkspaceRoots() : new Map();
+    const registered = codex
+      ? new Map((currentCodexCatalog()?.projects || []).map(project => [codexProjectKey(project.id), project]))
+      : catalogUsable() ? dshCatalog.workspaces : new Map();
     for (const session of all) {
       if (query && !String(session.title || '').toLowerCase().includes(query)) continue;
-      const key = flat ? flatHistoryKey : session.unknownRoot ? null : pathKey(session.rootDir);
+      let key = flat ? flatHistoryKey : session.unknownRoot ? null : pathKey(session.rootDir);
+      if (codex) {
+        const projectKey = codexProjectKey(session.codexProjectId);
+        key = registered.has(projectKey) ? projectKey : codexRecentKey;
+      }
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(session);
     }
-    const opened = dsh || codex ? openWorkspaceRoots() : new Map();
-    const registered = catalogUsable() ? dshCatalog.workspaces : new Map();
     if (!flat && !narrow) {
       for (const key of [...opened.keys(), ...registered.keys()]) {
         if (!groups.has(key)) groups.set(key, []);
@@ -3048,7 +3060,7 @@ const AiPanel = (() => {
     const pinRanks = new Map((catalogUsable() ? [...dshCatalog.pinnedIds] : []).map((id, index) => [id, index]));
     const order = key => historyWorkspaces.get(key)?.index ?? historyWorkspaces.size;
     const rank = (ranks, key) => ranks.get(key) ?? ranks.size;
-    const ordered = [...groups].sort(([a], [b]) => (manual ? rank(workspaceRanks, a) - rank(workspaceRanks, b) : 0)
+    const ordered = [...groups].sort(([a], [b]) => (manual || codex ? rank(workspaceRanks, a) - rank(workspaceRanks, b) : 0)
       || order(a) - order(b) || Number(b === root) - Number(a === root));
     const isOtherWorkspace = key => dsh && !flat && !tree && key !== root && !opened.has(key) && !registered.has(key);
     const showOther = narrow || (otherWorkspacesExpanded ?? ordered.every(([key]) => isOtherWorkspace(key)));
@@ -3059,11 +3071,15 @@ const AiPanel = (() => {
       const isOther = isOtherWorkspace(key);
       const unassigned = key === null;
       const workspace = registered.get(key);
-      const groupRoot = unassigned ? '' : items[0]?.rootDir || opened.get(key) || workspace?.rootDir || '';
-      const current = !unassigned && key === root;
+      const recent = key === codexRecentKey;
+      const roots = workspace?.roots || [];
+      const groupRoot = codex
+        ? roots.find(directory => pathKey(directory) === root) || roots[0] || ''
+        : unassigned ? '' : items[0]?.rootDir || opened.get(key) || workspace?.rootDir || '';
+      const current = codex ? !!groupRoot && pathKey(groupRoot) === root : !unassigned && key === root;
       if (!historyWorkspaces.has(key)) historyWorkspaces.set(key, {
         index: historyWorkspaces.size,
-        expanded: defaultHistoryExpanded(key, items, root, running),
+        expanded: defaultHistoryExpanded(key, items, current ? key : root, running),
       });
       const { index, expanded: wasExpanded } = historyWorkspaces.get(key);
       const expanded = (items.length > 0 || hasChildren) && (flat || narrow || wasExpanded);
@@ -3071,19 +3087,20 @@ const AiPanel = (() => {
       const sessionRanks = new Map(sessionOrder.map((id, index) => [id, index]));
       items.sort((a, b) => rank(pinRanks, a.hostId) - rank(pinRanks, b.hostId) ||
         (manual ? rank(sessionRanks, a.hostId) - rank(sessionRanks, b.hostId) : 0));
-      const groupName = unassigned ? '未分组' : workspace?.title || sessionRootLabel(groupRoot);
+      const groupName = recent ? '最近' : unassigned ? '未分组' : workspace?.title || sessionRootLabel(groupRoot);
       const childId = 'ai-hist-items-' + index;
       const groupId = 'ai-hist-workspace-' + index;
       let groupHtml = '<section id="' + groupId + '" class="ai-hist-group" data-root="' + esc(groupRoot || '') + '"' +
         (flat ? ' data-flat-history' : unassigned ? ' data-unassigned' : '') +
+        (recent ? ' data-codex-recent' : codex ? ' data-codex-project="' + esc(workspace.id) + '"' : '') +
         (depth ? ' style="padding-inline-start:' + depth * 14 + 'px"' : '') +
         (collapsed || isOther && !showOther ? ' hidden' : '') + '>' +
         (flat ? '' : '<div class="ai-hist-group-head"><button type="button" class="ai-hist-group-title" data-hist-toggle aria-expanded="' + expanded + '" aria-controls="' + childId + '"' + (current ? ' aria-current="location"' : '') + (items.length || hasChildren ? '' : ' disabled') + ' title="' + esc(
           workspace?.createdAt ? groupRoot + '\n创建于 ' + new Date(workspace.createdAt).toLocaleString() :
           groupRoot || (unassigned ? 'DSH 未提供可用的工作区目录' : groupName)) + '">' +
-        '<span class="ai-hist-workspace-icon">' + historyIcon(historyFolderPath(expanded)) + '</span>' +
+        '<span class="ai-hist-workspace-icon">' + historyIcon(historyGroupIcon(expanded, recent)) + '</span>' +
         '<span class="ai-hist-workspace-name">' + esc(groupName) + '</span>' +
-        '<span class="ai-hist-workspace-count">' + items.length + '</span></button>' +
+        (recent ? '' : '<span class="ai-hist-workspace-count">' + items.length + '</span>') + '</button>' +
         (groupRoot && !current ? '<button type="button" class="ai-hist-b" data-hist-jump="' + esc(groupRoot) + '" title="打开工程" aria-label="打开工程：' + esc(groupName) + '">' + historyIcon('M6 3H3v10h10v-3M8 3h5v5m0-5L7 9') + '</button>' : '') +
         '</div>') + '<div class="ai-hist-items" id="' + childId + '"' + (expanded ? '' : ' hidden') + '>';
       for (const session of items) {
@@ -3121,6 +3138,8 @@ const AiPanel = (() => {
   }
 
   function historyGroupKey(group) {
+    if (group.hasAttribute('data-codex-recent')) return codexRecentKey;
+    if (group.hasAttribute('data-codex-project')) return codexProjectKey(group.dataset.codexProject);
     if (group.hasAttribute('data-hist-other')) return otherWorkspacesKey;
     if (group.hasAttribute('data-flat-history')) return flatHistoryKey;
     if (!group.hasAttribute('data-root')) return undefined;
@@ -3232,7 +3251,8 @@ const AiPanel = (() => {
       const jump = sender.closest('[data-hist-jump]');
       if (jump) {
         const root = jump.dataset.histJump, key = pathKey(root);
-        const registered = catalogUsable() && dshCatalog.workspaces.has(key);
+        const registered = (catalogUsable() && dshCatalog.workspaces.has(key)) ||
+          currentCodexCatalog()?.projects.some(project => project.roots.some(directory => pathKey(directory) === key));
         const known = registered || openWorkspaceRoots().has(key) ||
           sessionsForHist().all.some(item => !item.unknownRoot && pathKey(item.rootDir) === key);
         if (known && await App.openProject(root).catch(() => false)) App.showTool('sessions');
@@ -3267,7 +3287,7 @@ const AiPanel = (() => {
         items.hidden = !items.hidden;
         toggle.setAttribute('aria-expanded', String(!items.hidden));
         historyWorkspaces.get(historyGroupKey(group)).expanded = !items.hidden;
-        toggle.querySelector('.ai-hist-workspace-icon path').setAttribute('d', historyFolderPath(!items.hidden));
+        toggle.querySelector('.ai-hist-workspace-icon path').setAttribute('d', historyGroupIcon(!items.hidden, group.hasAttribute('data-codex-recent')));
         historyRowsMarkup.delete(sidebar.querySelector('.ai-hist-rows'));
         return;
       }
@@ -3434,11 +3454,12 @@ const AiPanel = (() => {
         saveSessions([{ ...previous, id: result.localId, title: result.title, ts: result.ts,
           msgs: result.messages }, ...all.filter(item => item.id !== result.localId)]);
       }
-      if (codexCatalog?.launcher === (getConfig().codexPath || '')) {
-        const { threadId, rootDir, localId, ts, title } = result;
-        const cached = codexCatalog.items.find(item => item.threadId === threadId);
-        if (cached) Object.assign(cached, { rootDir, localId, ts, title });
-        else codexCatalog.items.unshift({ threadId, rootDir, localId, ts, title });
+      const catalog = currentCodexCatalog();
+      if (catalog) {
+        const { threadId, projectId, rootDir, localId, ts, title } = result;
+        const cached = catalog.items.find(item => item.threadId === threadId);
+        if (cached) Object.assign(cached, { projectId, rootDir, localId, ts, title });
+        else catalog.items.unshift({ threadId, projectId, rootDir, localId, ts, title });
       }
       openSession(result.localId, false);
       renderCurrentSessionTitle();

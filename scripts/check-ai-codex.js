@@ -22,11 +22,27 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  const firstThread=fixture.requests.find(r=>r.method==='turn/start').params.threadId;await js(()=>AiPanel.ask('继续原来的会话'));await until(()=>js(()=>!!document.querySelector('.ai-dsh-permission button')),'second turn approval');await js(()=>{document.querySelector('.ai-dsh-permission button').click();return true;});await until(()=>fixture.receipts.filter(r=>r.kind==='dynamic').length===2&&js(()=>AiPanel.__testParked().currentRun==='completed'),'second done');check('continuation reuses the exact native thread without replaying user history',fixture.requests.filter(r=>r.method==='thread/start').length===1&&fixture.requests.filter(r=>r.method==='turn/start').every(r=>r.params.threadId===firstThread&&r.params.input.filter(i=>i.type==='text').length===1));
  await js(()=>AiPanel.ask('HOLD_CODEX 后台隔离'));await until(()=>fixture.requests.filter(r=>r.method==='turn/start').length===3,'held turn');await js(async root=>{await App.setRoot(root);return true;},roots[1]);await until(()=>js(()=>AiPanel.aiState().dshState==='ready'),'project B ready');check('changing project parks Codex without cancelling or leaking A output',!fixture.requests.some(r=>r.method==='turn/interrupt')&&await js(()=>AiPanel.__testParked().backgroundRuns===1&&!document.getElementById('ai-msgs').textContent.includes('HOLD_CODEX')));await js(async root=>{await App.setRoot(root);return true;},roots[0]);await until(()=>js(()=>AiPanel.__testParked().currentRun==='active'),'restore held');await js(()=>{document.getElementById('ai-send').click();return true;});await until(()=>fixture.requests.some(r=>r.method==='turn/interrupt')&&js(()=>AiPanel.__testParked().currentRun!=='active'),'interrupt');check('stop targets only the owned thread and no DSH queue is advertised',fixture.requests.find(r=>r.method==='turn/interrupt').params.threadId===firstThread&&await js(()=>document.getElementById('ai-input-queue').classList.contains('hidden')&&document.getElementById('ai-running-input-actions').classList.contains('hidden')));
  const externalId='019caa00-0000-7000-8000-000000000003';
- fixture.threads.set(externalId,{id:externalId,cwd:roots[1],model:'offline-codex',historyMode:'paginated',name:'桌面 Codex 外部会话',updatedAt:1710000000,running:false,
+ const recentId='019caa00-0000-7000-8000-000000000005', emptyRoot=path.join(temp,'empty-desktop-project');
+ fs.mkdirSync(emptyRoot);
+ fixture.projects.push({id:'desktop-empty',name:'桌面空项目',roots:[{path:emptyRoot}]},
+   {id:'desktop-b',name:'桌面工程 B',roots:[{path:roots[0]+'-worktree'},{path:roots[1]}]});
+ fixture.threads.set(recentId,{id:recentId,projectId:null,cwd:roots[1],model:'offline-codex',historyMode:'paginated',name:'同目录的未分组会话',updatedAt:1710000001,running:false,items:[]});
+ fixture.threads.set(externalId,{id:externalId,projectId:'desktop-b',cwd:roots[1],model:'offline-codex',historyMode:'paginated',name:'桌面 Codex 外部会话',updatedAt:1710000000,running:false,
   items:[{type:'userMessage',content:[{type:'text',text:'CODEX_PREVIOUS_QUESTION'}]},{type:'agentMessage',text:'CODEX_PREVIOUS_ANSWER'}]});
  const earlierTurns=fixture.requests.filter(r=>r.method==='turn/start').length;
  await js(()=>App.showTool('sessions'));
  await until(()=>js(()=>[...document.querySelectorAll('.ai-hist-nm')].some(node=>node.textContent==='桌面 Codex 外部会话')),'external catalog');
+ check('Codex sidebar follows native project names, order and membership, keeping unassigned threads in Recent',await js(()=>{
+   const groups=[...document.querySelectorAll('.ai-hist-rows > .ai-hist-group')];
+   const project=document.querySelector('[data-codex-project="desktop-b"]'), recent=document.querySelector('[data-codex-recent]');
+   return JSON.stringify(groups.map(group=>group.querySelector('.ai-hist-workspace-name').textContent))===JSON.stringify(['桌面空项目','桌面工程 B','最近'])&&
+     project.querySelector('.ai-hist-nm')?.textContent==='桌面 Codex 外部会话'&&
+     [...recent.querySelectorAll('.ai-hist-nm')].some(node=>node.textContent==='同目录的未分组会话')&&
+     !recent.querySelector('[data-hist-jump]');
+ }));
+ await js(()=>{document.querySelector('[data-codex-project="desktop-empty"] [data-hist-jump]').click();return true;});
+ await until(()=>js(root=>App.root===root,emptyRoot),'open an empty native project');
+ check('an empty Codex project can be opened even with no sessions',await js(root=>App.root===root,emptyRoot));
  await js(()=>{const row=[...document.querySelectorAll('.ai-hist-nm')].find(node=>node.textContent==='桌面 Codex 外部会话');
   const section=row.closest('.ai-hist-group'),toggle=section.querySelector('[data-hist-toggle]');
   if(toggle.getAttribute('aria-expanded')==='false')toggle.click();

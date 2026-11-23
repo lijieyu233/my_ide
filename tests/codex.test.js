@@ -26,6 +26,10 @@ function fixture(config={}){
    else if(r.method==='account/gatewayOAuth/read'){if(config.unsupportedGateway)send(c,{id:r.id,error:{code:-32601,message:'unsupported'}});else send(c,{id:r.id,result:config.gateway||{providerId:'openai',providerName:'OpenAI',required:false,status:null}});}
     else if(r.method==='account/read')send(c,{id:r.id,result:config.account||{account:{type:'chatgpt',email:'private@example.invalid',planType:'plus',accessToken:'never-expose-token'},requiresOpenaiAuth:true}});
    else if(r.method==='model/list')send(c,{id:r.id,result:{data:config.models||models,nextCursor:null}});
+   else if(r.method==='project/list'&&config.projects){
+     assert.equal(p.sortKey,'position');
+     send(c,{id:r.id,result:{data:config.projects,nextCursor:null}});
+   }
    else if(r.method==='thread/list'&&config.history){
      assert.equal(p.currentAccountOnly,true);
      const entries=p.includedThreadIds?config.history.filter(t=>p.includedThreadIds.includes(t.id)):config.history;
@@ -74,14 +78,16 @@ function fixture(config={}){
 let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+name);}
 (async()=>{try{
  await test('从当前账号读取 Codex 原生历史，续聊只恢复同一个线程',async()=>{
-  const id='019caa00-0000-7000-8000-000000000001',history=[{id,cwd:temp,name:'外部会话',model:'native-model',historyMode:'paginated',status:{type:'notLoaded'}}];
-  const config={history,map:path.join(temp,'external-history.json')};
+  const id='019caa00-0000-7000-8000-000000000001',history=[{id,projectId:'desktop-a',cwd:temp,name:'外部会话',model:'native-model',historyMode:'paginated',status:{type:'notLoaded'}}];
+  const config={history,projects:[{id:'desktop-a',name:'桌面项目',roots:[{path:temp}]}],map:path.join(temp,'external-history.json')};
   const f=fixture(config);
   let opened;
   try{
    const [catalog,result]=await Promise.all([f.service.listHistory({}),f.service.openHistory({},id)]);
    opened=result;
-   assert.equal(catalog[0].threadId,id);
+   assert.equal(catalog.items[0].threadId,id);
+   assert.equal(catalog.items[0].projectId,catalog.projects[0].id);
+   assert.deepEqual(catalog.projects[0],{id:'desktop-a',title:'桌面项目',roots:[temp]});
    assert.deepEqual(opened.messages,[{role:'user',content:'旧问题'},{role:'assistant',content:'旧回答'}]);
    assert.equal(f.requests.filter(r=>r.method==='initialize').length,1);
    assert(!f.requests.some(r=>['thread/start','thread/resume','turn/start'].includes(r.method)));

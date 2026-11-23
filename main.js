@@ -879,7 +879,7 @@ async function codexHistoryConfig(event, cfg) {
 ipcMain.handle('ai:codex-sessions',async (event, cfg) => {
   try {
     await codexHistoryConfig(event, cfg);
-    return { ok: true, items: await CODEX.listHistory(cfg) };
+    return { ok: true, ...await CODEX.listHistory(cfg) };
   } catch (error) { return { ok: false, error: error.message }; }
 });
 ipcMain.handle('ai:codex-history',async (event, cfg, threadId) => {

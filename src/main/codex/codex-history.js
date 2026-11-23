@@ -21,9 +21,10 @@ function threadSummary(thread) {
   const title = [thread.name, thread.preview].find(text => typeof text === 'string' && text.trim());
   return {
     threadId: thread.id,
+    projectId: typeof thread.projectId === 'string' ? thread.projectId : null,
     rootDir: path.normalize(thread.cwd),
     title: title?.replace(/\s+/g, ' ').trim().slice(0, 120) || '未命名会话',
-    ts: (thread.updatedAt || thread.createdAt || 0) * 1000,
+    ts: (thread.recencyAt ?? thread.updatedAt ?? thread.createdAt ?? 0) * 1000,
   };
 }
 
@@ -39,6 +40,25 @@ async function pages(request, method, params, limit, cap, onPage) {
     if (typeof cursor !== 'string' || cursors.has(cursor)) throw Error('Codex 会话分页游标无效');
     cursors.add(cursor);
   }
+}
+
+async function listProjects(request) {
+  const projects = new Map();
+  try {
+    await pages(request, 'project/list', { sortKey: 'position' }, 100, maxThreadPages, data => {
+      for (const project of data) {
+        if (typeof project?.id !== 'string' || !project.id || typeof project.name !== 'string' || projects.has(project.id)) continue;
+        const roots = (Array.isArray(project.roots) ? project.roots : [])
+          .map(root => root?.path).filter(root => typeof root === 'string' && path.isAbsolute(root))
+          .map(root => path.normalize(root));
+        projects.set(project.id, { id: project.id, title: project.name, roots });
+      }
+    });
+  } catch (error) {
+    // Older app-servers can still show recent threads without a project registry.
+    if (error.code !== -32601) throw error;
+  }
+  return [...projects.values()];
 }
 
 async function listProjectThreads(request) {
@@ -110,4 +130,4 @@ async function readMessages(request, thread) {
   return messages.reverse();
 }
 
-module.exports = { isProjectThread, listProjectThreads, readProjectThread, threadSummary, readMessages, assertThreadIdle, assertIdle };
+module.exports = { isProjectThread, listProjects, listProjectThreads, readProjectThread, threadSummary, readMessages, assertThreadIdle, assertIdle };

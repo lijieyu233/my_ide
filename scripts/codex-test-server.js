@@ -1,7 +1,7 @@
 // Offline app-server fixture. Never starts Codex, reads credentials, or executes displayed native tools.
 const {EventEmitter}=require('events'),{PassThrough,Writable}=require('stream');
 function createServer(){
- const control={resumeRetry:null},threads=new Map(),requests=[],receipts=[],children=new Set();let threadSeq=0,turnSeq=0,serverSeq=1000;
+ const control={resumeRetry:null},threads=new Map(),projects=[],requests=[],receipts=[],children=new Set();let threadSeq=0,turnSeq=0,serverSeq=1000;
  const models=[{id:'offline-codex',model:'offline-codex',displayName:'Codex offline fixture',isDefault:true,defaultReasoningEffort:'medium',supportedReasoningEfforts:[{reasoningEffort:'medium',description:'medium'},{reasoningEffort:'high',description:'high'}]}];
  function spawn(){const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();children.add(child);let buffer='',ended=false;const waiting=new Map();
   const send=message=>{if(!ended)child.stdout.write(JSON.stringify(message)+'\n');},reply=(id,result)=>send({id,result}),notice=(method,params)=>send({method,params});
@@ -23,6 +23,7 @@ function createServer(){
    if(message.method==='account/read')return reply(message.id,{account:{type:'apiKey'},requiresOpenaiAuth:false});
    if(message.method==='account/gatewayOAuth/read')return reply(message.id,{providerId:'openai',providerName:'OpenAI',required:false,status:null,error:null});
    if(message.method==='model/list')return reply(message.id,{data:models,nextCursor:null});
+   if(message.method==='project/list')return reply(message.id,{data:projects,nextCursor:null});
    if(message.method==='thread/list'){
     if(p.currentAccountOnly!==true)throw Error('Synthetic catalog requires account scope');
     const data=[...threads.values()].filter(t=>!p.includedThreadIds||p.includedThreadIds.includes(t.id));
@@ -62,6 +63,6 @@ function createServer(){
   child.stdin=new Writable({write(data,encoding,done){try{buffer+=data.toString();let end;while((end=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(line)handle(JSON.parse(line));}done();}catch(error){done(error);}}});
   child.kill=()=>{if(ended)return;ended=true;children.delete(child);setImmediate(()=>child.emit('exit',0));};return child;
  }
- return {spawn,threads,requests,receipts,children,control};
+ return {spawn,threads,projects,requests,receipts,children,control};
 }
 module.exports={createServer};
