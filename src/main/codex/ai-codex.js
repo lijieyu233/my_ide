@@ -428,8 +428,7 @@ function createService(options={}){
         await history.assertThreadIdle(request, native);
         live(run);
       }
-      const specs=session.external?[]:toolSpecs(tools);session.allowed=new Set(specs.map(t=>t.name));
-      if(session.toolNames&&specs.some(t=>!session.toolNames.includes(t.name)))throw Error('此 Codex 会话没有注册当前新增工具，请新建本地对话；不会替换已有原生会话');
+      const specs=session.external?[]:toolSpecs(tools);
       if(!session.attached||session.conn!==conn){
         const fresh=!session.id,pending=pendingChoices.get(info.key),requested=pending?.model||(!fresh?null:cfg.codexModel)||null;
         if(requested)validateChoice(catalogue.models,requested,pending?.effort||(!fresh?null:cfg.codexReasoning));live(run);
@@ -455,9 +454,13 @@ function createService(options={}){
           session.blocked=mismatch?'Codex 返回了不匹配的会话或工作目录，已拒绝发送；此身份不会新建替代线程':'Codex 未采用所选模型，已拒绝发送；此身份不会新建替代线程';
           saved.set(info.key,{id:session.id||response.thread?.id||'invalid-thread',cwd:info.cwd,external:session.external,blocked:session.blocked});await persist();throw Error(session.blocked);
         }
-        session.id=response.thread.id;session.model=response.model;session.effort=(fresh?cfg.codexReasoning:null)||response.reasoningEffort||null;session.toolNames ||= specs.map(t=>t.name);session.attached=true;session.conn=conn;
+        session.id=response.thread.id;session.model=response.model;session.effort=(fresh?cfg.codexReasoning:null)||response.reasoningEffort||null;session.attached=true;session.conn=conn;
+        if(fresh)session.toolNames=specs.map(t=>t.name);
         saved.set(info.key,{id:session.id,cwd:info.cwd,model:session.model,effort:session.effort,toolNames:session.toolNames,...(session.external?{external:true}:{})});await persist();
       }
+      // thread/resume reuses the tools registered at thread/start. Adding a MyIDE tool must not block existing chats.
+      const registered=Array.isArray(session.toolNames)?new Set(session.toolNames):new Set();
+      session.allowed=new Set(specs.map(t=>t.name).filter(name=>registered.has(name)));
       const pending=pendingChoices.get(info.key),model=pending?.model||session.model,effort=pending?.effort??session.effort;
       validateChoice(catalogue.models,model,effort);live(run);session.run=run;run.session=session;run.conn=conn;return {session,model,effort,pending};
     });

@@ -73,7 +73,7 @@ function fixture(config={}){
     if(config.hold)continue;
     if(config.mode){const serverId='server-'+id;pending.set(serverId,{c,threadId,id,mode:config.mode});
      if(config.mode==='mixed')notify(c,'item/reasoning/summaryTextDelta',{threadId,turnId:id,itemId:'thought',delta:'before'});
-     if(['tool','mixed'].includes(config.mode))send(c,{id:serverId,method:'item/tool/call',params:{threadId,turnId:id,callId:'call-'+id,tool:'ide_state',arguments:{}}});
+     if(['tool','mixed'].includes(config.mode))send(c,{id:serverId,method:'item/tool/call',params:{threadId,turnId:id,callId:'call-'+id,tool:config.toolName||'ide_state',arguments:{}}});
      else if(config.mode==='approval')send(c,{id:serverId,method:'item/commandExecution/requestApproval',params:{threadId,turnId:id,itemId:'command-'+id,command:'echo test',cwd:temp,reason:'test',startedAtMs:0,networkApprovalContext:config.networkContext,availableDecisions:config.availableDecisions||['accept','acceptForSession','decline']}});
      else if(config.mode==='fileApproval'){notify(c,'item/started',{threadId,turnId:id,item:{id:'file-'+id,type:'fileChange',status:'inProgress',changes:[{path:'example.txt',kind:{type:'update'},diff:'-old\n+new'}]}});send(c,{id:serverId,method:'item/fileChange/requestApproval',params:{threadId,turnId:id,itemId:'file-'+id,reason:'edit'}});}
      else if(config.mode==='question')send(c,{id:serverId,method:'item/tool/requestUserInput',params:{threadId,turnId:id,itemId:'q-'+id,questions:[{id:'question1',header:'选择',question:'继续吗？',isSecret:config.secretQuestion===true,options:[{label:'继续',description:'只继续本次'}]}]}});
@@ -324,6 +324,34 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
  await test('重启持久映射精确resume同线程，全球cfg不覆原生实际模型',async()=>{
   const map=path.join(temp,'resume.json'),f=fixture({map});try{assert((await f.service.chat({},user('首轮'),[],context(),()=>{},()=>{})).ok);}finally{await f.service.dispose();}
   const next=fixture({map,resumeModel:'other-model'});try{const events=[],r=await next.service.chat({codexModel:'native-model',codexReasoning:'medium'},user('继续'),[],context(2),e=>events.push(e),()=>{});assert(!r.ok&&r.error.includes('思考强度'));assert(!next.requests.some(r=>r.method==='thread/start'));assert.equal(next.requests.find(r=>r.method==='thread/resume').params.threadId,'thread-1');assert(!next.requests.find(r=>r.method==='thread/resume').params.model);assert(!next.requests.some(r=>r.method==='turn/start'));}finally{await next.service.dispose();}
+ });
+ await test('增加工具后仍可重启续聊，旧线程只执行已登记且当前可用的工具',async()=>{
+  const map=path.join(temp,'resume-with-new-tool.json'),first=fixture({map});
+  try{const r=await first.service.chat({},user('首轮'),[],context());assert(r.ok,r.error);}finally{await first.service.dispose();}
+  const record=Object.values(JSON.parse(fs.readFileSync(map,'utf8')))[0];
+  const config={map,mode:'tool'},next=fixture(config);
+  const tools=[{name:'new_tool',inputSchema:{type:'object'}}],calls=[];
+  async function followUp(n){
+   const input='续聊 '+n,c=context(n,{expectedThreadId:record.id});
+   const r=await next.service.chat({},user(input),tools,c,()=>{},({call})=>{
+    calls.push(call.name);
+    assert(next.service.toolResult(c,call.id,{ok:true,text:'已读取'}).ok);
+   });
+   assert(r.ok,r.error);
+   assert.equal(r.text,'原生 Codex 回复');
+  }
+  try{
+   await followUp(2);
+   config.toolName='new_tool';
+   await followUp(3);
+   assert.deepEqual(calls,['ide_state']);
+   assert.equal(next.requests.find(r=>r.id==='server-turn-1').result.success,true);
+   assert.equal(next.requests.find(r=>r.id==='server-turn-2').result.success,false);
+   assert.deepEqual(next.requests.filter(r=>r.method==='turn/start').map(r=>[r.params.threadId,r.params.input[0].text]),[[record.id,'续聊 2'],[record.id,'续聊 3']]);
+   assert(!next.requests.some(r=>r.method==='thread/start'));
+   assert(!next.requests.some(r=>r.method==='thread/resume'&&'dynamicTools' in r.params));
+   assert.deepEqual(Object.values(JSON.parse(fs.readFileSync(map,'utf8')))[0].toolNames,['ide_state']);
+  }finally{await next.service.dispose();}
  });
  await test('下架模型不会偷偷换global选择；明确apply新model后仅一次turn改选',async()=>{
   const map=path.join(temp,'unavailable.json'),first=fixture({map});try{assert((await first.service.chat({},user('首轮'),[],context(),()=>{},()=>{})).ok);}finally{await first.service.dispose();}
