@@ -2197,16 +2197,23 @@ const AiPanel = (() => {
     }
     for(const item of failed){const row=document.createElement('div');row.className='ai-queue-item ai-queue-failed';const text=document.createElement('span');text.className='ai-queue-text';text.textContent='待确认／可恢复：'+item.draft.text;text.title=item.error;const restore=document.createElement('button');restore.type='button';restore.className='ai-queue-action';restore.textContent='恢复草稿';restore.onclick=async()=>{if(inputEl.value.trim()&&inputEl.value!==item.draft.raw&&(!await Modal.confirm('恢复草稿','输入框已有其他内容，确定替换为这条未确认的消息？')))return;if(item.draft.scope!==inputScopeKey())return;inputEl.value=item.draft.raw;pendingImages=item.draft.imgs.slice();autoGrowInput();renderImages();nativeInputRequests.delete(item.requestId);renderNativeInputUI();};row.append(text,restore);box.appendChild(row);}
   }
-  function followCodexQueue(key) {
-    const value = codexQueue?.key === key ? codexQueue.value : null;
-    codexQueue = { key, value, followUntil: Date.now() + 15000 };
+  function rememberCodexSubmission(key, itemId, text) {
+    // A list response started before the submission may omit its confirmed receipt.
+    nativeQueueReadTicket++;
+    const current = codexQueue?.key === key ? codexQueue.value?.items || [] : [];
+    const items = current.some(item => item.id === itemId) ? current : [...current, { id: itemId, mode: 'queue', text }];
+    codexQueue = { key, value: { available: true, items }, followUntil: Date.now() + 15000 };
   }
   function acceptNativeQueue(result,target){
     if(!result.queue)return;
     if (target.kind === 'codex') {
       const key = inputViewKey();
-      const followUntil = result.queue.items.length ? Date.now() + 15000 : codexQueue?.key === key ? codexQueue.followUntil : 0;
+      const previous = codexQueue?.key === key ? codexQueue : null;
+      const followUntil = result.queue.items.length ? Date.now() + 15000 : previous?.followUntil || 0;
+      const nextIds = new Set(result.queue.items.map(item => item.id));
+      const changed = previous?.value?.items.some(item => !nextIds.has(item.id));
       codexQueue = { key, value: result.queue, followUntil };
+      if (changed) void syncCodexLiveHistory(codexSelectedHistoryItem(), getConfig(), { refresh: true });
     }
     else if(target.kind==='run'){if(currentRun?.stream&&identityMatches(target.context,currentRun.stream.context))currentRun.inputQueue=result.queue;}
     else if(dshWatch?.watchId===target.watchId)dshWatch.state={...dshWatch.state,queue:result.queue};
@@ -2259,7 +2266,7 @@ const AiPanel = (() => {
       clearAcceptedDraft(draft);
       if (item?.rendered) nativeInputRequests.delete(requestId);
       if (mode === 'queue' && draft.key === inputViewKey()) {
-        followCodexQueue(draft.key);
+        rememberCodexSubmission(draft.key, result.itemId, draft.text);
         msgsEl.querySelector('.ai-codex-rejected')?.remove();
         void refreshNativeQueue(true);
       }
@@ -2413,7 +2420,7 @@ const AiPanel = (() => {
     if (!queued && !occupied) return false;
     if (queued) {
       removeCodexDraftMessage(draft);
-      if (!backgroundView) followCodexQueue(draft.key);
+      if (!backgroundView) rememberCodexSubmission(draft.key, result.itemId, draft.raw.trim());
     } else {
       if (!recoverRejectedCodexDraft(run, result)) {
         removeCodexDraftMessage(draft);
@@ -2540,18 +2547,12 @@ const AiPanel = (() => {
     const external = !b && dshObservedRunning(), stopping = !!dshWatch?.stopping;
     const codexArchived = !b && codexSelectedHistoryItem()?.archived;
     const queueMode = !b && codexPrimaryQueues();
-    sendBtn.classList.toggle('ai-codex-queue-send', queueMode);
-    if (queueMode) {
-      sendBtn.disabled = !inputEl.value.trim() || nativeInputPending || !nativeInputTarget();
-      sendBtn.textContent = nativeInputPending ? '排队中…' : '排队';
-      sendBtn.title = '排队到原会话，沿用该会话权限（Enter）';
-      sendBtn.setAttribute('aria-label', sendBtn.title);
-      return;
-    }
-    sendBtn.disabled = codexArchived || stopping || !b && !external &&
-      (!dshCanSend() || getConfig().engine === 'codex' && nativeInputPending);
+    const submitting = !b && getConfig().engine === 'codex' && nativeInputPending;
+    sendBtn.setAttribute('aria-busy', String(submitting));
+    sendBtn.disabled = queueMode ? !inputEl.value.trim() || submitting || !nativeInputTarget()
+      : codexArchived || stopping || !b && !external && (!dshCanSend() || submitting);
     sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b || external ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b || external ? '⏹' : '➤') + '</span>';
-    sendBtn.title = codexArchived ? '请先取消归档再发送' : b && currentRun?.engine==='codex' ? '请求中断当前 Codex 轮次，不影响其他会话' : b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : external ? '停止 DSH 当前会话；Enter 排队，Alt+Enter 插入' : '发送（Enter）';
+    sendBtn.title = queueMode ? '发送到原 Codex 会话，沿用原会话权限（Enter）' : codexArchived ? '请先取消归档再发送' : b && currentRun?.engine==='codex' ? '请求中断当前 Codex 轮次，不影响其他会话' : b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : external ? '停止 DSH 当前会话；Enter 排队，Alt+Enter 插入' : '发送（Enter）';
     sendBtn.setAttribute('aria-label', codexArchived ? sendBtn.title : b || external ? '停止生成' : '发送消息');
   }
 
@@ -2799,7 +2800,7 @@ const AiPanel = (() => {
     if (text.textContent !== label) text.textContent = label;
   }
 
-  async function syncCodexLiveHistory(selected, config) {
+  async function syncCodexLiveHistory(selected, config, { refresh = false } = {}) {
     if (!selected || selected.archived || busy || !panel || panel.classList.contains('hidden')) return;
     const ticket = sessionLoadTicket, scope = sessKey(), threadId = selected.threadId;
     const launcher = config.codexPath || '';
@@ -2811,8 +2812,9 @@ const AiPanel = (() => {
     const running = selected.running === true;
     const waitingForQueuedReply = codexQueue?.key === inputViewKey() && codexQueue.followUntil > Date.now();
     const unchanged = selected.revision && view.revision === selected.revision;
-    if (view.pending || historyReplayJob || !running && !view.observed && (!waitingForQueuedReply || unchanged) ||
-        running && view.observed && unchanged) return;
+    if (view.pending || historyReplayJob) return;
+    if (!refresh && (!running && !view.observed && (!waitingForQueuedReply || unchanged) ||
+        running && view.observed && unchanged)) return;
     const wanted = () => codexLiveView === view && !busy && sessionLoadTicket === ticket &&
       sessKey() === scope && currentCodexCatalog()?.launcher === launcher &&
       codexSelectedHistoryItem()?.threadId === threadId && !codexSelectedHistoryItem()?.archived;

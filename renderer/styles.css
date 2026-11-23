@@ -4830,7 +4830,6 @@ details[open] > .ai-tool-summary > .ai-tool-ic::after { transform: rotate(225deg
 #ai-send { width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0; color: var(--text-bright); background: color-mix(in srgb, var(--accent) 45%, var(--bg)); border: 0; }
 #ai-send:hover { background: var(--bg-selected); }
 #ai-send svg.ic { width: 17px; height: 17px; }
-#ai-send.ai-codex-queue-send { width: auto; min-width: 42px; padding-inline: 8px; font-size: 12px; border-radius: 8px; }
 #ai-codex-activity { padding-left: 12px; }
 .ai-input-help { display: flex; justify-content: space-between; gap: 8px; flex-basis: 100%; font-size: .77em; color: var(--text-dim); }
 @container (max-width: 350px) {

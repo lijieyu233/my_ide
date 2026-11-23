@@ -76,7 +76,8 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  fixture.threads.set(late.id,late);
  await until(()=>js(()=>document.getElementById('ai-send').disabled&&document.querySelector('.ai-hist-row.cur.running')&&
    [...document.querySelectorAll('[data-codex-project="desktop-b"] .ai-hist-nm')].some(node=>node.textContent==='桌面刚建的会话')),'automatic desktop refresh');
- check('Codex desktop activity switches the composer to native queue and updates the sidebar in place',await js(()=>document.getElementById('ai-send').textContent==='排队'&&
+ check('Codex keeps the normal send arrow on an external turn while authorizing the original thread',await js(()=>document.getElementById('ai-send').getAttribute('aria-label')==='发送消息'&&
+   document.getElementById('ai-send').title.includes('沿用原会话权限')&&document.querySelector('#ai-send svg')&&
    document.getElementById('ai-stop').classList.contains('hidden')&&
    document.getElementById('ai-codex-activity')?.textContent==='Codex 正在运行'&&
    !document.querySelector('[data-hist-refresh]').disabled));
@@ -105,11 +106,12 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  }));
  await js(()=>{
    const send=document.getElementById('ai-send'),box=send.getBoundingClientRect();
-   document.elementFromPoint(box.x+box.width/2,box.y+box.height/2).click();
+   document.elementFromPoint(box.x+box.width/2,box.y+box.height/2).closest('button').click();
    send.click();
  });
- await until(()=>original.inputQueue?.length===1&&js(()=>!document.getElementById('ai-input').value),'primary send submits despite unavailable queue list');
- check('The primary button submits exactly once while the native queue list is unavailable',
+ await until(()=>original.inputQueue?.length===1&&js(()=>!document.getElementById('ai-input').value&&
+   document.querySelector('#ai-input-queue .ai-queue-text')?.textContent==='等待桌面完成的草稿'), 'confirmed submission appears despite unavailable queue list');
+ check('The primary send button submits once and shows the confirmed pending message before polling works',
    fixture.requests.filter(r=>r.method==='thread/queue/add'&&r.params.threadId===externalId).length===1&&
    await js(()=>document.getElementById('ai-running-input-actions').classList.contains('hidden')));
  original.queueListUnavailable=false;
@@ -168,7 +170,8 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  const beforeRestrictedQueue=fixture.requests.filter(r=>r.method==='thread/queue/add').length;
  await js(()=>AiPanel.ask('HOLD_CODEX 续接桌面会话'));
  await until(()=>js(()=>AiPanel.__testParked().currentRun==='occupied'&&document.getElementById('ai-runstate').textContent.includes('正在 Codex 中打开')),'writer conflict stays in the composer');
- await until(()=>js(()=>!document.getElementById('ai-send').disabled&&document.getElementById('ai-send').textContent==='排队'),'primary queue action after native writer conflict');
+ await until(()=>js(()=>!document.getElementById('ai-send').disabled&&document.getElementById('ai-send').title.includes('沿用原会话权限')&&
+   document.getElementById('ai-send').getAttribute('aria-label')==='发送消息'&&document.querySelector('#ai-send svg')),'same send arrow after native writer conflict');
  check('A protected send restores the draft without a red history entry or automatic delegation',
    await js(()=>document.getElementById('ai-input').value==='HOLD_CODEX 续接桌面会话'&&!document.querySelector('.ai-codex-rejected')&&
      [...document.querySelectorAll('#ai-msgs .ai-user')].every(row=>!row.textContent.includes('HOLD_CODEX')))&&
