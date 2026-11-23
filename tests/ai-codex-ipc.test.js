@@ -19,9 +19,9 @@ const sandbox={ipcMain:{handle:(name,handler)=>handlers.set(name,handler)},mainW
   aiOwners:require('../src/main/ai/ai-owner-router').createRouter(),aiRuns:require('../src/main/ai/ai-runs').createRegistry(),CODEX:codex,
   DSH:{abort(){},hasRun:()=>false,chat:async(cfg,messages,tools,context)=>({ok:true,context})},
   AI:{abortChat(){},chatStream:async(cfg,messages,onChunk,tools,context)=>({ok:true,context})},aiTools:{bind(){}},
-  aiPermissionsBridge:{initialize:async()=>{},cancel(){},newSession(){},authority:{revoke(){}}},cancelAiSearch(){},require:createRequire(path.join(__dirname,'../main.js')),AbortController,console};
+  aiPermissionsBridge:{initialize:async()=>{},codexPermission:()=> 'read-only',cancel(){},newSession(){},authority:{revoke(){}}},cancelAiSearch(){},require:createRequire(path.join(__dirname,'../main.js')),AbortController,console};
 vm.runInNewContext(source.slice(source.indexOf('// AI 助手：流式对话'),source.indexOf("ipcMain.handle('ai:validateTool'")),sandbox);
-const invoke=(name,...args)=>handlers.get(name)(event,...args),cfg={engine:'codex',codexPath:'fixture.cmd'};
+const invoke=(name,...args)=>handlers.get(name)(event,...args),cfg={codexPermission:'danger-full-access',engine:'codex',codexPath:'fixture.cmd'};
 const context=(id,generation=1)=>({requestId:id,rootId:root,sessionId:state.sessionId,generation,round:0});
 const settled=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
 (async()=>{
@@ -55,6 +55,7 @@ const settled=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
     assert((await handlers.get('ai:chat')(fake,cfg,[],[],c)).error);assert.equal(pending.size,0);
     assert((await invoke('ai:chat',{engine:'unknown'},[],[],context('invalid'))).error);assert.equal(pending.size,0);
     first=invoke('ai:chat',cfg,[{role:'user',content:'fixture'}],tools,c);await settled();
+    assert.equal(calls.find(call=>call.kind==='chat').cfg.codexPermission,'read-only');
     const run=pending.get(c.requestId);assert(run);assert.equal(run.context.page.id,'project');const nativeContext=run.context;
     run.onEvent({type:'text',delta:'native text',messageId:'native-message'});run.onEvent({type:'native',method:'item/started',params:{}});run.onTool({call:{id:'tool-1',name:'ide_state',args:{}}});
     assert.equal(sent.filter(e=>e.channel==='ai:chunk').length,1);assert(sent.some(e=>e.channel==='ai:codex-event'&&e.value.type==='native'));assert(sent.some(e=>e.channel==='ai:codex-event'&&e.value.type==='tool'));assert(!sent.some(e=>e.channel==='ai:dsh-event'));

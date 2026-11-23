@@ -20,16 +20,26 @@
     } else if (data.type === 'policy') {
       $('title').textContent = '更改 AI 访问权限'; $('accept').textContent = '保存权限';
       $('note').textContent = '保存后即时生效，旧操作批准将失效。';
-      const names = { confirm: '每次确认', auto: '自动', full: '完全权限', deny: '禁止' };
-      for (const [key, label] of [['permWrite', '改文件'], ['permRun', '执行命令']]) line(label + '：' + names[data.before[key]] + ' → ' + names[data.after[key]]);
-      const fullWrite = data.after.permWrite === 'full', fullRun = data.after.permRun === 'full';
-      if (fullWrite || fullRun) {
-        const operations = [fullWrite && '清空文件', fullRun && '执行危险命令'].filter(Boolean).join('、');
-        $('note').classList.add('danger');
-        $('note').textContent = '完全权限适用于所有项目。' + operations + '也将免确认。保存后即时生效。';
+      if (data.modeChanged) {
+        const labels = { 'read-only': '按操作确认', 'workspace-write': '工作区写入', 'danger-full-access': '完全权限' };
+        line('Codex 权限：' + labels[data.before.codexPermission] + ' → ' + labels[data.after.codexPermission]);
+        const full = data.after.codexPermission === 'danger-full-access';
+        $('note').classList.toggle('danger', full);
+        $('note').textContent = (full ? 'Codex 可在沙箱外执行命令和修改文件，无需逐次确认。' : '') + '适用于 MyIDE 内的 Codex 会话，从下一轮起生效。';
       }
-      line('写入路径白名单：\n' + (data.after.allowPaths.join('\n') || '无'));
-      line('需确认的命令前缀' + (fullRun ? '（当前档位停用）' : '') + '：\n' + (data.after.denyCmds.join('\n') || '无'));
+      if (data.myideChanged !== false) {
+        const names = { confirm: '每次确认', auto: '自动', full: '完全权限', deny: '禁止' };
+        for (const [key, label] of [['permWrite', '改文件'], ['permRun', '执行命令']]) line(label + '：' + names[data.before[key]] + ' → ' + names[data.after[key]]);
+        const fullWrite = data.after.permWrite === 'full', fullRun = data.after.permRun === 'full';
+        if (fullWrite || fullRun) {
+          const operations = [fullWrite && '清空文件', fullRun && '执行危险命令'].filter(Boolean).join('、');
+          $('note').classList.add('danger');
+          const note = 'MyIDE 工具权限适用于所有项目。' + operations + '也将免确认。';
+          $('note').textContent = data.modeChanged ? $('note').textContent + '\n' + note : note;
+        }
+        line('写入路径白名单：\n' + (data.after.allowPaths.join('\n') || '无'));
+        line('需确认的命令前缀' + (fullRun ? '（当前档位停用）' : '') + '：\n' + (data.after.denyCmds.join('\n') || '无'));
+      }
     } else if(data.effect.browser){
       $('title').textContent=data.effect.label;$('accept').textContent='确认操作';$('target').textContent=data.effect.url||'内置浏览器';
       $('note').textContent='仅批准本次浏览器操作；网页跳转或目标元素变化后请重新读取。点击可能提交表单或发送数据。';

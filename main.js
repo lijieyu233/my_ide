@@ -841,7 +841,7 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
       const page=await e.sender.executeJavaScript('App.getPageContext()');assertCodexRun(e,context);
       // Codex 回包核验包含页面；aiRuns 的规范化身份不含页面，事件必须保留这份原生身份。
       context={...context,page};
-      r=await CODEX.chat(cfg,messages,tools||[],context,event=>{
+      r=await CODEX.chat({...cfg,codexPermission:aiPermissionsBridge.codexPermission()},messages,tools||[],context,event=>{
         try{assertCodexRun(e,context);}catch{return;}
         if(event.type==='text')send('ai:chunk',{delta:event.delta,messageId:event.messageId,context});else send('ai:codex-event',{...event,context});
       },event=>{try{assertCodexRun(e,context);send('ai:codex-event',{type:'tool',...event,context});}catch{CODEX.toolResult(context,event.call.id,{ok:false,text:'请求已停止，未执行工具'});}});

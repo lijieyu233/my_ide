@@ -45,6 +45,7 @@ function createServer(){
     const t=threads.get(p.threadId);
     return reply(message.id,{data:[{status:t.running?'inProgress':'completed'}],nextCursor:null});
    }
+   if(message.method==='permissionProfile/list')return reply(message.id,{data:[{id:':workspace',allowed:true}],nextCursor:null});
    if(message.method==='thread/start'){const t={id:'offline-thread-'+ ++threadSeq,cwd:p.cwd,model:p.model||models[0].model,running:false};threads.set(t.id,t);return reply(message.id,{thread:{id:t.id,cwd:t.cwd,turns:[]},cwd:t.cwd,model:t.model,reasoningEffort:'medium'});}
    if(message.method==='thread/resume'){
     const t=threads.get(p.threadId);

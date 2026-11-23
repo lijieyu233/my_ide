@@ -1,5 +1,6 @@
 const fs = require('fs'), path = require('path'), crypto = require('crypto');
 const Files = require('../files/file-write'), Authority = require('./ai-tool-authority');
+const codex = require('../codex/codex-permissions');
 const fail = (code, message) => Object.assign(Error(message), { code });
 const copy = value => JSON.parse(JSON.stringify(value));
 const rootKey = root => crypto.createHash('sha256').update(process.platform === 'win32' ? path.resolve(root).toLowerCase() : path.resolve(root)).digest('hex');
@@ -7,8 +8,10 @@ const defaults = () => ({ schema: 1, revision: 0, config: { write: 'confirm', ru
 function checked(input) {
   if (!input || input.schema !== 1 || !Number.isSafeInteger(input.revision) || input.revision < 0 || !input.projects || typeof input.projects !== 'object' || Array.isArray(input.projects)
     || Object.keys(input).some(k => !['schema', 'revision', 'config', 'projects'].includes(k)) || Object.keys(input.projects).length > 2048) throw fail('INVALID_AI_POLICY', 'AI权限文件结构无效');
-  const p = Authority.policy({ revision: input.revision, ...input.config });
-  if (Object.keys(input.config).some(k => !['write', 'run', 'allowPaths', 'denyCommands'].includes(k))) throw fail('INVALID_AI_POLICY', 'AI全局权限字段无效');
+  const { codexPermission = codex.defaultMode, ...toolConfig } = input.config;
+  const p = Authority.policy({ revision: input.revision, ...toolConfig });
+  if (Object.keys(input.config).some(k => !['write', 'run', 'allowPaths', 'denyCommands', 'codexPermission'].includes(k))) throw fail('INVALID_AI_POLICY', 'AI全局权限字段无效');
+  if (!codex.valid(codexPermission)) throw fail('INVALID_AI_POLICY', 'Codex 权限档位无效');
   const projects = {};
   for (const [key, value] of Object.entries(input.projects)) {
     if (!value || typeof value.root !== 'string' || !path.isAbsolute(value.root) || Buffer.byteLength(value.root) > 4096 || key !== rootKey(value.root)
@@ -16,7 +19,7 @@ function checked(input) {
     const project = Authority.policy({ revision: input.revision, rememberedWrite: value.rememberedWrite, rememberedRun: value.rememberedRun, commands: value.commands });
     projects[key] = { root: value.root, rememberedWrite: project.rememberedWrite, rememberedRun: project.rememberedRun, commands: project.commands };
   }
-  return { schema: 1, revision: input.revision, config: { write: p.write, run: p.run, allowPaths: p.allowPaths, denyCommands: p.denyCommands }, projects };
+  return { schema: 1, revision: input.revision, config: { write: p.write, run: p.run, allowPaths: p.allowPaths, denyCommands: p.denyCommands, codexPermission }, projects };
 }
 function createStore(file, options = {}) {
   const io = options.io || fs, writer = options.writer || Files.createWriter(io).atomicWrite;
@@ -62,19 +65,20 @@ function createStore(file, options = {}) {
   function read(owner, context) {
     ready(); const project = context.rootId ? state.projects[rootKey(context.rootId)] : null, session = sessions.get(sessionKey(owner, context)) || {};
     // 会话授权也递增代次；撤权再恢复不能复活已批准的具体操作。
-    return Authority.policy({ revision: state.revision + sessionRevision, ...state.config,
+    const { write, run, allowPaths, denyCommands } = state.config;
+    return Authority.policy({ revision: state.revision + sessionRevision, write, run, allowPaths, denyCommands,
       rememberedWrite: project?.rememberedWrite, rememberedRun: project?.rememberedRun, commands: project?.commands,
       sessionWrite: session.write, sessionRun: session.run });
   }
   function view(root) {
     ready(); const p = root ? state.projects[rootKey(root)] : null;
-    return { revision: state.revision + sessionRevision, config: { permWrite: state.config.write, permRun: state.config.run, allowPaths: copy(state.config.allowPaths), denyCmds: copy(state.config.denyCommands) },
+    return { revision: state.revision + sessionRevision, config: { permWrite: state.config.write, permRun: state.config.run, codexPermission: state.config.codexPermission, allowPaths: copy(state.config.allowPaths), denyCmds: copy(state.config.denyCommands) },
       permissions: { write: p?.rememberedWrite || false, run: p?.rememberedRun || false, cmds: copy(p?.commands || []) } };
   }
   function updateConfig(config, expectedRevision, verify) {
     ready(); if (expectedRevision !== state.revision + sessionRevision) throw fail('AI_POLICY_CHANGED', 'AI权限已变化，未保存旧选择');
     const next = copy(state); next.revision++;
-    next.config = { write: config.permWrite, run: config.permRun, allowPaths: config.allowPaths, denyCommands: config.denyCmds };
+    next.config = { write: config.permWrite, run: config.permRun, allowPaths: config.allowPaths, denyCommands: config.denyCmds, codexPermission: config.codexPermission ?? state.config.codexPermission };
     save(next, verify);
   }
   function remember(owner, { context, call, scope }, signal, verify) {

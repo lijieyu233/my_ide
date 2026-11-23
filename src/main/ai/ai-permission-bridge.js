@@ -1,4 +1,5 @@
 const path = require('path'), fs = require('fs');
+const codex = require('../codex/codex-permissions');
 function createBridge({ ipcMain, WebContentsView, tools, ownerOf, windowFor, policyFile, stopRequest }) {
   let store, ready; const sessionOwners = new Map();
   const ui = require('./ai-approval-ui').createUI({ ipcMain, WebContentsView, getWindow: windowFor,stopRequest:(owner,context)=>{stopRequest(owner,context);authority.revoke(owner);},
@@ -39,13 +40,22 @@ function createBridge({ ipcMain, WebContentsView, tools, ownerOf, windowFor, pol
   handle('permissions', (owner, event, root) => { rootOK(root); return { ok: true, ...view(root) }; });
   handle('updatePermissions', async(owner, event, root, config) => {
     rootOK(root);
-    if (!config || Object.keys(config).some(k => !['permWrite', 'permRun', 'allowPaths', 'denyCmds'].includes(k))) throw Error('AI权限选择无效');
-    const p = require('./ai-tool-authority').policy({ revision: 0, write: config.permWrite, run: config.permRun, allowPaths: config.allowPaths, denyCommands: config.denyCmds });
-    const after = { permWrite: p.write, permRun: p.run, allowPaths: p.allowPaths, denyCmds: p.denyCommands }, before = store.view(root);
-    if (JSON.stringify(before.config) !== JSON.stringify(after)) {
-      const answer = await ui.open({ type: 'policy', owner, before: before.config, after }, new AbortController().signal);
-      if (!answer.approved) return { ok: false, error: '用户取消了AI权限变更', errorCode: 'AI_PERMISSION_DENIED', ...view(root) };
-      store.updateConfig(after, before.revision, () => ownerOf(event)); authority.revoke(owner);
+    if (!config || Object.keys(config).some(k => !['permWrite', 'permRun', 'allowPaths', 'denyCmds', 'codexPermission'].includes(k))) throw Error('AI权限选择无效');
+    const before = store.view(root), fields = { ...before.config, ...config };
+    const p = require('./ai-tool-authority').policy({ revision: 0, write: fields.permWrite, run: fields.permRun, allowPaths: fields.allowPaths, denyCommands: fields.denyCmds });
+    const mode = fields.codexPermission;
+    if (!codex.valid(mode)) throw Error('Codex 权限档位无效');
+    const after = { permWrite: p.write, permRun: p.run, codexPermission: mode, allowPaths: p.allowPaths, denyCmds: p.denyCommands };
+    const myideChanged = ['permWrite', 'permRun', 'allowPaths', 'denyCmds'].some(key => JSON.stringify(before.config[key]) !== JSON.stringify(after[key]));
+    const modeChanged = before.config.codexPermission !== mode;
+    if (myideChanged || modeChanged) {
+      const modes = ['read-only', 'workspace-write', 'danger-full-access'];
+      if (myideChanged || modes.indexOf(mode) > modes.indexOf(before.config.codexPermission)) {
+        const answer = await ui.open({ type: 'policy', owner, before: before.config, after, myideChanged, modeChanged }, new AbortController().signal);
+        if (!answer.approved) return { ok: false, error: '用户取消了AI权限变更', errorCode: 'AI_PERMISSION_DENIED', ...view(root) };
+      }
+      store.updateConfig(after, before.revision, () => ownerOf(event));
+      if (myideChanged) authority.revoke(owner);
     }
     broadcast(owner, root); return { ok: true, ...view(root) };
   });
@@ -64,6 +74,7 @@ function createBridge({ ipcMain, WebContentsView, tools, ownerOf, windowFor, pol
   handle('authorize', async(owner, event, context, call) => { const result = await authority.authorize(owner, context, call); broadcast(owner, context.rootId); return { ...result, permissions: view(context.rootId) }; });
   return {pending:(owner,root)=>ui.status(windowFor(owner),root), initialize, authority, cancel: owner => { authority.revoke(owner); ui.cancelOwner(owner); }, reset: owner => { authority.revoke(owner); ui.cancelOwner(owner); store?.clearSession(owner); sessionOwners.delete(owner); },
     newSession: ensureSession,
+    codexPermission: () => store.view('').config.codexPermission,
     protect: target => { if (store && [path.resolve(store.file), fs.realpathSync(store.file)].some(file => path.relative(file, path.resolve(target)) === '')) throw Object.assign(Error('AI工具不能修改自身授权存储'), { code: 'AI_PERMISSION_DENIED' }); } };
 }
 module.exports = { createBridge };

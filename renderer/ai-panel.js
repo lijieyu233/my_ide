@@ -620,6 +620,8 @@ const AiPanel = (() => {
     auto: '自动审批',
     custom: '自定义权限',
   };
+  const codexPermissionLabels = { 'read-only': '按操作确认', 'workspace-write': '工作区写入', 'danger-full-access': '完全权限' };
+  const codexPermissionMode = () => authorityConfig?.codexPermission || 'read-only';
   let permPop = null, dshPermissionSelection = null;
   function nativePermissionTarget() {
     if (dshScopeMismatch()) return null;
@@ -643,6 +645,13 @@ const AiPanel = (() => {
       if (label) label.textContent = preset?.label || 'DSH 权限';
       return;
     }
+    if (getConfig().engine === 'codex') {
+      const mode = codexPermissionMode(), text = codexPermissionLabels[mode];
+      b.classList.toggle('on', mode !== 'read-only');
+      b.title = 'Codex 权限：' + text;
+      if (label) label.textContent = text;
+      return;
+    }
     const write = permWrite(), run = permRun();
     b.classList.toggle('on', [write, run].some(mode => mode === 'auto' || mode === 'full') || !!loadPerms().write);
     b.title = '访问权限：改文件 ' + myidePermissionLabels[write] + ' · 执行命令 ' + myidePermissionLabels[run];
@@ -652,8 +661,8 @@ const AiPanel = (() => {
   function togglePermPop() { if (permPop) closePermPop(); else renderPermPop(); }
   function renderPermPop(localOpen = false) {
     closePermPop();
-    const segHtml = (key, cur) => {
-      return '<div class="ai-seg">' + Object.entries(myidePermissionLabels).map(([mode, label]) =>
+    const segHtml = (key, cur, labels = myidePermissionLabels) => {
+      return '<div class="ai-seg">' + Object.entries(labels).map(([mode, label]) =>
         '<button data-set="' + key + ':' + mode + '" class="' + (mode === cur ? 'on' : '') + '" aria-pressed="' + (mode === cur) + '">' + label + '</button>').join('') + '</div>';
     };
     const pop = document.createElement('div');
@@ -680,8 +689,9 @@ const AiPanel = (() => {
       }
       html += '</div>';
     }
-    if (native) html = '<div class="ai-native-permissions"></div><details class="ai-perm-local"' + (localOpen ? ' open' : '') + '><summary>MyIDE 工具权限</summary>' + html + '</details>';
-    if (engine === 'codex') html = '<div class="ai-perm-lb">Codex 原生工具 · 按操作确认</div><div class="ai-perm-lb">MyIDE 工具权限</div>' + html;
+    if (native || engine === 'codex') html = '<details class="ai-perm-local"' + (localOpen ? ' open' : '') + '><summary>MyIDE 工具权限</summary>' + html + '</details>';
+    if (native) html = '<div class="ai-native-permissions"></div>' + html;
+    if (engine === 'codex') html = '<div class="ai-perm-sec"><span class="ai-perm-lb">Codex 权限</span>' + segHtml('codexPermission', codexPermissionMode(), codexPermissionLabels) + '</div>' + html;
     pop.innerHTML = html;
     panel.appendChild(pop);
     // 权限入口位于输入卡片，浮层应从按钮上方展开，而不是仍锚在旧标题栏。
@@ -702,7 +712,7 @@ const AiPanel = (() => {
         if (permPop === pop) renderPermPop(pop.querySelector('.ai-perm-local')?.open);
         syncPermBtn();
         const k = t.dataset.set.slice(0, i);
-        MI.toast(k === 'permWrite' ? '改文件权限：' + (t.textContent) : '执行命令权限：' + (t.textContent), 'ok');
+        if (k !== 'codexPermission') MI.toast((k === 'permWrite' ? '改文件权限：' : '执行命令权限：') + t.textContent, 'ok');
         return;
       }
       if (t.dataset && t.dataset.clear) {
@@ -717,7 +727,9 @@ const AiPanel = (() => {
         syncPermBtn();
         MI.toast('已清除该授权（下次会重新询问）', 'ok');
       }
-      } catch (error) { MI.toast(error.message, 'err'); } finally { t.disabled = false; }
+      } catch (error) {
+        if (!t.dataset?.set?.startsWith('codexPermission:') || error.code !== 'AI_PERMISSION_DENIED') MI.toast(error.message, 'err');
+      } finally { t.disabled = false; }
     });
     document.addEventListener('mousedown', function onOut(ev) {
       if (!permPop) { document.removeEventListener('mousedown', onOut); return; }
@@ -1262,14 +1274,15 @@ const AiPanel = (() => {
     const contextChanged=Object.hasOwn(c||{},'autoIdeContext')&&c.autoIdeContext!==previousConfig.autoIdeContext;
     const switching=!!c?.engine&&c.engine!==(getConfig().engine||'standard');
     if(switching){resetDshWatch();persistSession();if(currentRun?.engine==='codex')detachRun();else stopRun(true);dshOptionsTicket++;dshConfigOptions=[];dshOptionsState='idle';}
-    const keys = ['permWrite','permRun','allowPaths','denyCmds'], other = Object.fromEntries(Object.entries(c || {}).filter(([key])=>!keys.includes(key)));
+    const keys = ['permWrite','permRun','allowPaths','denyCmds','codexPermission'];
+    const other = Object.fromEntries(Object.entries(c || {}).filter(([key])=>!keys.includes(key)));
     if(Object.hasOwn(other,'dshModel')||Object.hasOwn(other,'dshReasoning'))other.dshConnection='desktop-native-v1';
     let result = { ok: true };
     if (keys.some(key=>Object.hasOwn(c || {},key))) {
-      const permissions=Object.fromEntries(keys.map(key=>[key,(c || {})[key] ?? getConfig()[key] ?? (key==='permWrite'||key==='permRun'?'confirm':[])]));
+      const permissions = Object.fromEntries(Object.entries(c).filter(([key]) => keys.includes(key)));
       result = await window.myIDE.ai.updatePermissions((window.App && App.root)||'',permissions);
       if (result?.config) receivePermissions(result);
-      if (!result?.ok) throw Error(result?.error || 'AI权限保存失败');
+      if (!result?.ok) throw Object.assign(Error(result?.error || 'AI权限保存失败'), { code: result?.errorCode });
     }
     // 确认取消时保留整份草稿；等待期间的新模型选择也不能被旧配置快照覆盖。
     localStorage.setItem(LS_CFG, JSON.stringify({ ...getConfig(), ...other }));
@@ -1305,7 +1318,7 @@ const AiPanel = (() => {
     const needsLogin=result?.ok&&result.requiresOpenaiAuth===true&&result.loggedIn!==true;
     dshOptionsState=result?.ok&&!needsLogin?'ready':'error';dshConfigOptions=result?.ok?result.configOptions||[]:[];
     if(needsLogin)result={...result,ok:false,error:'Codex 尚未登录，请先在官方 Codex 客户端或 CLI 登录，再点击重新连接；MyIDE 不读取、复制或代填登录凭据。'};
-    if(info){info.textContent=needsLogin?'Codex 已连接 · 未登录':result?.ok?'Codex 已连接':'Codex 连接失败';info.title=result?.ok?'Codex 原生沙箱：只读，单次操作审批；MyIDE 工具仍需独立授权。不旁听其他客户端，也不模拟 DSH 排队。'+(result.modelConfirmation==='pending-native-resume'?' 原会话模型将在发送前由原生恢复确认。':''):result?.error||'请检查 Codex 启动器与本机登录状态';}
+    if(info){info.textContent=needsLogin?'Codex 已连接 · 未登录':result?.ok?'Codex 已连接':'Codex 连接失败';info.title=result?.ok?'Codex 权限可在输入框的盾牌菜单设置。'+(result.modelConfirmation==='pending-native-resume'?' 原会话模型将在发送前由原生恢复确认。':''):result?.error||'请检查 Codex 启动器与本机登录状态';}
     if(result?.ok)dshSessionAccess={sessionId,hostId:result.sessionId||'',state:'ready',scope:dshScope(),epoch,error:''};
     refreshModelSel();setBusyUI(busy);
   }

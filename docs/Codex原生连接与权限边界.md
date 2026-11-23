@@ -38,7 +38,7 @@ MyIDE 启动自己拥有的 `codex app-server --stdio` 子进程，使用换行 
 
 Codex 原生命令、文件修改等仅作为原生活动展示，MyIDE 不重复执行。
 
-- 原生线程从只读沙箱开始，审批策略固定 `on-request`、reviewer 为用户。支持命令/文件/延迟网络的单次确认；不授予 session 级或规则级长期批准。
+- 输入框盾牌菜单可切换 Codex 的「按操作确认」「工作区写入」「完全权限」。提升档位经可信确认保存，由主进程将沙箱和审批策略传给原生 Codex。新档位从 MyIDE 发起的下一轮起生效。
 - 网络审批展示目标 host/protocol，文件审批显示路径与补丁资料，不以之前的工具摘要替换当前审批材料。
 - 整轮/会话权限 profile 扩权不在首版支持范围，明确拒绝；不能把它伪装成“仅一次允许”。秘密问题不放进普通文本问答框，提示走官方安全流程。
 - MyIDE 工具通过 Codex dynamicTools 进入原有 validate/authority/可信确认流程。Codex 原生批准不授予 MyIDE 写入权限，MyIDE 的自动模式也不代替 Codex 原生审批。

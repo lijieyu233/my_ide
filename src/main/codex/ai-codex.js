@@ -307,7 +307,7 @@ function createService(options={}){
     return { ...history.threadSummary(thread), rootDir, localId, messages };
   }
 
-  async function attach(conn,cfg,context,tools,run,catalogue,info){
+  async function attach(conn,cfg,context,tools,run,catalogue,info,threadPolicy){
     return locked(info.key,async()=>{
       live(run);let session=sessions.get(info.key),record=saved.get(info.key);
       if(!session){session={...info,id:record?.id,model:record?.model,effort:record?.effort,toolNames:record?.toolNames,blocked:record?.blocked,external:record?.external===true,attached:false,run:null,stopping:null};sessions.set(info.key,session);}
@@ -327,7 +327,7 @@ function createService(options={}){
       if(!session.attached||session.conn!==conn){
         const fresh=!session.id,pending=pendingChoices.get(info.key),requested=pending?.model||(!fresh?null:cfg.codexModel)||null;
         if(requested)validateChoice(catalogue.models,requested,pending?.effort||(!fresh?null:cfg.codexReasoning));live(run);
-        let response;try{response=await conn.rpc.request(fresh?'thread/start':'thread/resume',{...(fresh?{dynamicTools:specs,allowProviderModelFallback:false,cwd:info.cwd}:{threadId:session.id,excludeTurns:true}),approvalPolicy:'on-request',approvalsReviewer:'user',sandbox:'read-only',...(requested&&fresh?{model:requested}:{})},options.requestTimeoutMs||45000);}catch(error){if(error.code===-32601||error.code===-32602)throw Error('本机 Codex app-server 不支持所需实验协议，请更新兼容版本；不会新建替代线程或重发任务');throw error;}
+        let response;try{response=await conn.rpc.request(fresh?'thread/start':'thread/resume',{...(fresh?{dynamicTools:specs,allowProviderModelFallback:false,cwd:info.cwd}:{threadId:session.id,excludeTurns:true}),...threadPolicy,...(requested&&fresh?{model:requested}:{})},options.requestTimeoutMs||45000);}catch(error){if(error.code===-32601||error.code===-32602)throw Error('本机 Codex app-server 不支持所需实验协议，请更新兼容版本；不会新建替代线程或重发任务');throw error;}
         if (session.external) history.assertIdle(response.thread || {});
         let matchingCwd=false;try{matchingCwd=norm(await canonical(response.cwd||response.thread?.cwd))===norm(info.cwd);}catch{}
         const mismatch=typeof response.thread?.id!=='string'||!response.model||(!fresh&&response.thread.id!==session.id)||!matchingCwd;
@@ -358,10 +358,17 @@ function createService(options={}){
     try{
       const input=promptContent(messages,context.page),info=await identity(context);live(run);statusEvent(run,'connecting','正在连接本机 Codex app-server');
       const conn=await connect(cfg);statusEvent(run,'catalog','正在核对 Codex 账号状态与模型目录');const data=await catalog(conn);live(run);if(data.requiresOpenaiAuth&&!data.loggedIn)throw Error('本机 Codex 尚未登录，请在 Codex 官方客户端或 CLI 中登录后重新连接');
-      statusEvent(run,'resuming','正在创建或恢复原生 Codex 线程');const {session,model,effort,pending}=await attach(conn,cfg,context,tools,run,data,info);live(run);
+      const permission = require('./codex-permissions').policy(cfg.codexPermission);
+      if (permission.thread.permissions) {
+        const profiles = await historyRequest(conn)('permissionProfile/list', { cwd: info.cwd });
+        if (!profiles?.data?.some(profile => profile.id === permission.thread.permissions && profile.allowed === true)) {
+          throw Error('当前 Codex 配置不允许使用工作区写入权限');
+        }
+      }
+      statusEvent(run,'resuming','正在创建或恢复原生 Codex 线程');const {session,model,effort,pending}=await attach(conn,cfg,context,tools,run,data,info,permission.thread);live(run);
       emit(run,{type:'config',configOptions:configOptions(data.models,model,effort)});statusEvent(run,'submitting','正在提交本轮输入，等待 Codex 原生确认');
       run.accepting=true;
-      const started=await conn.rpc.request('turn/start',{threadId:session.id,input,...(pending?{model}:{}),...(effort?{effort}:{}),approvalPolicy:'on-request',approvalsReviewer:'user'},options.requestTimeoutMs||45000);
+      const started=await conn.rpc.request('turn/start',{threadId:session.id,input,...(pending?{model}:{}),...(effort?{effort}:{}),...permission.turn},options.requestTimeoutMs||45000);
       if(typeof started?.turn?.id!=='string')throw Error('Codex 未返回有效 turn 身份；不会重发本次请求');run.turnId=started.turn.id;statusEvent(run,'accepted','Codex 原生已确认接受本轮，等待回复或工具活动');activity(run);
       session.model=model;session.effort=effort;saved.set(info.key,{id:session.id,cwd:info.cwd,model,effort,toolNames:session.toolNames,...(session.external?{external:true}:{})});if(pendingChoices.get(info.key)===pending)pendingChoices.delete(info.key);await persist();
       while(run.queue.length){const {kind,message}=run.queue.shift();if(kind==='request')serverRequest(conn,message,true);else notification(conn,message,true);}run.buffering=false;run.queuedBytes=0;
@@ -373,7 +380,7 @@ function createService(options={}){
     }catch(error){
       const rejectedBeforeTurn = !run.accepting || (!run.turnId && (error.rpcResponseReceived === true || error.rpcNotSent === true));
       if(run.accepting&&!run.settled){if(run.turnId)interrupt(run);else if(run.session&&!rejectedBeforeTurn)run.session.stopping='unknown';}
-      const stages={'thread/resume':'恢复原会话','thread/start':'创建会话','turn/start':'发送消息','thread/list':'核对会话','thread/read':'读取会话','thread/turns/list':'核对轮次','account/read':'读取账号','model/list':'读取模型'};
+      const stages={'thread/resume':'恢复原会话','thread/start':'创建会话','turn/start':'发送消息','thread/list':'核对会话','thread/read':'读取会话','thread/turns/list':'核对轮次','permissionProfile/list':'核对工作区权限','account/read':'读取账号','model/list':'读取模型'};
       const message=error.kind==='threadInUse'?'会话由另一 Codex 进程占用。退出占用端后重试，或右键会话选择「分叉」。':error.rpcResponseReceived?
         'Codex '+(stages[error.rpcMethod]||'原生请求')+'失败'+(Number.isInteger(error.code)?'（RPC '+error.code+'）':'')+'。':error.message;
       const rejection={...(error.kind?{errorCode:error.kind}:{}),...(Number.isInteger(error.code)?{rpcErrorCode:error.code}:{}),

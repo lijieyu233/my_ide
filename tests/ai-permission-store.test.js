@@ -11,8 +11,20 @@ function fixture(options){const root=fs.mkdtempSync(path.join(os.tmpdir(),'myide
     assert.equal(initial.config.permWrite, 'confirm');
     assert.equal(initial.config.permRun, 'confirm');
     f.store.updateConfig(config, initial.revision);
-    assert.deepEqual(createStore(f.file).view(f.root).config, config);
+    assert.deepEqual(createStore(f.file).view(f.root).config, { ...config, codexPermission: 'read-only' });
     assert.equal(createStore(f.file).read(1, f.context).run, 'full');
+  });
+  await test('Codex 档位独立保存，旧配置和渲染缓存不能授予', () => {
+    const f = fixture();
+    f.store.initialize({ config: { codexPermission: 'danger-full-access' } });
+    const { codexPermission, ...tools } = f.store.view(f.root).config;
+    assert.equal(codexPermission, 'read-only');
+    f.store.updateConfig({ ...tools, codexPermission: 'danger-full-access' }, 0);
+    const reloaded = createStore(f.file);
+    reloaded.updateConfig({ ...tools, permRun: 'deny' }, 1);
+    assert.equal(reloaded.view(f.root).config.codexPermission, 'danger-full-access');
+    assert.equal(reloaded.read(1, f.context).run, 'deny');
+    assert.throws(() => reloaded.updateConfig({ ...tools, codexPermission: 'invalid' }, 2), /Codex/);
   });
   await test('损坏/非法UTF8/未知格式不退默认值，不覆盖原件',()=>{for(const body of [Buffer.from('{broken'),Buffer.from([0xff]),Buffer.from(JSON.stringify({schema:5})),Buffer.alloc(2*1024*1024+1)]){const f=fixture();fs.writeFileSync(f.file,body);assert.throws(()=>f.store.initialize({}));assert.deepEqual(fs.readFileSync(f.file),body);assert.throws(()=>f.store.read(1,f.context));}});
   await test('权限发布失败保留旧内存、旧档位和旧磁盘，不能虚报保存',()=>{const f=fixture();f.store.initialize({});const original=fs.readFileSync(f.file);const broken=createStore(f.file,{writer:()=>{throw Object.assign(Error('fixture'),{code:'EIO'});}});broken.initialize({});assert.throws(()=>broken.updateConfig({permWrite:'auto',permRun:'auto',allowPaths:[],denyCmds:[]},0),e=>e.code==='EIO');assert.equal(broken.read(1,f.context).write,'confirm');assert.deepEqual(fs.readFileSync(f.file),original);});
