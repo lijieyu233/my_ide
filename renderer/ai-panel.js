@@ -190,6 +190,7 @@ const AiPanel = (() => {
     for(const [id,item] of nativeInputRequests)if(item.run===run){if(item.rendered)nativeInputRequests.delete(id);else if(item.accepted&&!item.error)item.error='本次运行已结束，但这条消息尚未确认被消费。请先刷新原生队列确认，再决定是否恢复草稿。';}
     renderNativeInputUI();
     if (run.stream) Promise.resolve(window.myIDE.ai.finish(run.stream.context)).catch(() => {});
+    if (!backgroundView && run.engine === 'codex') void refreshNativeQueue(true);
     reconcileDshAfterOwn(run).catch(() => {});
   }
   function stopRun(invalidate = false) {
@@ -2159,6 +2160,11 @@ const AiPanel = (() => {
     if (getConfig().engine === 'codex') return codexQueue?.key === inputViewKey() ? codexQueue.value : null;
     return dshOwnRun()?currentRun.inputQueue:dshWatch&&dshWatchWanted(dshWatch)?dshWatch.state?.queue:null;
   }
+  function codexContinuationId() {
+    if (getConfig().engine !== 'codex' || busy || codexObservedRunning() || inputEl?.value.trim() || pendingImages.length) return null;
+    const queue = nativeQueueSource();
+    return queue && !queue.items.length ? queue.interruptedTurnId : null;
+  }
   function freezeInputDraft(){
     const text=(inputEl.value||'').trim();if(!text)return null;
     const files=effectiveCtxFiles().filter(file=>!file.auto).map(file=>({...file})),imgs=pendingImages.slice();
@@ -2357,7 +2363,9 @@ const AiPanel = (() => {
   }
   async function send(inputOptions) {
     if (busy || getConfig().engine === 'codex' && nativeInputPending || rejectDshSend(inputOptions?.codexIdle)) return;
-    const text = (inputEl.value || '').trim();
+    const continuation = inputOptions?.codexContinueTurnId;
+    if (continuation && continuation !== codexContinuationId()) return;
+    const text = continuation ? '继续' : (inputEl.value || '').trim();
     if (!text) return;
     const cfg = getConfig();
     if (!nativeEngine(cfg.engine)&&(!cfg.baseUrl || !cfg.model)) {
@@ -2369,6 +2377,10 @@ const AiPanel = (() => {
     setBusyUI(true);
     const run = beginRun();
     if (inputOptions?.codexIdle) run.inputTransport = { codexQueueOnConflict: true };
+    if (continuation) {
+      run.inputTransport = { codexContinueTurnId: continuation };
+      codexQueue.value.interruptedTurnId = null;
+    }
     if(inputOptions?.draft){run.initialInputDraft=inputOptions.draft;run.inputTransport={dshWatchId:inputOptions.dshWatchId,dshInputMode:inputOptions.dshInputMode,expectedRunId:inputOptions.expectedRunId};}
     if (!run.initialInputDraft && cfg.engine !== 'codex') await followActive();
     if (!runIsLive(run)) return;
@@ -2387,7 +2399,7 @@ const AiPanel = (() => {
     if (w) w.remove();
     // 文件上下文在发送时并入该条 user 消息（一次性，不污染后续 tool_results 轮次）
     let content = text;
-    const files = run.initialInputDraft?run.initialInputDraft.message._dshAttachments.map(f=>({path:f.path,content:f.content,special:f.kind==='clipboard'?'clip':undefined,isDir:f.kind==='directory'})):effectiveCtxFiles().filter(f=>!nativeEngine(cfg.engine)||!f.auto);
+    const files = continuation ? [] : run.initialInputDraft?run.initialInputDraft.message._dshAttachments.map(f=>({path:f.path,content:f.content,special:f.kind==='clipboard'?'clip':undefined,isDir:f.kind==='directory'})):effectiveCtxFiles().filter(f=>!nativeEngine(cfg.engine)||!f.auto);
     if (files.length && !nativeEngine(cfg.engine)) {
       const blocks = files.map((f) => '（' + (f.isDir ? '目录 ' : '文件 ') + f.path + ' 的' + (f.isDir ? '结构' : '内容') + '：）\n```\n' + f.content + '\n```');
       content = blocks.join('\n\n') + '\n\n' + text;
@@ -2629,13 +2641,14 @@ const AiPanel = (() => {
     const external = !b && dshObservedRunning(), stopping = !!dshWatch?.stopping;
     const codexArchived = !b && codexSelectedHistoryItem()?.archived;
     const queueMode = !b && codexPrimaryQueues();
+    const continuation = !b && !queueMode && !codexArchived && codexContinuationId();
     const submitting = !b && getConfig().engine === 'codex' && nativeInputPending;
     sendBtn.setAttribute('aria-busy', String(submitting));
     sendBtn.disabled = queueMode ? !inputEl.value.trim() || submitting || !nativeInputTarget()
       : codexArchived || stopping || !b && !external && (!dshCanSend() || submitting);
-    sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b || external ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b || external ? '⏹' : '➤') + '</span>';
-    sendBtn.title = queueMode ? '发送到原 Codex 会话，沿用原会话权限（Enter）' : codexArchived ? '请先取消归档再发送' : b && currentRun?.engine==='codex' ? '请求中断当前 Codex 轮次，不影响其他会话' : b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : external ? '停止 DSH 当前会话；Enter 排队，Alt+Enter 插入' : '发送（Enter）';
-    sendBtn.setAttribute('aria-label', codexArchived ? sendBtn.title : b || external ? '停止生成' : '发送消息');
+    sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b || external ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : continuation ? '<path d="M5 3v10l8-5z" fill="currentColor" stroke="none"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b || external ? '⏹' : '➤') + '</span>';
+    sendBtn.title = continuation ? '继续上一次中断的任务' : queueMode ? '发送到原 Codex 会话，沿用原会话权限（Enter）' : codexArchived ? '请先取消归档再发送' : b && currentRun?.engine==='codex' ? '请求中断当前 Codex 轮次，不影响其他会话' : b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : external ? '停止 DSH 当前会话；Enter 排队，Alt+Enter 插入' : '发送（Enter）';
+    sendBtn.setAttribute('aria-label', codexArchived ? sendBtn.title : b || external ? '停止生成' : continuation ? '继续' : '发送消息');
   }
 
   // ---------- 历史会话（保存 / 切换 / 重命名 / 删除）----------
@@ -5371,7 +5384,8 @@ const AiPanel = (() => {
       sendBtn.onclick = () => {
         if (busy || dshObservedRunning()) { stopVisibleRun(); return; }
         if (codexPrimaryQueues()) { void submitRunningInput('queue'); return; }
-        send();
+        const turnId = codexContinuationId();
+        send(turnId ? { codexContinueTurnId: turnId } : undefined);
       };
     }
     if (inputEl) {

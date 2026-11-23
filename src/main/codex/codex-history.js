@@ -104,17 +104,22 @@ function assertIdle(thread, latestTurn) {
   }
 }
 
-async function assertThreadIdle(request, thread) {
-  assertIdle(thread);
+async function readLatestTurn(request, thread) {
   if (thread.historyMode === 'paginated') {
     const result = await request('thread/turns/list', { threadId: thread.id, limit: 1, sortDirection: 'desc', itemsView: 'notLoaded' });
     if (!Array.isArray(result?.data)) throw Error('无法核对 Codex 会话的最新轮次');
-    assertIdle(thread, result.data[0]);
+    return { thread, turn: result.data[0] };
   } else {
     const result = await request('thread/read', { threadId: thread.id, includeTurns: true });
     if (result.thread?.id !== thread.id || !Array.isArray(result.thread.turns)) throw Error('无法核对 Codex 会话的最新轮次');
-    assertIdle(result.thread, result.thread.turns.at(-1));
+    return { thread: result.thread, turn: result.thread.turns.at(-1) };
   }
+}
+
+async function assertThreadIdle(request, thread) {
+  assertIdle(thread);
+  const latest = await readLatestTurn(request, thread);
+  assertIdle(latest.thread, latest.turn);
 }
 
 function activityTitle(summary) {
@@ -196,4 +201,4 @@ async function readMessages(request, thread, redact) {
   return { messages: messages.reverse(), activity: activity || (runningCommand ? '正在执行命令' : ''), activityId };
 }
 
-module.exports = { provisionalProjectKey, isProjectThread, listProjects, listProjectThreads, findProjectThread, readProjectThread, threadSummary, readMessages, activityTitle, assertThreadIdle, assertIdle, inputId };
+module.exports = { provisionalProjectKey, isProjectThread, listProjects, listProjectThreads, findProjectThread, readProjectThread, threadSummary, readMessages, activityTitle, readLatestTurn, assertThreadIdle, assertIdle, inputId };

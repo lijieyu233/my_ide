@@ -504,6 +504,17 @@ function createService(options={}){
       }
       statusEvent(run,'resuming','正在创建或恢复原生 Codex 线程');
       const binding = saved.get(info.key);
+      if (cfg.codexContinueTurnId) {
+        if (!binding?.id) throw Error('没有可继续的 Codex 原会话');
+        const request = historyRequest(conn);
+        const { thread } = await request('thread/read', { threadId: binding.id, includeTurns: false });
+        if (thread?.id !== binding.id || norm(await canonical(thread.cwd)) !== norm(info.cwd)) throw Error('Codex 会话身份不匹配');
+        const { thread: checkedThread, turn: latest } = await history.readLatestTurn(request, thread);
+        if (latest?.id !== cfg.codexContinueTurnId || latest.status !== 'interrupted' || checkedThread.status?.type === 'active') {
+          throw Error('上一轮已变化，无法继续该轮次');
+        }
+        live(run);
+      }
       let attached;
       try { attached = await attach(conn,cfg,context,tools,run,data,info,permission.thread); }
       catch (error) {
@@ -511,7 +522,7 @@ function createService(options={}){
         const writerConflict = error.kind === 'threadInUse' && error.rpcMethod === 'thread/resume' &&
           error.rpcResponseReceived === true;
         const queueAllowed = cfg.codexQueueOnConflict === true || permission.thread.sandbox === 'danger-full-access';
-        if ((!writerConflict && error.kind !== 'threadBusy') || !queueAllowed || info.scope !== 'project' ||
+        if (cfg.codexContinueTurnId || (!writerConflict && error.kind !== 'threadBusy') || !queueAllowed || info.scope !== 'project' ||
             !binding?.id || binding.blocked || saved.get(info.key) !== binding || pendingChoices.has(info.key)) throw error;
         const request = historyRequest(conn);
         if (writerConflict) {
@@ -595,7 +606,7 @@ function createService(options={}){
   async function changeInput(cfg, context, target, action) {
     if (!['list', 'queue', 'remove', 'steer'].includes(action?.kind)) throw Error('Codex 队列操作无效');
     const run = target.run ? owned(target.run) : null;
-    let conn, threadId;
+    let conn, threadId, thread;
     if (target.run) {
       if (!run?.turnId || run.buffering) throw Error('Codex 当前轮次尚未确认或已经结束');
       ({ conn } = run);
@@ -609,6 +620,7 @@ function createService(options={}){
           norm(record.cwd) !== norm(info.cwd)) throw Error('Codex 会话身份已变化');
       const listed = await history.findProjectThread(historyRequest(conn), record.id);
       if (!listed || norm(await projectThreadRoot(listed)) !== norm(info.cwd)) throw Error('无法核对原 Codex 会话');
+      thread = listed;
       threadId = record.id;
       if (action.kind === 'queue') {
         const request = historyRequest(conn);
@@ -625,7 +637,8 @@ function createService(options={}){
     if (action.kind === 'list') {
       const { data } = await request('thread/queue/list', { threadId, limit: 100 });
       if (!Array.isArray(data)) throw Error('Codex 未返回原生队列');
-      return { ok: true, queue: { available: true, items: data.map(({ id, input, clientUserMessageId }) => ({
+      const latest = !run && !data.length ? await history.readLatestTurn(request, thread).then(result => result.turn).catch(() => null) : null;
+      return { ok: true, queue: { available: true, ...(latest?.status === 'interrupted' && typeof latest.id === 'string' ? { interruptedTurnId: latest.id } : {}), items: data.map(({ id, input, clientUserMessageId }) => ({
         id, mode: 'queue', clientUserMessageId: history.inputId(clientUserMessageId),
         text: (input || []).find(block => block.type === 'text')?.text?.slice(0, 20000) || '',
       })) } };

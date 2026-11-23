@@ -6,11 +6,12 @@ function createServer(){
  function spawn(){const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();children.add(child);let buffer='',ended=false;const waiting=new Map();
   const send=message=>{if(!ended)child.stdout.write(JSON.stringify(message)+'\n');},reply=(id,result)=>send({id,result}),notice=(method,params)=>send({method,params});
   const ask=(method,params,done)=>{const id=++serverSeq;waiting.set(id,done);send({id,method,params});};
-  const finish=(thread,turn,text)=>{notice('item/agentMessage/delta',{threadId:thread.id,turnId:turn.id,itemId:'answer-'+turn.id,delta:text});notice('turn/completed',{threadId:thread.id,turn:{id:turn.id,status:'completed'}});thread.running=false;};
+  const finish=(thread,turn,text)=>{notice('item/agentMessage/delta',{threadId:thread.id,turnId:turn.id,itemId:'answer-'+turn.id,delta:text});notice('turn/completed',{threadId:thread.id,turn:{id:turn.id,status:'completed'}});thread.running=false;turn.status='completed';};
   const operate=(thread,turn,input)=>{const base={threadId:thread.id,turnId:turn.id};
    if(input.includes('RETRY_CODEX')){for(let i=0;i<4;i++)notice('error',{...base,error:{codexErrorInfo:'responseStreamDisconnected',message:'SENSITIVE_ERROR_MUST_NOT_APPEAR'},willRetry:true});control.resumeRetry=()=>{control.resumeRetry=null;operate(thread,turn,input.replace('RETRY_CODEX',''));};return;}
    notice('item/agentMessage/delta',{...base,itemId:'intro-'+turn.id,delta:'离线 Codex 已开始。'});notice('item/reasoning/summaryTextDelta',{...base,itemId:'reason-'+turn.id,delta:'合成思考：只验证连接，不调用模型。'});
    if(input.includes('HOLD_CODEX'))return;
+   if(input==='继续'){finish(thread,turn,'已继续原任务');return;}
    notice('item/started',{...base,item:{id:'native-'+turn.id,type:'commandExecution',command:'synthetic-display-only',cwd:thread.cwd,status:'inProgress'}});
    ask('item/commandExecution/requestApproval',{...base,itemId:'native-'+turn.id,command:'synthetic-display-only',cwd:thread.cwd,reason:'离线合成审批，不执行任何命令'},result=>{
     receipts.push({kind:'approval',threadId:thread.id,result});notice('item/completed',{...base,item:{id:'native-'+turn.id,type:'commandExecution',status:result.decision==='accept'?'completed':'declined',aggregatedOutput:'SYNTHETIC_NATIVE_ONLY'}});
@@ -63,7 +64,7 @@ function createServer(){
    }
    if(message.method==='thread/turns/list'){
     const t=threads.get(p.threadId);
-    return reply(message.id,{data:[{status:t.running?'inProgress':'completed'}],nextCursor:null});
+    return reply(message.id,{data:[{id:t.turn?.id,status:t.running?'inProgress':t.turn?.status||'completed'}],nextCursor:null});
    }
    if(message.method==='permissionProfile/list')return reply(message.id,{data:[{id:':workspace',allowed:true}],nextCursor:null});
    if(message.method==='thread/start'){const t={id:'offline-thread-'+ ++threadSeq,cwd:p.cwd,model:p.model||models[0].model,running:false};threads.set(t.id,t);return reply(message.id,{thread:{id:t.id,cwd:t.cwd,turns:[]},cwd:t.cwd,model:t.model,reasoningEffort:'medium'});}
@@ -82,7 +83,7 @@ function createServer(){
    if(message.method==='thread/name/set'){threads.get(p.threadId).name=p.name;return reply(message.id,{});}
    if(message.method==='thread/unsubscribe')return reply(message.id,{status:'unsubscribed'});
    if(message.method==='turn/start'){const t=threads.get(p.threadId),turn={id:'offline-turn-'+ ++turnSeq};t.turn=turn;t.running=true;reply(message.id,{turn:{id:turn.id,status:'inProgress'}});setImmediate(()=>operate(t,turn,(p.input||[]).map(i=>i.text||'').join(' ')));return;}
-   if(message.method==='turn/interrupt'){const t=threads.get(p.threadId);reply(message.id,{});if(t){t.running=false;notice('turn/completed',{threadId:t.id,turn:{id:p.turnId,status:'interrupted'}});}return;}
+   if(message.method==='turn/interrupt'){const t=threads.get(p.threadId);reply(message.id,{});if(t){t.running=false;if(t.turn)t.turn.status='interrupted';notice('turn/completed',{threadId:t.id,turn:{id:p.turnId,status:'interrupted'}});}return;}
    send({id:message.id,error:{code:-32601,message:'Unsupported synthetic method'}});
   };
   child.stdin=new Writable({write(data,encoding,done){try{buffer+=data.toString();let end;while((end=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(line)handle(JSON.parse(line));}done();}catch(error){done(error);}}});
