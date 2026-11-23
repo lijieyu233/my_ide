@@ -1326,6 +1326,38 @@ const AiPanel = (() => {
     if(info){info.textContent=dshModelUnavailable()?'DSH 已连接 · 原模型不可用':'DSH 已连接';info.title=dshModelUnavailable()?model.unavailableReason||'原模型不可用，请选择可用模型':sessionId?'当前 DSH 会话：'+sessionId:'首次发送消息时创建 DSH 会话';}
   }
 
+  let codexEffortRequest = null;
+  function codexEffortEditable() {
+    return dshOptionsState === 'ready' && codexEffortRequest !== inputViewKey() &&
+      (!busy || !!nativeInputTarget());
+  }
+
+  async function changeNativeEffort(effort) {
+    const cfg = getConfig();
+    if (cfg.engine !== 'codex' || !busy && !codexObservedRunning()) {
+      await setConfig({ [nativeReasoningKey()]: effort });
+      if (cfg.engine === 'codex') await refreshCodexOptions(true);
+      return;
+    }
+    const target = nativeInputTarget(), key = inputViewKey();
+    if (!target || !codexEffortEditable()) return;
+    codexEffortRequest = key;
+    renderNativeInputUI();
+    try {
+      const result = await window.myIDE.ai.codexInput(cfg, target, { kind: 'effort', effort });
+      if (key !== inputViewKey()) return;
+      if (!result?.ok) throw Error(result?.error || 'Codex 未确认思考强度');
+      dshConfigOptions = result.configOptions;
+      await setConfig({ codexReasoning: effort });
+      if (!result.applied) MI.toast('思考强度将在下一轮生效', 'ok');
+    } catch (error) {
+      if (key === inputViewKey()) MI.toast(error.message, 'err');
+    } finally {
+      if (codexEffortRequest === key) codexEffortRequest = null;
+      if (key === inputViewKey()) refreshModelSel();
+    }
+  }
+
   async function refreshCodexOptions(apply=false){
     if(getConfig().engine!=='codex'||panel?.classList.contains('hidden'))return;
     if(loadedSessionKey!==sessKey()){onProjectChange();return;}
@@ -1400,7 +1432,7 @@ const AiPanel = (() => {
       const selectedGroup=sel.selectedOptions[0]?.parentElement;
       sel.title=(cfg.engine==='codex'?'模型来自本机 Codex app-server；登录与原生沙箱由 Codex 管理':'模型来自正在运行的桌面 DSH，与其原生插件和配置共用')+(selectedGroup?.tagName==='OPTGROUP'?'\n当前分类：'+selectedGroup.label:'');
       const reasoning=dshModelUnavailable()?null:dshConfigOptions.find(option=>option.id==='reasoning_effort'),select=document.getElementById('ai-dsh-reasoning');
-      if(select){const available=!!reasoning?.options?.length;select.classList.toggle('hidden',!available);document.querySelector('label[for="ai-dsh-reasoning"]')?.classList.toggle('hidden',!available);select.disabled=!ready;select.innerHTML=(reasoning?.options||[]).map(option=>'<option value="'+esc(option.value)+'">'+esc(option.name)+'</option>').join('');select.value=cfg.engine==='codex'?reasoning?.currentValue||'':reasoning?.options?.some(choice=>choice.value===cfg[nativeReasoningKey()])?cfg[nativeReasoningKey()]:reasoning?.currentValue||'';}
+      if(select){const available=!!reasoning?.options?.length;select.classList.toggle('hidden',!available);document.querySelector('label[for="ai-dsh-reasoning"]')?.classList.toggle('hidden',!available);select.disabled=cfg.engine==='codex'?!available||!codexEffortEditable():!ready;select.innerHTML=(reasoning?.options||[]).map(option=>'<option value="'+esc(option.value)+'">'+esc(option.name)+'</option>').join('');select.value=cfg.engine==='codex'?reasoning?.currentValue||'':reasoning?.options?.some(choice=>choice.value===cfg[nativeReasoningKey()])?cfg[nativeReasoningKey()]:reasoning?.currentValue||'';}
       const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect)reconnect.disabled=dshOptionsState==='loading'||busy;
       return;
     }
@@ -2193,6 +2225,10 @@ const AiPanel = (() => {
     if(backgroundView)return;
     renderSendButton(b);
     const codex = getConfig().engine === 'codex';
+    if (codex) {
+      const effort = document.getElementById('ai-dsh-reasoning');
+      if (effort) effort.disabled = !effort.options.length || !codexEffortEditable();
+    }
     const running = codex ? codexRunningInput() : getConfig().engine === 'dsh' && (busy || dshObservedRunning());
     const target = nativeInputTarget(), queue = nativeQueueSource();
     const showActions = !codexPrimaryQueues() && running;
@@ -2629,7 +2665,10 @@ const AiPanel = (() => {
     renderSessionOrigin();
     const external = !b && dshObservedRunning(), stopping = !!dshWatch?.stopping;
     if (b && getConfig().engine === 'codex') codexLiveView = null;
-    if(getConfig().engine==='codex')for(const id of ['ai-model','ai-dsh-reasoning']){const control=document.getElementById(id);if(control)control.disabled=b||dshOptionsState!=='ready';}
+    if (getConfig().engine === 'codex') {
+      const model = document.getElementById('ai-model');
+      if (model) model.disabled = b || dshOptionsState !== 'ready';
+    }
     const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect){reconnect.disabled=b||dshOptionsState==='loading';reconnect.setAttribute('aria-label','重新连接 '+nativeLabel());reconnect.title='重新连接 '+nativeLabel()+'，保留会话，不重发任务';}
     renderCodexObservedActivity();
     const headerStop = document.getElementById('ai-stop'); if (headerStop) { headerStop.onclick = stopVisibleRun; headerStop.disabled = stopping; headerStop.classList.toggle('hidden',!b&&!external); }
@@ -5327,7 +5366,7 @@ const AiPanel = (() => {
 
   function init() {
     const engine=document.getElementById('ai-engine');if(engine)engine.onchange=async()=>{await setConfig({engine:engine.value});};
-    document.getElementById('ai-dsh-reasoning')?.addEventListener('change',async event=>{await setConfig({[nativeReasoningKey()]:event.target.value});if(getConfig().engine==='codex')await refreshDshOptions(true);});
+    document.getElementById('ai-dsh-reasoning')?.addEventListener('change', event => { void changeNativeEffort(event.target.value); });
     document.getElementById('ai-dsh-reconnect')?.addEventListener('click',()=>{if(!busy)refreshDshOptions(false,true);});
     window.myIDE.ai.onDshEvent?.(handleDshEvent);
     window.myIDE.ai.onCodexEvent?.(handleDshEvent);

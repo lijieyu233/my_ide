@@ -399,6 +399,13 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  const restrictedTurn = () => fixture.requests.find(r=>r.method==='turn/start'&&r.params.input[0].text.includes('restored policy fixture'));
  await until(restrictedTurn,'native restored mode turn');
  check('Lowering Codex permissions applies to the next turn of the same thread',restrictedTurn().params.threadId===externalId&&restrictedTurn().params.sandboxPolicy.type==='readOnly'&&restrictedTurn().params.approvalPolicy==='on-request');
+ await until(()=>js(()=>!document.getElementById('ai-dsh-reasoning').disabled),'running Codex effort control enabled');
+ const effortTurns=fixture.requests.filter(r=>r.method==='turn/start').length;
+ await js(()=>{const select=document.getElementById('ai-dsh-reasoning');select.value='high';select.dispatchEvent(new Event('change'));});
+ await until(()=>original.turn?.effort==='high'&&js(()=>!document.getElementById('ai-dsh-reasoning').disabled),'Codex applies effort while running');
+ check('Changing effort applies to the exact active turn without restarting it',
+   fixture.requests.filter(r=>r.method==='turn/start').length===effortTurns&&
+   fixture.requests.some(r=>r.method==='turn/settings/update'&&r.params.threadId===externalId&&r.params.turnId===original.turn.id&&r.params.effort==='high'));
  await until(()=>js(()=>!document.getElementById('ai-send').disabled),'stop restored turn enabled');
  await js(()=>document.getElementById('ai-send').click());
  await until(()=>js(()=>AiPanel.__testParked().currentRun!=='active'),'restored turn stopped');
@@ -411,12 +418,11 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
    return composing&&send.getAttribute('aria-label')==='继续';
  }));
  await capture('codex-continue');
- const continueTurns=fixture.requests.filter(r=>r.method==='turn/start').length;
  await js(()=>document.getElementById('ai-send').click());
  await until(()=>js(()=>document.getElementById('ai-msgs').textContent.includes('已继续原任务')&&AiPanel.__testParked().currentRun==='completed'),'continue original Codex thread');
  const continued=fixture.requests.filter(r=>r.method==='turn/start').at(-1);
- check('Continue sends one new continuation on the same thread',
-   continued.params.threadId===externalId&&continued.params.input[0].text==='继续'&&
-   fixture.requests.filter(r=>r.method==='turn/start').length===continueTurns+1);
+ check('Continue sends one new continuation on the same thread with the selected effort',
+   continued.params.threadId===externalId&&continued.params.input[0].text==='继续'&&continued.params.effort==='high'&&
+   fixture.requests.filter(r=>r.method==='turn/start').length===effortTurns+1);
  const gap=await js(()=>Math.max(...window.__codexGaps));check('renderer stays responsive in native tool flow',gap<250,{maxHeartbeatMs:gap});check('isolated fixture remained hidden and offline',!network.length&&BrowserWindow.getAllWindows().every(w=>!w.isVisible()));await finish(0);
 })().catch(async error=>{console.error(error.stack);if(win&&!win.isDestroyed())try{console.error('CODEX_UI_STATE '+JSON.stringify(await js(()=>({state:AiPanel.aiState(),info:document.getElementById('ai-dsh-info')?.title,fixtureText:document.getElementById('ai-msgs')?.textContent.slice(-700)}))));}catch{}await finish(1,error.message);});

@@ -604,18 +604,19 @@ function createService(options={}){
   }
 
   async function changeInput(cfg, context, target, action) {
-    if (!['list', 'queue', 'remove', 'steer'].includes(action?.kind)) throw Error('Codex 队列操作无效');
+    if (!['list', 'queue', 'remove', 'steer', 'effort'].includes(action?.kind)) throw Error('Codex 队列操作无效');
     const run = target.run ? owned(target.run) : null;
-    let conn, threadId, thread;
+    let conn, threadId, record, thread, info;
     if (target.run) {
       if (!run?.turnId || run.buffering) throw Error('Codex 当前轮次尚未确认或已经结束');
       ({ conn } = run);
+      info = run.session;
       threadId = run.session.id;
     } else {
       if (action.kind === 'steer') throw Error('桌面端任务请在 Codex 中插入消息');
-      const info = await identity(context);
+      info = await identity(context);
       conn = await connect(cfg);
-      const record = saved.get(info.key);
+      record = saved.get(info.key);
       if (info.scope !== 'project' || !record?.id || record.blocked || record.id !== target.threadId ||
           norm(record.cwd) !== norm(info.cwd)) throw Error('Codex 会话身份已变化');
       const listed = await history.findProjectThread(historyRequest(conn), record.id);
@@ -634,6 +635,28 @@ function createService(options={}){
       }
     }
     const request = historyRequest(conn);
+    if (action.kind === 'effort') {
+      const effort = action.effort;
+      if (typeof effort !== 'string' || !effort || effort.length > 80) throw Error('Codex 思考强度无效');
+      const { models } = await catalog(conn);
+      const session = run?.session || sessions.get(info.key), pending = pendingChoices.get(info.key);
+      const model = run?.session.model || pending?.model || session?.model || record?.model || cfg.codexModel || models.find(item => item.isDefault)?.model;
+      validateChoice(models, model, effort);
+      if (run && !owned(target.run)) throw Error('Codex 当前轮次已结束');
+      const latest = run ? { id: run.turnId, status: 'inProgress' } : (await history.readLatestTurn(request, thread)).turn;
+      let applied = false;
+      if (latest?.status === 'inProgress' && typeof latest.id === 'string') {
+        try {
+          const response = await request('turn/settings/update', { threadId, turnId: latest.id, effort });
+          if (!['applied', 'targetUnavailable'].includes(response?.status)) throw Error('Codex 未确认思考强度');
+          applied = response.status === 'applied';
+        } catch (error) { if (error.code !== -32601) throw error; }
+      }
+      const nextModel = pendingChoices.get(info.key)?.model || model;
+      validateChoice(models, nextModel, effort);
+      pendingChoices.set(info.key, { model: nextModel, effort });
+      return { ok: true, applied, configOptions: configOptions(models, nextModel, effort) };
+    }
     if (action.kind === 'list') {
       const { data } = await request('thread/queue/list', { threadId, limit: 100 });
       if (!Array.isArray(data)) throw Error('Codex 未返回原生队列');

@@ -49,6 +49,12 @@ function createServer(){
     const queuedSubmission={id:'queued-'+p.clientUserMessageId,clientUserMessageId:p.clientUserMessageId,input:p.input};
     t.inputQueue.push(queuedSubmission);return reply(message.id,{queuedSubmission});
    }
+   if(message.method==='turn/settings/update'){
+    const thread=threads.get(p.threadId);
+    if(!thread?.running||thread.turn?.id!==p.turnId)return reply(message.id,{status:'targetUnavailable'});
+    thread.turn.effort=p.effort;
+    return reply(message.id,{status:'applied'});
+   }
    if(message.method==='turn/steer'){
     const t=threads.get(p.threadId);if(!t?.running||t.turn?.id!==p.expectedTurnId)return send({id:message.id,error:{code:-32600,message:'Turn ended'}});
     notice('item/completed',{threadId:t.id,turnId:t.turn.id,item:{type:'userMessage',id:'steered-item',clientId:p.clientUserMessageId,content:p.input}});
