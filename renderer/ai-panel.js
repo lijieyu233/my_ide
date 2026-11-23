@@ -148,7 +148,8 @@ const AiPanel = (() => {
       if(!visible())return;
       activeRunNotice=notice;notice.textEl.textContent = label;
       notice.element.classList.remove('running');
-      notice.element.dataset.outcome = run.status === 'failed' ? 'failed' : run.status === 'cancelled' ? 'stopped' : ['incomplete','limited'].includes(run.status) ? 'unknown' : 'completed';
+      notice.element.dataset.outcome = ['queued', 'occupied'].includes(run.status) ? run.status :
+        run.status === 'failed' ? 'failed' : run.status === 'cancelled' ? 'stopped' : ['incomplete','limited'].includes(run.status) ? 'unknown' : 'completed';
       notice.hideTimer = setTimeout(() => { if(visible()&&activeRunNotice===notice)notice.element.classList.add('hidden'); }, 2500);
       return;
     }
@@ -180,7 +181,8 @@ const AiPanel = (() => {
     if(run.stream?.element){finishLiveText(run.stream.element);run.stream.element.querySelector('.ai-cursor')?.remove();}
     if(run.thought)finishLiveText(run.thought.querySelector('pre'));
     for (const group of run.activityGroups || []) paintToolGroup(group);
-    setRunState(run, status === 'limited' ? '已达本次工具操作上限，可继续处理剩余任务' : status === 'cancelled' ? run.engine==='dsh'?'已停止本地派发；DSH 停止和队列撤回状态请刷新确认':run.engine==='codex'?'已请求停止 Codex；以原生回执为准':'已停止' : status === 'incomplete' ? '回复未完成，未执行工具' : status === 'failed' ? '生成失败' : '已完成', true);
+    const inputStatus = status === 'queued' ? '已排队' : status === 'occupied' ? '原会话正在 Codex 中打开' : '';
+    setRunState(run, inputStatus || (status === 'limited' ? '已达本次工具操作上限，可继续处理剩余任务' : status === 'cancelled' ? run.engine==='dsh'?'已停止本地派发；DSH 停止和队列撤回状态请刷新确认':run.engine==='codex'?'已请求停止 Codex；以原生回执为准':'已停止' : status === 'incomplete' ? '回复未完成，未执行工具' : status === 'failed' ? '生成失败' : '已完成'), true);
     if (curStream === run.stream?.element) { curStream = null; curText = ''; }
     busy = false; setBusyUI(false); persistSession(); markRegen();
     if (!backgroundView) document.getElementById('ai-stop')?.classList.add('hidden');
@@ -2150,7 +2152,8 @@ const AiPanel = (() => {
     const codex = getConfig().engine === 'codex';
     const running = codex ? codexRunningInput() : getConfig().engine === 'dsh' && (busy || dshObservedRunning());
     const target = nativeInputTarget(), queue = nativeQueueSource();
-    const showActions = running || codex && !!target && codexOccupiedView === inputViewKey();
+    const canQueueExternal = codex && !!target && (codexSelectedHistoryItem()?.external || codexOccupiedView === inputViewKey());
+    const showActions = running || canQueueExternal && !!inputEl.value.trim();
     const actions=document.getElementById('ai-running-input-actions');
     actions?.classList.toggle('hidden', !showActions);
     actions?.querySelector('span')?.classList.toggle('hidden', codex);
@@ -2178,6 +2181,10 @@ const AiPanel = (() => {
       if(item.editable)add('编辑','edit');if(!codex&&item.mode==='queue'&&running)add('插入','steer',target?.kind==='run'?!currentRun?.inputActive:!dshWatch?.state?.running);add('撤回','remove');box.appendChild(row);
     }
     for(const item of failed){const row=document.createElement('div');row.className='ai-queue-item ai-queue-failed';const text=document.createElement('span');text.className='ai-queue-text';text.textContent='待确认／可恢复：'+item.draft.text;text.title=item.error;const restore=document.createElement('button');restore.type='button';restore.className='ai-queue-action';restore.textContent='恢复草稿';restore.onclick=async()=>{if(inputEl.value.trim()&&inputEl.value!==item.draft.raw&&(!await Modal.confirm('恢复草稿','输入框已有其他内容，确定替换为这条未确认的消息？')))return;if(item.draft.scope!==inputScopeKey())return;inputEl.value=item.draft.raw;pendingImages=item.draft.imgs.slice();autoGrowInput();renderImages();nativeInputRequests.delete(item.requestId);renderNativeInputUI();};row.append(text,restore);box.appendChild(row);}
+  }
+  function followCodexQueue(key) {
+    const value = codexQueue?.key === key ? codexQueue.value : null;
+    codexQueue = { key, value, followUntil: Date.now() + 15000 };
   }
   function acceptNativeQueue(result,target){
     if(!result.queue)return;
@@ -2237,7 +2244,7 @@ const AiPanel = (() => {
       clearAcceptedDraft(draft);
       if (item?.rendered) nativeInputRequests.delete(requestId);
       if (mode === 'queue' && draft.key === inputViewKey()) {
-        if (codexQueue?.key === draft.key) codexQueue.followUntil = Date.now() + 15000;
+        followCodexQueue(draft.key);
         msgsEl.querySelector('.ai-codex-rejected')?.remove();
         await refreshNativeQueue();
       }
@@ -2287,7 +2294,7 @@ const AiPanel = (() => {
     renderUsage();
     if (cfg.engine === 'codex') {
       msgsEl.querySelector('.ai-codex-rejected')?.remove();
-      run.codexDraft = { key: inputViewKey(), revision: inputDraftRevision, raw: inputEl.value, images: pendingImages.slice() };
+      run.codexDraft = { key: inputViewKey(), scope: inputScopeKey(), revision: inputDraftRevision, raw: inputEl.value, images: pendingImages.slice() };
     }
     if(!run.initialInputDraft)inputEl.value = '';
     autoGrowInput();   // 运行中补充保留草稿，收到原生接受回执后再消费。
@@ -2372,10 +2379,37 @@ const AiPanel = (() => {
       inputEl.value || inputDraftRevision !== draft.revision) return false;
     inputEl.value = draft.raw;
     pendingImages.unshift(...draft.images);
+    removeCodexDraftMessage(draft);
+    autoGrowInput(); renderImages();
+    return true;
+  }
+
+  function removeCodexDraftMessage(draft) {
     msgs = msgs.filter(message => message !== draft.message);
     draft.row.remove();
     lastUserAt = msgs.findLastIndex(message => message.role === 'user');
-    autoGrowInput(); renderImages();
+  }
+
+  function finishCodexSubmission(run, stream, result) {
+    const draft = run.codexDraft;
+    if (!draft) return false;
+    const queued = result?.status === 'queued' && result.ok === true;
+    const occupied = result?.errorCode === 'threadInUse' && result.rejectedBeforeTurn;
+    if (!queued && !occupied) return false;
+    if (queued) {
+      removeCodexDraftMessage(draft);
+      if (!backgroundView) followCodexQueue(draft.key);
+    } else {
+      if (!recoverRejectedCodexDraft(run, result)) {
+        removeCodexDraftMessage(draft);
+        nativeInputRequests.set(run.identity.requestId, { run,
+          draft: { ...draft, text: draft.raw, imgs: draft.images }, error: '原会话正在 Codex 中打开' });
+      }
+      if (!backgroundView) codexOccupiedView = draft.key;
+    }
+    stream.element.remove();
+    endRun(run, queued ? 'queued' : 'occupied');
+    if (!backgroundView) void refreshNativeQueue(true);
     return true;
   }
 
@@ -2391,7 +2425,6 @@ const AiPanel = (() => {
       const row=addMsg('assistant',note);row.querySelector('.ai-md').classList.add('ai-err');
       if (restoredDraft) {
         row.classList.add('ai-codex-rejected');
-        if (r?.errorCode === 'threadInUse') codexOccupiedView = inputViewKey();
       }
       else stream.timeline.push({kind:'text',text:note});
     }
@@ -2406,6 +2439,7 @@ const AiPanel = (() => {
   function finishStream(text, isErr, r, run = currentRun, stream = run?.stream) {
     if (!runIsLive(run) || !stream || stream.finished || run.stream !== stream || !identityMatches(r?.context, stream.context)) return;
     stream.finished = true;
+    if (run.engine === 'codex' && finishCodexSubmission(run, stream, r)) return;
     addUsage(r && r.usage); // 精确 token 统计（DeepSeek 含缓存命中细分）
     if(!nativeEngine(run.engine))cancelLiveText(curStream);
     const md = curStream.querySelector('.ai-md');if(!nativeEngine(run.engine))md.classList.remove('ai-stream-plain');
@@ -3682,12 +3716,13 @@ const AiPanel = (() => {
       }
       const catalog = currentCodexCatalog();
       if (catalog) {
-        const { threadId, projectId, rootDir, localId, ts, title } = result;
+        const { threadId, projectId, rootDir, localId, ts, title, external } = result;
         const cached = catalog.items.find(item => item.threadId === threadId);
-        if (cached) Object.assign(cached, { rootDir, localId, ts, title });
-        else catalog.items.unshift({ threadId, projectId, rootDir, localId, ts, title, archived: result.archived === true });
+        if (cached) Object.assign(cached, { rootDir, localId, ts, title, external });
+        else catalog.items.unshift({ threadId, projectId, rootDir, localId, ts, title, external, archived: result.archived === true });
       }
       openSession(result.localId, false);
+      if (!result.archived) void refreshNativeQueue(true);
       renderCurrentSessionTitle();
       refreshHistInPlace();
     } catch (error) {

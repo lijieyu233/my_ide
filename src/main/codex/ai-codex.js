@@ -219,11 +219,11 @@ function createService(options={}){
     const projectBindings = new Map();
     for (const [key, record] of saved) {
       const [localId, , scope] = JSON.parse(key);
-      if (scope === 'project' && !record.blocked) projectBindings.set(record.id, { localId, rootDir: record.cwd });
+      if (scope === 'project' && !record.blocked) projectBindings.set(record.id, { localId, rootDir: record.cwd, external: record.external === true });
     }
     // The catalog may list a worktree alias. Prefer the verified cwd from the saved binding.
     const locallyRunning = new Set([...sessions.values()].filter(session => session.run).map(session => session.id));
-    const visible = items.map(item => ({ ...item, localId: 'codex:' + item.threadId, ...projectBindings.get(item.threadId) }))
+    const visible = items.map(item => ({ ...item, localId: 'codex:' + item.threadId, external: true, ...projectBindings.get(item.threadId) }))
       .filter(item => norm(item.rootDir) !== detachedRoot);
     return { projects, items: await Promise.all(visible.map(async item => {
       const desktop = item.archived || locallyRunning.has(item.threadId)
@@ -308,7 +308,7 @@ function createService(options={}){
       saved.set(key, binding);
       try { await persist(); } catch (error) { saved.delete(key); throw error; }
     });
-    return { ...history.threadSummary(thread), rootDir, localId, messages };
+    return { ...history.threadSummary(thread), rootDir, localId, messages, external: saved.get(key)?.external === true };
   }
 
   async function attach(conn,cfg,context,tools,run,catalogue,info,threadPolicy){
@@ -359,6 +359,7 @@ function createService(options={}){
     if(runs.has(context.requestId))throw Error('Codex 请求身份重复');
     const run={context,onEvent,onTool,aborted:false,tools:new Map(),permissions:new Map(),nativeItems:new Map(),messageText:new Map(),text:'',queue:[],queuedBytes:0,buffering:true,accepting:false,settled:false};run.done=new Promise(resolve=>{run.resolveDone=resolve;});runs.set(context.requestId,run);
     const result=(status,error)=>({ok:status==='completed',status,complete:status==='completed',aborted:status==='aborted',finishReason:status==='completed'?'stop':null,toolCalls:[],engine:'codex',text:run.text,context,...(error?{error}:{})});
+    let queueing = false;
     try{
       const input=promptContent(messages,context.page),info=await identity(context);live(run);statusEvent(run,'connecting','正在连接本机 Codex app-server');
       const conn=await connect(cfg);statusEvent(run,'catalog','正在核对 Codex 账号状态与模型目录');const data=await catalog(conn);live(run);if(data.requiresOpenaiAuth&&!data.loggedIn)throw Error('本机 Codex 尚未登录，请在 Codex 官方客户端或 CLI 中登录后重新连接');
@@ -369,7 +370,25 @@ function createService(options={}){
           throw Error('当前 Codex 配置不允许使用工作区写入权限');
         }
       }
-      statusEvent(run,'resuming','正在创建或恢复原生 Codex 线程');const {session,model,effort,pending}=await attach(conn,cfg,context,tools,run,data,info,permission.thread);live(run);
+      statusEvent(run,'resuming','正在创建或恢复原生 Codex 线程');
+      const binding = saved.get(info.key);
+      let attached;
+      try { attached = await attach(conn,cfg,context,tools,run,data,info,permission.thread); }
+      catch (error) {
+        // The native queue inherits the existing owner's permissions and model. Only a confirmed
+        // writer rejection, with full access already granted and no pending model switch, can use it automatically.
+        if (error.kind !== 'threadInUse' || error.rpcMethod !== 'thread/resume' || error.rpcResponseReceived !== true ||
+            permission.thread.sandbox !== 'danger-full-access' || info.scope !== 'project' ||
+            !binding?.external || saved.get(info.key) !== binding || pendingChoices.has(info.key)) throw error;
+        live(run);
+        queueing = true;
+        const itemId = await enqueueInput(historyRequest(conn), {
+          threadId: binding.id, input, clientUserMessageId: 'myide-input-' + crypto.randomUUID(),
+        });
+        return { ...result('queued'), ok: true, threadId: binding.id, itemId };
+      }
+      const {session,model,effort,pending} = attached;
+      live(run);
       emit(run,{type:'config',configOptions:configOptions(data.models,model,effort)});statusEvent(run,'submitting','正在提交本轮输入，等待 Codex 原生确认');
       run.accepting=true;
       const started=await conn.rpc.request('turn/start',{threadId:session.id,input,...(pending?{model}:{}),...(effort?{effort}:{}),...permission.turn},options.requestTimeoutMs||45000);
@@ -382,14 +401,16 @@ function createService(options={}){
       if(run.expired)return result('failed','Codex 长时间无原生活动，执行超时，已请求中断；未停止前不能继续发送');
       return run.aborted?result('aborted'):answer.status==='completed'?result('completed'):Object.assign(result(answer.status==='interrupted'?'aborted':'failed',answer.error||'Codex 未正常完成本轮，请检查原生连接；不会自动重发'),answer.errorCode?{errorCode:answer.errorCode,...(answer.httpStatusCode?{httpStatusCode:answer.httpStatusCode}:{})}:{});
     }catch(error){
-      const rejectedBeforeTurn = !run.accepting || (!run.turnId && (error.rpcResponseReceived === true || error.rpcNotSent === true));
+      const rejected = error.rpcResponseReceived === true || error.rpcNotSent === true;
+      const rejectedBeforeTurn = queueing ? rejected : !run.accepting || !run.turnId && rejected;
       if(run.accepting&&!run.settled){if(run.turnId)interrupt(run);else if(run.session&&!rejectedBeforeTurn)run.session.stopping='unknown';}
       const stages={'thread/resume':'恢复原会话','thread/start':'创建会话','turn/start':'发送消息','thread/list':'核对会话','thread/read':'读取会话','thread/turns/list':'核对轮次','permissionProfile/list':'核对工作区权限','account/read':'读取账号','model/list':'读取模型'};
-      const message=error.kind==='threadInUse'?'会话由另一 Codex 进程占用。可用「排队」在原会话续聊。':error.rpcResponseReceived?
+      const message = queueing ? (rejected ? 'Codex 未接受排队，草稿已保留' : '排队结果待确认，请先查看待发消息') :
+        error.kind==='threadInUse'?'原会话正在 Codex 中打开':error.rpcResponseReceived?
         'Codex '+(stages[error.rpcMethod]||'原生请求')+'失败'+(Number.isInteger(error.code)?'（RPC '+error.code+'）':'')+'。':error.message;
       const rejection={...(error.kind?{errorCode:error.kind}:{}),...(Number.isInteger(error.code)?{rpcErrorCode:error.code}:{}),
         ...(error.rpcMethod?{rpcMethod:error.rpcMethod}:{}),rejectedBeforeTurn};
-      if(!run.aborted)statusEvent(run,'error',message,rejection);
+      if(!run.aborted && error.kind !== 'threadInUse')statusEvent(run,'error',message,rejection);
       return {...result(run.aborted?'aborted':'failed',run.aborted?undefined:message),...rejection};
     }
     finally {
@@ -422,6 +443,14 @@ function createService(options={}){
     const converted=Object.create(null),seen=new Set();for(const answer of answers){const question=pending.questions.find(q=>q.id===answer?.id);if(!question||seen.has(answer.id)||!Array.isArray(answer.selected)||answer.selected.some(v=>typeof v!=='string'||!(question.options||[]).some(o=>o.label===v))||answer.selected.length>1||answer.custom!==undefined&&typeof answer.custom!=='string')return {ok:false};seen.add(answer.id);const values=[...answer.selected,...(answer.custom?[answer.custom]:[])];if(!values.length||values.some(v=>v.length>20000))return {ok:false};converted[answer.id]={answers:values};}
     run.permissions.delete(id);activity(run);reply(run.conn,pending.serverId,{answers:converted});return {ok:true};
   }
+  async function enqueueInput(request, params) {
+    const result = await request('thread/queue/add', params);
+    if (typeof result.queuedSubmission?.id !== 'string' || result.queuedSubmission.clientUserMessageId !== params.clientUserMessageId) {
+      throw Error('Codex 未确认排队结果，请先检查待发消息');
+    }
+    return result.queuedSubmission.id;
+  }
+
   async function changeInput(cfg, context, target, action) {
     if (!['list', 'queue', 'remove', 'steer'].includes(action?.kind)) throw Error('Codex 队列操作无效');
     const run = target.run ? owned(target.run) : null;
@@ -470,11 +499,7 @@ function createService(options={}){
       }
       return { ok: true };
     }
-    const result = await request('thread/queue/add', params);
-    if (typeof result.queuedSubmission?.id !== 'string' || result.queuedSubmission.clientUserMessageId !== action.requestId) {
-      throw Error('Codex 未确认排队结果，请先检查待发消息');
-    }
-    return { ok: true, itemId: result.queuedSubmission.id };
+    return { ok: true, itemId: await enqueueInput(request, params) };
   }
 
   async function status(launcher){try{const runtime=await (options.resolveRuntime||resolveRuntime)(launcher||undefined);return {ok:true,available:true,connected:!!connection&&!connection.rpc.closed,launcher:runtime.launcher||runtime.executable,path:runtime.launcher||runtime.executable,transport:'stdio'};}catch(error){return {ok:false,available:false,connected:false,error:error.message};}}

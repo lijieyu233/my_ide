@@ -124,13 +124,21 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
    const rows=document.querySelectorAll('[data-tool-call-id="desktop-command"]');
    return rows.length===1&&rows[0].dataset.state==='completed';
  }));
+ await js(()=>{const input=document.getElementById('ai-input');input.value='准备续聊';input.dispatchEvent(new Event('input',{bubbles:true}));});
+ await until(()=>js(()=>!document.getElementById('ai-running-input-actions').classList.contains('hidden')&&!document.getElementById('ai-queue-submit').disabled),'queue is available before attempting to acquire the writer');
+ check('An imported Codex thread exposes its queue before a writer error',
+   await js(()=>document.getElementById('ai-queue-submit').title.includes('原会话权限')));
  original.writerLocked=true;
+ const beforeRestrictedQueue=fixture.requests.filter(r=>r.method==='thread/queue/add').length;
  await js(()=>AiPanel.ask('HOLD_CODEX 续接桌面会话'));
- await until(()=>js(()=>document.querySelector('.ai-codex-rejected')?.textContent.includes('另一 Codex 进程占用')),'writer conflict message');
+ await until(()=>js(()=>AiPanel.__testParked().currentRun==='occupied'&&document.getElementById('ai-runstate').textContent.includes('正在 Codex 中打开')),'writer conflict stays in the composer');
  await until(()=>js(()=>!document.getElementById('ai-running-input-actions').classList.contains('hidden')&&!document.getElementById('ai-queue-submit').disabled),'queue option after native writer conflict');
- check('a writer conflict restores the original draft and dispatches no turn or fork',
-   await js(()=>document.getElementById('ai-input').value==='HOLD_CODEX 续接桌面会话'&&[...document.querySelectorAll('#ai-msgs .ai-user')].every(row=>!row.textContent.includes('HOLD_CODEX')))&&
+ check('A protected send restores the draft without a red history entry or automatic delegation',
+   await js(()=>document.getElementById('ai-input').value==='HOLD_CODEX 续接桌面会话'&&!document.querySelector('.ai-codex-rejected')&&
+     [...document.querySelectorAll('#ai-msgs .ai-user')].every(row=>!row.textContent.includes('HOLD_CODEX')))&&
+   fixture.requests.filter(r=>r.method==='thread/queue/add').length===beforeRestrictedQueue&&
    !fixture.requests.some(r=>r.method==='thread/fork'||r.method==='turn/start'&&r.params.threadId===externalId));
+ await capture('codex-occupied-draft');
  await js(()=>{
    const input=document.getElementById('ai-input');input.value='补送原会话';input.dispatchEvent(new Event('input',{bubbles:true}));
    document.getElementById('ai-queue-submit').click();
@@ -154,7 +162,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  await until(()=>js(()=>AiPanel.__testParked().currentRun!=='active'),'original stopped after retry');
  original.writerLocked=true;
  await js(()=>AiPanel.ask('HOLD_CODEX 接着讨论'));
- await until(()=>js(()=>document.querySelector('.ai-codex-rejected')?.textContent.includes('进程占用')),'original writer locked again');
+ await until(()=>js(()=>AiPanel.__testParked().currentRun==='occupied'&&document.getElementById('ai-input').value==='HOLD_CODEX 接着讨论'),'original writer locked again');
  const beforeFork=fixture.requests.filter(r=>r.method==='turn/start').length;
  await js(()=>{
    const row=[...document.querySelectorAll('.ai-hist-nm')].find(el=>el.textContent==='桌面 Codex 外部会话').closest('button');
@@ -217,7 +225,19 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  await decidePermission('accept');
  await until(()=>js(()=>document.querySelector('.ai-perm-pop [data-set="codexPermission:danger-full-access"][aria-pressed="true"]')&&document.querySelector('#ai-perm .ai-perm-text').textContent==='完全权限'),'full permission selected');
  await capture('codex-permission-full');
- await js(()=>{document.getElementById('ai-perm').click();return AiPanel.ask('HOLD_CODEX full policy fixture');});
+ const directCount=fixture.requests.filter(r=>r.method==='turn/start').length;
+ original.writerLocked=true;
+ await js(()=>{document.getElementById('ai-perm').click();return AiPanel.ask('自动排队到原会话');});
+ await until(()=>js(()=>AiPanel.__testParked().currentRun==='queued'&&document.getElementById('ai-input-queue').textContent.includes('自动排队到原会话')),'full-access automatic queue receipt');
+ const autoQueue=fixture.requests.filter(r=>r.method==='thread/queue/add'&&r.params.input[0].text==='自动排队到原会话');
+ check('A single full-access send queues exactly once on the original thread after its writer refuses resume',
+   autoQueue.length===1&&autoQueue[0].params.threadId===externalId&&fixture.requests.filter(r=>r.method==='turn/start').length===directCount&&
+   await js(()=>!document.getElementById('ai-input').value&&!document.querySelector('.ai-codex-rejected')&&
+     ![...document.querySelectorAll('#ai-msgs .ai-user')].some(row=>row.textContent.includes('自动排队到原会话'))));
+ await js(()=>document.querySelector('#ai-input-queue [data-queue-action="remove"]').click());
+ await until(()=>!original.inputQueue.length,'automatic queue can be withdrawn');
+ original.writerLocked=false;
+ await js(()=>AiPanel.ask('HOLD_CODEX full policy fixture'));
  const fullTurn = () => fixture.requests.find(r=>r.method==='turn/start'&&r.params.input[0].text.includes('full policy fixture'));
  await until(fullTurn,'native full permission turn');
  check('Approved Codex mode applies to the same native thread',fullTurn().params.threadId===externalId&&fullTurn().params.sandboxPolicy.type==='dangerFullAccess'&&fullTurn().params.approvalPolicy==='never');
