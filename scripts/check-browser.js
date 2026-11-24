@@ -54,6 +54,24 @@ function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);ser
     await js('const input=document.getElementById("bw-url");input.focus();input.value="fixture";input.dispatchEvent(new Event("input",{bubbles:true}));true');await until(()=>win.contentView.children.length===0);assert(!(await js('document.getElementById("bw-dd").classList.contains("hidden")')));assert(await js('document.querySelector(".bw-dd-item").textContent.includes("fixture 收藏")'));await capture('browser-ui-suggestions.png');
     await js('const input=document.getElementById("bw-url");input.value="";input.dispatchEvent(new Event("input",{bubbles:true}));true');await until(()=>win.contentView.children.length===1);assert(await js('document.getElementById("bw-dd").classList.contains("hidden")'));
   });
+  await test('AI 面板占满工作区时网页让位，缩回后恢复原标签', async () => {
+    const view = win.contentView.children[0];
+    assert.equal(view.webContents, page);
+    await page.executeJavaScript('document.querySelector("input").value="未提交内容";true');
+    const original = await js('(()=>{const panel=document.getElementById("ai-panel");return {open:getComputedStyle(panel).display!=="none",width:panel.style.width};})()');
+    await js('App.showAi();App.resizeColumn("ai-panel", innerWidth);true');
+    await until(() => js('document.getElementById("browser-view").getBoundingClientRect().width < 2'));
+    await until(() => view.getBounds().width === 0 && view.getBounds().height === 0);
+    await capture('browser-ui-ai-expanded.png');
+    await js('App.resizeColumn("ai-panel", App.LAYOUT.ai.def);true');
+    await until(() => view.getBounds().width > 200);
+    const aiLeft = await js('document.getElementById("ai-panel").getBoundingClientRect().left');
+    const { x, width } = view.getBounds();
+    assert(x + width <= Math.round(aiLeft * win.webContents.getZoomFactor()));
+    assert.equal(win.contentView.children[0], view);
+    assert.equal(await page.executeJavaScript('document.querySelector("input").value'), '未提交内容');
+    await js('document.getElementById("ai-panel").style.width='+JSON.stringify(original.width)+';App.setAiOpen('+original.open+');true');
+  });
   await test('主题下拉在原生网页上方可用，关闭后恢复同一个网页', async () => {
     const pageId = page.id;
     await js('document.querySelector("#btn-theme").click();true');

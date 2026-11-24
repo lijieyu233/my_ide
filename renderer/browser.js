@@ -1065,12 +1065,17 @@ const BrowserPanel = (() => {
   function syncBounds() {
     if (!viewEl || viewEl.classList.contains('hidden')) return;
     const r = viewEl.getBoundingClientRect();
-    if (r.width < 2 || r.height < 2) return; // 布局未就绪/不可见不报
+    const b = B(); if (!b) return;
+    // 占位区被侧栏挤没时也要更新原生视图，否则网页会以旧尺寸遮住侧栏。
+    if (r.width < 2 || r.height < 2) {
+      b.viewBounds({ x: r.x, y: r.y, width: 0, height: 0 });
+      return;
+    }
     // 网页的原生视图盖在 HTML 上方。提示出现时让出底部空间，网页其余区域仍可操作。
     const notice = document.getElementById('message-overlay')?.getBoundingClientRect();
     const overlaps = notice?.height > 0 && notice.left < r.right && notice.right > r.left;
     const height = overlaps ? Math.max(1, Math.min(r.height, notice.top - r.top - 8)) : r.height;
-    const b = B(); if (b) b.viewBounds({ x: r.x, y: r.y, width: r.width, height });
+    b.viewBounds({ x: r.x, y: r.y, width: r.width, height });
   }
   // 容器刚从 display:none 恢复时 rect 要下一帧才有效
   function mountView(url) {
