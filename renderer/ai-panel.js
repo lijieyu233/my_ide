@@ -2114,7 +2114,7 @@ const AiPanel = (() => {
   }
   function pasteChatMessage(event, clipboard) {
     const html = clipboard.getData?.('text/html');
-    if (!html || !html.includes('data-myide-chat-message="1"') || html.length > 50 * 1024 * 1024) return false;
+    if (!html || html.length > 50 * 1024 * 1024 || !/\bdata-myide-chat-message\s*=/i.test(html)) return false;
     // Template contents are inert, so parsing clipboard HTML cannot load remote images.
     const fragment = document.createElement('template');
     fragment.innerHTML = html;
@@ -2123,7 +2123,7 @@ const AiPanel = (() => {
     const images = [...(message?.querySelectorAll('img') || [])].map(image => image.getAttribute('src'));
     if (!images.length || images.some(source => !raster.test(source))) return false;
     event.preventDefault();
-    const text = clipboard.getData('text/plain');
+    const text = clipboard.getData('text/plain') || message.firstElementChild?.textContent;
     if (text) inputEl.setRangeText(text, inputEl.selectionStart, inputEl.selectionEnd, 'end');
     for (const source of images) pendingImages.push(source);
     inputEl.dispatchEvent(new Event('input', { bubbles: true }));

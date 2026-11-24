@@ -196,19 +196,25 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
      const pasted=sources(fragment.content.querySelectorAll('img'));
      return pasted.length===2&&JSON.stringify(pasted)===JSON.stringify(sources(document.querySelectorAll(selector+' img')));
    },copiedMessage.html,historyImageSelector));
- await js(({text,html})=>{
+ const pasteMixedMessage=payload=>js(({text,html})=>{
    const input=document.getElementById('ai-input');
+   while (document.querySelector('#ai-images .ai-img-x')) document.querySelector('#ai-images .ai-img-x').click();
    input.value='before replace after';
    input.setSelectionRange(7,14);
    const data=new DataTransfer();
-   data.setData('text/plain',text);
+   if (text !== undefined) data.setData('text/plain',text);
    data.setData('text/html',html);
    input.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));
- },copiedMessage);
+ },payload);
+ await pasteMixedMessage(copiedMessage);
  await until(()=>js(()=>[...document.querySelectorAll('#ai-images img')].map(img=>img.naturalWidth).join(',')==='240,120'),
    'both copied attachments are pasted in order');
  check('Pasting the copied message restores the original text and both attachments',
    await js(text=>document.getElementById('ai-input').value==='before '+text+' after',mixedMessage));
+ await pasteMixedMessage({html:copiedMessage.html.replace('data-myide-chat-message="1"','data-myide-chat-message=1')});
+ check('Pasting a chat message from its HTML format alone preserves both text and attachments',
+   await js(text=>document.getElementById('ai-input').value==='before '+text+' after'&&
+     document.querySelectorAll('#ai-images img').length===2,mixedMessage));
  await js(()=>{
    const input=document.getElementById('ai-input');
    input.value='';
