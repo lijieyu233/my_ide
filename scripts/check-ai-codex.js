@@ -385,6 +385,15 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  check('Codex sends into the exact idle thread even if the sidebar still shows running',
    fixture.requests.filter(r=>r.method==='thread/queue/add').length===queuedBeforeIdle&&fixture.requests.some(r=>r.method==='thread/resume'&&r.params.threadId===externalId)&&fixture.requests.filter(r=>r.method==='thread/start').length===1&&fixture.requests.find(r=>r.method==='turn/start'&&r.params.threadId===externalId).params.input[0].text==='HOLD_CODEX 续接桌面会话'&&
    await js((ideRoot,sessionRoot)=>App.root===ideRoot&&AiPanel.dshView().rootId===sessionRoot,emptyRoot,roots[1]));
+ const interruptsBeforeViewChange=fixture.requests.filter(r=>r.method==='turn/interrupt').length;
+ await js(id=>document.querySelector('[data-id="codex:'+id+'"] .ai-hist-open').click(),late.id);
+ await until(()=>js(id=>AiPanel.aiState().current==='codex:'+id&&AiPanel.aiState().dshState==='ready',late.id),'leave an active cross-project turn');
+ await js(()=>document.querySelector('#ai-background-status button').click());
+ await until(()=>js(id=>AiPanel.aiState().current==='codex:'+id&&AiPanel.aiState().tasks[0]?.status==='active',externalId),'reattach active cross-project turn');
+ check('Returning to a background Codex turn does not switch projects or restart the turn',
+   fixture.requests.filter(r=>r.method==='turn/interrupt').length===interruptsBeforeViewChange&&
+   fixture.requests.filter(r=>r.method==='turn/start'&&r.params.threadId===externalId).length===1&&
+   await js(root=>App.root===root&&Viewer.activeTab?.path.split(/[\\/]/).at(-1)==='open-in-editor.txt',emptyRoot));
  await js(()=>{document.getElementById('ai-send').click();return true;});
  await until(()=>fixture.requests.some(r=>r.method==='turn/interrupt'&&r.params.threadId===externalId),'external interrupt');
  await until(()=>fixture.requests.some(r=>r.method==='thread/unsubscribe'&&r.params.threadId===externalId)&&
@@ -526,11 +535,12 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  }));
  await capture('codex-continue');
  await js(()=>document.getElementById('ai-send').click());
- await until(()=>js(()=>document.getElementById('ai-msgs').textContent.includes('已继续原任务')&&AiPanel.__testParked().currentRun==='completed'),'continue original Codex thread');
+ await until(()=>fixture.requests.filter(r=>r.method==='turn/start').length>effortTurns,'send continuation to the original Codex thread');
  const continued=fixture.requests.filter(r=>r.method==='turn/start').at(-1);
  check('Continue sends one new continuation on the same thread with the selected effort',
    continued.params.threadId===externalId&&continued.params.input[0].text==='继续'&&continued.params.effort==='high'&&
    fixture.requests.filter(r=>r.method==='turn/start').length===effortTurns+1);
+ await until(()=>js(()=>document.getElementById('ai-msgs').textContent.includes('已继续原任务')&&AiPanel.__testParked().currentRun==='completed'),'finish continuation on the original Codex thread');
  const linksBeforeHandoff=desktopLinks.length;
  const requestsBeforeHandoff=fixture.requests.length;
  await js(()=>AiPanel.ask('HOLD_CODEX handoff fixture'));

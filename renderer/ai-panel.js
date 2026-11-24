@@ -2712,7 +2712,10 @@ const AiPanel = (() => {
 
   function finishDshReply(text,isErr,r,run,stream,complete,warning){
     const restoredDraft = recoverRejectedCodexDraft(run, r);
-    if(!stream.text && r?.text)appendDshText(run,r.text);
+    // The final Codex receipt can reach the renderer before the last chunk.
+    if (run.engine === 'codex' && stream.text && r?.text?.startsWith(stream.text) && r.text.length > stream.text.length) {
+      appendDshText(run, r.text.slice(stream.text.length));
+    } else if(!stream.text && r?.text)appendDshText(run,r.text);
     else if(!stream.text && !isErr && text)appendDshText(run,text);
     finishLiveText(stream.element);stream.element.querySelector('.ai-cursor')?.remove();
     if(run.thought)finishLiveText(run.thought.querySelector('pre'));
@@ -3053,8 +3056,15 @@ const AiPanel = (() => {
     }
     return ids;
   }
-  function parkedRecordOf(sessionId, scope = sessKey()) {
-    for (const [key, record] of backgroundRuns) if (record.scope === scope && record.run?.identity?.sessionId === sessionId) return { key, record };
+  function parkedRecordOf(sessionId) {
+    for (const [key, record] of backgroundRuns) if (record.scope === sessKey() && record.run?.identity?.sessionId === sessionId) return { key, record };
+    return null;
+  }
+  function parkedCodexRecordOf(sessionId, root) {
+    for (const [key, record] of backgroundRuns) {
+      const { identity } = record.run;
+      if (record.scope.endsWith(':codex') && identity.sessionId === sessionId && pathKey(identity.rootId) === pathKey(root)) return { key, record };
+    }
     return null;
   }
   let codexCatalog = null, codexCatalogRequest = null, codexCatalogError = null;
@@ -3376,7 +3386,7 @@ const AiPanel = (() => {
           archived: item.archived === true,
           rootDir: here ? root : item.rootDir, ts: item.ts, virtual: true };
         if (item.running || currentRun?.status === 'active' && curSessionId === item.localId ||
-            parkedRecordOf(item.localId, codexHistoryKey(item.rootDir))?.record.run.status === 'active') running.add(item.localId);
+            parkedCodexRecordOf(item.localId, item.rootDir)?.record.run.status === 'active') running.add(item.localId);
         const localRow = here && currentRows.get(item.localId);
         if (localRow) Object.assign(localRow, native);
         else all.push(native);
@@ -4129,7 +4139,7 @@ const AiPanel = (() => {
     const intent = ++codexOpenIntent, ticket = sessionLoadTicket;
     const current = () => intent === codexOpenIntent && codexProjectHistory();
     const showingRun = (id, root) => id === curSessionId && pathKey(root) === pathKey(sessionRoot()) && currentRun?.status === 'active' ||
-      parkedRecordOf(id, codexHistoryKey(root))?.record.run.status === 'active';
+      parkedCodexRecordOf(id, root)?.record.run.status === 'active';
     if (!fork && showingRun(target.id, target.rootDir)) {
       openSession(target.id, false, { ...target, threadId });
       return;
@@ -4176,7 +4186,7 @@ const AiPanel = (() => {
     // 那份记录可能是一轮之前保存的，直接 replay 会把后台已经累积的输出丢掉，
     // 还给用户一种「切回来怎么变了」的错觉。改为把后台记录整个接回前台。
     resetDshWatch();
-    const parked = parkedRecordOf(id, cacheKey);
+    const parked = codexHistory ? parkedCodexRecordOf(id, root) : parkedRecordOf(id);
     if (parked) {
       if (codexHistory) parked.record.view.dshSessionAccess = access;
       // 先把当前会话也挂起来，否则它的 DOM 会被这次接回顶掉。
@@ -4739,6 +4749,15 @@ const AiPanel = (() => {
       button.onclick=async()=>{
         if(getConfig().engine!==record.run.engine)await setConfig({engine:record.run.engine});
         const access = record.view.dshSessionAccess;
+        if (record.run.engine === 'codex' && record.scope.endsWith(':codex')) {
+          const { sessionId, rootId } = record.run.identity;
+          const item = currentCodexCatalog()?.items.find(entry => entry.localId === sessionId && pathKey(entry.rootDir) === pathKey(rootId));
+          const threadId = item?.threadId || access?.hostId || record.run.nativeState?.threadId;
+          if (threadId) {
+            openSession(sessionId, false, { rootDir: rootId, threadId, title: item?.title || access?.title || sessTitle(record.view.msgs) });
+            return;
+          }
+        }
         if (record.run.engine === 'dsh' && access?.hostId && pathKey(record.run.identity.rootId) !== pathKey(window.App?.root)) {
           await openForeignSession({hostId:access.hostId,rootDir:record.run.identity.rootId,title:access.title||sessTitle(record.view.msgs)});
         } else if (await App.setRoot(record.run.identity.rootId) !== false && curSessionId!==record.run.identity.sessionId) openSession(record.run.identity.sessionId);
@@ -5800,9 +5819,15 @@ const AiPanel = (() => {
     for(const entry of queued){try{await AiWorkbench.checkpoint(entry.call,entry.context);entry.resolve(await entry.perform());}catch(error){entry.reject(error);}}
     return queued.length>0;
   }
+  function inspectableAiRuns() {
+    const root = window.App?.root || '';
+    return [...new Set([currentRun, ...Array.from(backgroundRuns.values(), record => record.run)])].filter(run => run &&
+      (run.identity.rootId === root || run === currentRun && run.engine === 'codex' && runIsCurrent(run)));
+  }
   function aiState(){
-    const cfg=getConfig(),runs=[currentRun,...[...backgroundRuns.values()].map(r=>r.run)].filter((r,i,a)=>r&&a.indexOf(r)===i&&r.identity.rootId===((window.App&&App.root)||''));
-    const sessions=loadSessions().map(({id,title,ts,archived})=>({id,title,ts,archived:!!archived,current:id===curSessionId}));if(curSessionId&&!sessions.some(s=>s.id===curSessionId))sessions.unshift({id:curSessionId,title:'当前新会话',current:true,archived:false});
+    const cfg=getConfig(),runs=inspectableAiRuns();
+    const key=cfg.engine==='codex' && dshSessionAccess?.foreign ? codexHistoryKey(sessionRoot()) : sessKey();
+    const sessions=loadSessions(key).map(({id,title,ts,archived})=>({id,title,ts,archived:!!archived,current:id===curSessionId}));if(curSessionId&&!sessions.some(s=>s.id===curSessionId))sessions.unshift({id:curSessionId,title:'当前新会话',current:true,archived:false});
     return {root:App.root||'',scope:sessKey(),current:curSessionId,engine:cfg.engine,model:nativeEngine(cfg.engine)?(dshConfigOptions.find(o=>o.id==='model')?.currentValue||''):cfg.model,requestedModel:cfg[nativeModelKey()],requestedReasoning:cfg[nativeReasoningKey()],reasoning:dshConfigOptions.find(o=>o.id==='reasoning_effort')?.currentValue||'',
       dshWatch:dshWatch&&dshWatchWanted(dshWatch)?{watchId:dshWatch.watchId,hostId:dshWatch.hostId,scope:dshWatch.scope,revision:dshWatch.revision,cursor:dshWatch.state?.cursor,running:dshWatch.state?.running,connected:dshWatch.state?.connected,runId:dshWatch.state?.runId,syncPending:dshWatch.needsSync}:null,
       models:nativeEngine(cfg.engine)?(dshConfigOptions.find(o=>o.id==='model')?.options||[]).flatMap(o=>o.options||[o]).map(o=>({id:o.value,name:o.name,disabled:!!o.disabled})):[...new Set([cfg.model,...(providerOf(cfg)?.models||[])].filter(Boolean))].map(id=>({id,name:id})),
@@ -5810,7 +5835,7 @@ const AiPanel = (() => {
       tasks:runs.map(r=>({id:r.identity.requestId,session:r.identity.sessionId,status:r.status,engine:r.engine,background:!!r.background,...(r.engine==='codex'?{native:{...(r.nativeState||{}),localStatus:r.status}}:{}),pendingTools:(r.nativePending||[]).filter(c=>!r.results?.has(c.id)).map(c=>({id:c.id,name:c.name})),pendingPermission:!!(r.background?.view.msgsEl||msgsEl).querySelector('.ai-dsh-permission button:not(:disabled)')})),
       context:ctxFiles.map(f=>({id:f.path,path:f.path,characters:String(f.content||'').length,auto:!!f.auto,pinned:!!f.pin,directory:!!f.isDir})),attachments:pendingImages.map((_,i)=>({id:'image-'+i,kind:'image',ready:true})),budget:{characters:MAX_CTX,attached:ctxFiles.reduce((n,f)=>n+String(f.content||'').length,0)}};
   }
-  async function aiInspect(a={}){const result=aiState();if(a.task){const run=[currentRun,...[...backgroundRuns.values()].map(r=>r.run)].find(r=>r?.identity.requestId===a.task&&r.identity.rootId===(App.root||''));if(!run)AiWorkbench.fail('TASK_NOT_FOUND','任务不属于当前项目');const text=run.stream?.text||'';result.output={task:a.task,offset:a.offset||0,total:text.length,text:text.slice(a.offset||0,(a.offset||0)+(a.limit||10000)),status:run.status};}result.controlJobs=AiWorkbench.jobList('ai').filter(j=>j.root===(App.root||''));return result;}
+  async function aiInspect(a={}){const result=aiState();if(a.task){const run=inspectableAiRuns().find(r=>r.identity.requestId===a.task);if(!run)AiWorkbench.fail('TASK_NOT_FOUND','任务不属于当前项目');const text=run.stream?.text||'';result.output={task:a.task,offset:a.offset||0,total:text.length,text:text.slice(a.offset||0,(a.offset||0)+(a.limit||10000)),status:run.status};}result.controlJobs=AiWorkbench.jobList('ai').filter(j=>j.root===(App.root||''));return result;}
   async function aiControl(call,context){
     const a=call.args,F=AiWorkbench.fail;
     if(a.operation==='context_pin'||a.operation==='context_remove'){const f=ctxFiles.find(f=>f.path===a.context);if(!f)F('CONTEXT_NOT_FOUND','引用不存在');if(a.operation==='context_pin')f.pin=a.pin!==false;else removeCtx(f.path);renderChips();return {ok:true,committed:true,...aiState()};}
