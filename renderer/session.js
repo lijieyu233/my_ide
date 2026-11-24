@@ -92,7 +92,6 @@ const Session = (() => {
         report.blocked = failed || !!report.supplemental;
         report.status = report.blocked ? 'partial' : report.status === 'empty' ? 'empty' : 'ready';
         restoring = null; updateButton();
-        if (failed) note('部分会话未恢复，原记录已保留；当前操作会另行保存，点击状态栏「部分恢复」查看详情');
       } else { report.status = 'stale'; if (restoring === run) restoring = null; }
     }
     return JSON.parse(JSON.stringify({ root: run.root, entries: report.entries, errors: report.errors, blocked: report.blocked, status: report.status }));

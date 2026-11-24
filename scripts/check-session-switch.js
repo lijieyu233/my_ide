@@ -17,6 +17,7 @@ app.whenReady().then(async()=>{try{
  if(arg<0){
   await js('Theme.set("crimson");await App.openProject('+JSON.stringify(a)+');localStorage.setItem('+JSON.stringify(key)+','+JSON.stringify(old)+');Viewer.closeAll();await Session.restore();return true;');
   check('旧文件缺失会进入部分恢复',await js('return Session.getRestoreReport().blocked&&!!Viewer.activeTab.error;'));
+  check('恢复失败只在状态栏保留详情入口',await js('return !document.querySelector("#session-recovery-status").hidden&&![...document.querySelectorAll(".toast")].some(toast=>toast.textContent.includes("部分会话未恢复"));'));
   await js('for(let i=0;i<12;i++)await Viewer.openFile('+JSON.stringify(a)+'+"/文档"+i+".md");Viewer.setPreviewEnabled(true);await Viewer.openFile('+JSON.stringify(active)+',{intent:"browse"});Tree.setExpandedPaths('+JSON.stringify([a,path.join(a,'子项目'),nested])+');await Tree.render();Tree.select('+JSON.stringify(active)+',"file");return true;');
   // 用户关闭已经失效的旧标签后，最新视图应替代旧恢复目标，而不是再次激活它。
   await js('const i=Viewer.openTabs.findIndex(t=>t.path==='+JSON.stringify(missing)+');await Viewer.closeTab(i);Viewer.cm.view.dispatch({selection:{anchor:0}});Viewer.cm.view.scrollDOM.scrollTop=700;await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return Session.saveNow();');
