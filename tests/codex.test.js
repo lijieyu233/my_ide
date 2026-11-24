@@ -18,7 +18,7 @@ function fixture(config={}){
   notify(c,'item/agentMessage/delta',{threadId,turnId,itemId:'message-'+turnId,delta:text});
   notify(c,'turn/completed',{threadId,turn:{id:turnId,status}});
  };
- service=createService({homeDir:()=>home,sharedLauncher:()=>config.sharedLauncher,desktopOwnsProjectThreads:()=>config.desktopInstalled===true,...(map?{mappingFile:()=>map}:{}),turnTimeoutMs:config.turnTimeoutMs||10000,idleWarningMs:config.idleWarningMs,requestTimeoutMs:1000,resolveRuntime:async()=>({executable:'fixture-codex.exe',args:[],env:{},launcher:'fixture-codex.exe'}),spawn:(exe,args,opts)=>{
+ service=createService({homeDir:()=>home,sharedLauncher:()=>config.sharedLauncher,requiresSharedRuntime:()=>config.managedOnly===true,desktopOwnsProjectThreads:()=>config.desktopInstalled===true,...(map?{mappingFile:()=>map}:{}),turnTimeoutMs:config.turnTimeoutMs||10000,idleWarningMs:config.idleWarningMs,requestTimeoutMs:1000,resolveRuntime:async()=>({executable:'fixture-codex.exe',args:[],env:{},launcher:'fixture-codex.exe'}),spawn:(exe,args,opts)=>{
   const c=child();children.push(c);invocation={exe,args,opts};
   c.stdin.on('data',data=>{for(const line of data.toString().trim().split('\n')){
    const r=JSON.parse(line);requests.push(r);const p=r.params||{};
@@ -224,6 +224,16 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
   fs.utimesSync(file,earlier,earlier);
   assert.equal((await probe(home,item)).running,false);
   assert.deepEqual(await probe(path.join(temp,'other-codex-home'),item),{running:false});
+ });
+
+ await test('共享后台未启动时，Codex 查询和发送不会启动私有后台',async()=>{
+  const f=fixture({managedOnly:true,desktopInstalled:true});
+  try {
+   await assert.rejects(f.service.inspect({},context()), { code:'CODEX_BACKEND_OFF' });
+   const result=await f.service.chat({},[{role:'user',content:'fixture message'}],[],context(2));
+   assert.equal(result.ok,false);
+   assert.equal(f.children.length,0);
+  } finally { await f.service.dispose(); }
  });
  await test('共享 Codex 连接操作桌面端原轮次，旧轮次和跨项目请求不派发',async()=>{
   const id='019caa00-0000-7000-8000-000000000010';

@@ -30,22 +30,16 @@ const DB = require('./src/main/db/db-service');
 const AI = require('./src/main/ai/ai-service');
 const DSH=require('./src/main/dsh/ai-dsh').createService({homeDir:()=>UI_CHECK?path.join(app.getPath('userData'),'harness-home'):undefined,mappingFile:()=>path.join(app.getPath('userData'),'dsh-native-sessions.json')});
 const sharedCodexHost = require('./src/main/codex/codex-shared-host').createSharedHost();
-let codexStartup;
-function prepareSharedCodex() {
-  if (!ownsWindow || UI_CHECK || LIVE_CHECK || SMOKE || process.env.MYIDE_CODEX_SHARED_LAUNCHER) {
-    return Promise.resolve(null);
-  }
-  codexStartup ||= sharedCodexHost.start().catch(error => {
-    LOG('Codex shared startup: ' + error.message);
-    return null;
-  });
-  return codexStartup;
+function manualCodexLifecycle() {
+  return process.platform === "win32" && ownsWindow && !UI_CHECK && !LIVE_CHECK &&
+    !SMOKE && !process.env.MYIDE_CODEX_SHARED_LAUNCHER;
 }
 const CODEX=require('./src/main/codex/ai-codex').createService({
   homeDir:()=>UI_CHECK?path.join(app.getPath('userData'),'codex-home'):undefined,
   mappingFile:()=>path.join(app.getPath('userData'),'codex-sessions.json'),
   sharedLauncher: () => UI_CHECK ? undefined : process.env.MYIDE_CODEX_SHARED_LAUNCHER,
-  sharedRuntime: async () => (await prepareSharedCodex())?.runtime,
+  sharedRuntime: () => manualCodexLifecycle() ? sharedCodexHost.runtime() : null,
+  requiresSharedRuntime: manualCodexLifecycle,
   desktopOwnsProjectThreads: () => process.platform === 'win32' && !!app.getApplicationNameForProtocol('codex://threads/'),
 });
 const aiRuns = require('./src/main/ai/ai-runs').createRegistry();
@@ -815,9 +809,19 @@ async function dshForeignView(event, context, hostId, access = 'ready') {
     throw Error('跨工程会话归属已变化');
   return view;
 }
+async function codexSessionView(event, context) {
+  const view = await event.sender.executeJavaScript('AiPanel.dshView()');
+  if (view.engine !== 'codex' || view.sessionId !== context.sessionId ||
+      context.rootId !== undefined && view.rootId !== context.rootId ||
+      context.foreignHostId !== undefined && view.foreignHostId !== context.foreignHostId ||
+      view.foreignHostId && (view.access !== 'ready' || view.page?.projectContext !== false)) {
+    throw Error('Codex 会话视图已变化');
+  }
+  return view;
+}
 ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
   const requestedPage=context?.page, foreignHostId=context?.foreignHostId;
-  let nativeStart=null,dshAdmission=null;
+  let nativeStart=null,dshAdmission=null,codexView=null;
   const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, d); } catch {} };
   let record;
   try {
@@ -834,6 +838,7 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
         nativeStart={page:await dshInputPage(e,context,requestedPage),hostId:slot.state.hostId};
       }
     }
+    if (cfg?.engine === 'codex') codexView = await codexSessionView(e, context);
     await aiPermissionsBridge.initialize(e.sender);
     aiOwners.register(e.sender.id,context,cfg?.engine);
     const start = aiRuns.begin(aiSender(e,context), context); record = start.record; context = record.context;
@@ -856,10 +861,11 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
     finally{if(dshAdmission)dshChatAdmissions.delete(dshAdmission);}
   }else if(cfg?.engine==='codex'){
     try{
-      const page=await e.sender.executeJavaScript('App.getPageContext()');assertCodexRun(e,context);
+      const { page, foreignHostId: expectedThreadId } = codexView;
+      assertCodexRun(e,context);
       // Codex 回包核验包含页面；aiRuns 的规范化身份不含页面，事件必须保留这份原生身份。
-      context={...context,page};
-      r=await CODEX.chat({...cfg,codexPermission:aiPermissionsBridge.codexPermission()},messages,tools||[],context,event=>{
+      context={...context,page,...(expectedThreadId ? {expectedThreadId} : {})};
+      r=await CODEX.chat({...cfg,codexPermission:aiPermissionsBridge.codexPermission()},messages,expectedThreadId ? [] : tools||[],context,event=>{
         try{assertCodexRun(e,context);}catch{return;}
         if(event.type==='text')send('ai:chunk',{delta:event.delta,messageId:event.messageId,context});else send('ai:codex-event',{...event,context});
       },event=>{try{assertCodexRun(e,context);send('ai:codex-event',{type:'tool',...event,context});}catch{CODEX.toolResult(context,event.call.id,{ok:false,text:'请求已停止，未执行工具'});}});
@@ -885,12 +891,12 @@ ipcMain.handle('ai:codex-question-result',(event,context,id,answers)=>{try{asser
 ipcMain.handle('ai:codex-options',async(event,cfg,sessionId,tools,apply)=>{
   try{
     aiSender(event);if(typeof sessionId!=='string'||!sessionId||sessionId.length>200)throw Error('Codex 会话身份无效');
-    const state=await event.sender.executeJavaScript('({page:App.getPageContext(),rootId:App.root||"",sessionId:AiPanel.aiState().current,engine:AiPanel.getConfig().engine})');
-    if(state.engine!=='codex'||state.sessionId!==sessionId||cfg?.engine!=='codex')throw Error('Codex 会话视图已变化');
+    if(cfg?.engine!=='codex')throw Error('Codex 会话视图已变化');
+    const state = await codexSessionView(event, { sessionId });
     aiSender(event,{engine:'codex',rootId:state.rootId,sessionId});
     const allowed=(tools||[]).filter(tool=>tool?.function?.name&&(!['list_files','read_file','search_files','write_file','replace_edit','run_command',...require('./renderer/ai-project-tools').projectOnly].includes(tool.function.name)||state.page.projectContext));
-    return await CODEX.inspect(cfg,{sessionId,rootId:state.rootId,page:state.page},allowed,apply===true);
-  }catch(error){return {ok:false,error:error.message};}
+    return await CODEX.inspect(cfg, {...state, expectedThreadId: state.foreignHostId}, state.foreignHostId ? [] : allowed, apply===true);
+  }catch(error){return {ok:false,error:error.message,errorCode:error.code};}
 });
 async function codexHistoryConfig(event, cfg) {
   aiSender(event);
@@ -900,10 +906,10 @@ async function codexHistoryConfig(event, cfg) {
 ipcMain.handle('ai:codex-input', async (event, cfg, target, action) => {
   try {
     aiSender(event);
-    const state = await event.sender.executeJavaScript('({page:App.getPageContext(),rootId:App.root||"",sessionId:AiPanel.aiState().current,engine:AiPanel.getConfig().engine})');
-    if (state.engine !== 'codex' || cfg?.engine !== 'codex' || !target?.sessionId || target.sessionId !== state.sessionId) {
+    if (cfg?.engine !== 'codex' || !target?.sessionId) {
       throw Error('Codex 会话视图已变化');
     }
+    const state = await codexSessionView(event, target);
     aiSender(event, state);
     if (target.run) {
       if (target.run.sessionId !== state.sessionId || target.run.rootId !== state.rootId) throw Error('Codex 当前轮次已切换');
@@ -939,11 +945,7 @@ ipcMain.handle('ai:codex-desktop-project', async (event, cfg, projectId) => {
   } catch (error) { return { ok: false, error: error.message }; }
 });
 async function openCodexDesktop(url) {
-  if ((await prepareSharedCodex())?.status === 'shared') {
-    const result = await sharedCodexHost.open(url);
-    if (result.status !== 'shared') throw Error('请退出单独启动的 Codex 后重试');
-    if (result.opened) return;
-  }
+  if (manualCodexLifecycle() && (await sharedCodexHost.open(url)).opened) return;
   await shell.openExternal(url);
 }
 const openCodexDesktopThread = threadId => openCodexDesktop('codex://threads/' + threadId);
@@ -983,6 +985,21 @@ ipcMain.handle('ai:codex-fork',async (event, cfg, threadId) => {
 });
 ipcMain.handle('ai:codex-status',async(event,launcher)=>{
   try{aiSender(event);return await CODEX.status(launcher);}catch(error){return {ok:false,error:error.message};}
+});
+ipcMain.handle('ai:codex-lifecycle', async (event, action) => {
+  try {
+    aiSender(event);
+    if (!manualCodexLifecycle()) return { ok: true, supported: false };
+    switch (action) {
+      case 'status': break;
+      case 'start-backend': await sharedCodexHost.start(); break;
+      case 'stop-backend': await CODEX.stopSharedBackend(() => sharedCodexHost.stop()); break;
+      case 'start-desktop': await sharedCodexHost.open(); break;
+      case 'stop-desktop': await sharedCodexHost.closeDesktop(); break;
+      default: throw Error('不支持的 Codex 进程操作');
+    }
+    return { ok: true, supported: true, ...await sharedCodexHost.status() };
+  } catch (error) { return { ok: false, error: error.message }; }
 });
 ipcMain.handle('ai:dsh-tool-result',(event,context,id,result)=>{try{aiRuns.assert(aiSender(event,context),context);return DSH.toolResult(context,id,result);}catch{return {ok:false};}});
 ipcMain.handle('ai:dsh-permission-result',(event,context,id,optionId)=>{try{aiRuns.assert(aiSender(event,context),context);return DSH.permissionResult(context,id,optionId);}catch{return {ok:false};}});
@@ -1861,7 +1878,6 @@ app.whenReady().then(() => {
     { label: 'View', submenu: [{ role: 'toggleDevTools' }, { role: 'resetZoom' }] },
   ]));
   const win = createWindow();
-  void prepareSharedCodex();
 
   if (SMOKE) {
     const errors = [];

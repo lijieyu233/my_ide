@@ -269,6 +269,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     codexArchive:(cfg,threadId,archived)=>ipcRenderer.invoke('ai:codex-archive',cfg,threadId,archived),
     codexFork:(cfg,threadId)=>ipcRenderer.invoke('ai:codex-fork',cfg,threadId),
     codexStatus:launcher=>ipcRenderer.invoke('ai:codex-status',launcher),
+    codexLifecycle:action=>ipcRenderer.invoke('ai:codex-lifecycle',action),
     dshToolResult:(context,id,result)=>ipcRenderer.invoke('ai:dsh-tool-result',context,id,result),
     dshPermissionResult:(context,id,optionId)=>ipcRenderer.invoke('ai:dsh-permission-result',context,id,optionId),
     dshQuestionResult: (context,id,answers) => ipcRenderer.invoke('ai:dsh-question-result',context,id,answers),

@@ -1370,20 +1370,70 @@ const AiPanel = (() => {
     }
   }
 
+  function initCodexLifecycleMenu() {
+    const status = document.querySelector('.ai-dsh-status');
+    if (!status || !window.myIDE.ai.codexLifecycle || document.getElementById('ai-codex-manage')) return;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.id = 'ai-codex-manage';
+    button.className = 'vt-btn hidden';
+    button.textContent = '管理';
+    button.title = '管理 Codex';
+    button.setAttribute('aria-label', '管理 Codex');
+    button.setAttribute('aria-haspopup', 'menu');
+    status.append(button);
+
+    async function perform(action, label) {
+      button.disabled = true;
+      try {
+        const result = await window.myIDE.ai.codexLifecycle(action);
+        if (!result?.ok || !result.supported) throw Error(result?.error || '当前系统不支持管理 Codex 进程');
+        MI.toast(label + '成功', 'ok');
+        if (action.endsWith('-backend') && getConfig().engine === 'codex') {
+          await refreshCodexOptions();
+          await refreshCodexCatalog();
+        }
+      } finally { button.disabled = false; }
+    }
+
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        const result = await window.myIDE.ai.codexLifecycle('status');
+        if (!result?.ok || !result.supported) throw Error(result?.error || '当前系统不支持管理 Codex 进程');
+        const isCurrent = () => button.isConnected && getConfig().engine === 'codex' && !panel?.classList.contains('hidden');
+        if (!isCurrent()) return;
+        button.disabled = false;
+        const action = (running, target, name) => {
+          const verb = running ? '关闭' : '启动';
+          const label = verb + name;
+          const operation = (running ? 'stop-' : 'start-') + target;
+          return { key: 'codex-' + operation, label, run: () => perform(operation, label) };
+        };
+        const rect = button.getBoundingClientRect();
+        showAiContextMenu(button, rect.right, rect.bottom, {
+          kind: 'codex-lifecycle', label: '管理 Codex', alignEnd: true, isCurrent,
+          actions: [action(result.backendRunning, 'backend', '共享后台'), action(result.desktopRunning, 'desktop', ' Codex 桌面端')],
+        });
+      } catch (error) { MI.toast(error.message, 'err'); }
+      finally { button.disabled = false; }
+    };
+  }
+
   async function refreshCodexOptions(apply=false){
     if(getConfig().engine!=='codex'||panel?.classList.contains('hidden'))return;
     if(loadedSessionKey!==sessKey()){onProjectChange();return;}
     if(!curSessionId){curSessionId='s-'+window.crypto.randomUUID();rememberSession();}
-    const ticket=++dshOptionsTicket,sessionId=curSessionId,root=window.App?.root||'',page=currentPage(),epoch=pageEpoch;
+    const ticket=++dshOptionsTicket,sessionId=curSessionId,root=sessionRoot(),page=currentPage(),epoch=pageEpoch;
     dshOptionsState='loading';refreshModelSel();setBusyUI(busy);
     const info=document.getElementById('ai-dsh-info');if(info){info.textContent='正在连接 Codex…';info.title='读取本机 Codex app-server 的实际模型与登录状态，不发送任务';}
     let result;try{result=await nativeCall('codex','Options',getConfig(),sessionId,TOOLS.filter(tool=>page.projectContext||!isProjectTool(tool.function.name)),apply);}catch(error){result={ok:false,error:error.message};}
-    if(ticket!==dshOptionsTicket||getConfig().engine!=='codex'||root!==(window.App?.root||'')||sessionId!==curSessionId||epoch!==pageEpoch)return;
+    if(ticket!==dshOptionsTicket||getConfig().engine!=='codex'||root!==sessionRoot()||sessionId!==curSessionId||epoch!==pageEpoch)return;
     const needsLogin=result?.ok&&result.requiresOpenaiAuth===true&&result.loggedIn!==true;
     dshOptionsState=result?.ok&&!needsLogin?'ready':'error';dshConfigOptions=result?.ok?result.configOptions||[]:[];
     if(needsLogin)result={...result,ok:false,error:'Codex 尚未登录，请先在官方 Codex 客户端或 CLI 登录，再点击重新连接；MyIDE 不读取、复制或代填登录凭据。'};
-    if(info){info.textContent=needsLogin?'Codex 已连接 · 未登录':result?.ok?'Codex 已连接':'Codex 连接失败';info.title=result?.desktopOwned?'此会话由 Codex 桌面端运行':result?.ok?'Codex 权限可在输入框的盾牌菜单设置。'+(result.modelConfirmation==='pending-native-resume'?' 原会话模型将在发送前由原生恢复确认。':''):result?.error||'请检查 Codex 启动器与本机登录状态';}
-    if(result?.ok)dshSessionAccess={sessionId,hostId:result.sessionId||'',desktopOwned:result.desktopOwned===true,state:'ready',scope:dshScope(),epoch,error:''};
+    if(info){info.textContent=needsLogin?'Codex 已连接 · 未登录':result?.ok?'Codex 已连接':result?.errorCode==='CODEX_BACKEND_OFF'?'后台未启动':'Codex 连接失败';info.title=result?.desktopOwned?'此会话由 Codex 桌面端运行':result?.ok?'Codex 权限可在输入框的盾牌菜单设置。'+(result.modelConfirmation==='pending-native-resume'?' 原会话模型将在发送前由原生恢复确认。':''):result?.error||'请检查 Codex 启动器与本机登录状态';}
+    if(result?.ok)dshSessionAccess={...dshSessionAccess,sessionId,hostId:result.sessionId||'',desktopOwned:result.desktopOwned===true,state:'ready',scope:dshScope(),epoch,error:''};
     refreshModelSel();setBusyUI(busy);
   }
   async function refreshDshOptions(apply=false,retry=false){
@@ -1430,6 +1480,7 @@ const AiPanel = (() => {
     const engine=document.getElementById('ai-engine');if(engine)engine.value=nativeEngine(cfg.engine)?cfg.engine:'standard';
     document.getElementById('ai-dsh-options')?.classList.toggle('hidden',!nativeEngine(cfg.engine));
     document.querySelector('.ai-dsh-status')?.classList.toggle('hidden',!nativeEngine(cfg.engine));
+    document.getElementById('ai-codex-manage')?.classList.toggle('hidden',cfg.engine!=='codex');
     if(nativeEngine(cfg.engine)){
       const model=dshConfigOptions.find(option=>option.id==='model'),choices=(model?.options||[]).flatMap(option=>option.options||[option]);
       const ready=dshOptionsState==='ready'&&!dshScopeMismatch()&&(cfg.engine!=='codex'||!busy&&!codexDesktopOwnsCurrentSession());sel.disabled=!ready;
@@ -2812,15 +2863,17 @@ const AiPanel = (() => {
    */
   function runKeyOf(scope, sessionId) { return JSON.stringify([String(scope || ''), String(sessionId || '')]); }
   const sessionCache = new Map();
-  function loadSessions() {
+  const codexProjectSessionKey = root => LS_SESS + ':' + root + ':codex';
+  const codexHistoryKey = root => pathKey(root) === pathKey(window.App?.root) ? sessKey() : codexProjectSessionKey(root);
+  function loadSessions(key = sessKey()) {
     try {
-      const key=sessKey(),raw=localStorage.getItem(key)||'[]';let entry=sessionCache.get(key);
+      const raw=localStorage.getItem(key)||'[]';let entry=sessionCache.get(key);
       // 顶部名称、目录别名和状态刷新会反复读同一份大历史；原始值未变就不重复解析正文。
       if(!entry||entry.raw!==raw){const value=JSON.parse(raw);entry={raw,list:Array.isArray(value)?value:[]};sessionCache.set(key,entry);if(sessionCache.size>4)sessionCache.delete(sessionCache.keys().next().value);}
       return entry.list.map(item=>({...item}));
     } catch { return []; }
   }
-  function saveSessions(a) { const key=sessKey();try { localStorage.setItem(key, JSON.stringify((a || []).slice(0, SESS_LIMIT))); } catch {} finally {sessionCache.delete(key);} }
+  function saveSessions(a, key = sessKey()) {try { localStorage.setItem(key, JSON.stringify((a || []).slice(0, SESS_LIMIT))); } catch {} finally {sessionCache.delete(key);} }
   let loadedSessionKey=null;
   let sessionLoadTicket=0;
   function rememberSession(){if(dshSessionAccess?.foreign)return;if((backgroundView||nativeEngine())&&curSessionId)localStorage.setItem(sessKey()+':active',curSessionId);}
@@ -2964,17 +3017,18 @@ const AiPanel = (() => {
     if (backgroundView) return;
     renderCurrentSessionTitle();
     const origin = document.getElementById('ai-session-origin'), bar = document.getElementById('ai-session-preview-bar');
-    const foreign = getConfig().engine === 'dsh' && dshSessionAccess?.foreign;
+    const foreign = dshSessionAccess?.foreign;
     if (origin) {
       const root = window.App?.root || '', page = currentPage();
       origin.classList.remove('hidden');
       const label = foreign ? sessionRootLabel(dshSessionAccess.rootDir) : page.projectContext ? sessionRootLabel(root) : page.name;
       origin.title = foreign ? '会话工程：'+dshSessionAccess.rootDir+'\nIDE 工程：'+root : page.projectContext ? '当前工程：'+(root || '未打开工程') : page.name+'（未附带项目文件）';
-      origin.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h5l2 2h5v7H2zM2 4V2h5l2 2h5v2"/></svg><span>'+(foreign ? '<span class="ai-origin-scope">会话工程 · </span>' : '')+'<b>'+esc(label)+'</b></span>';
+      origin.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h5l2 2h5v7H2zM2 4V2h5l2 2h5v2"/></svg><span>'+(foreign && getConfig().engine === 'dsh' ? '<span class="ai-origin-scope">会话工程 · </span>' : '')+'<b>'+esc(label)+'</b></span>';
     }
     if (bar) {
-      bar.classList.toggle('hidden', !foreign);
-      bar.innerHTML = foreign ? '<button id="ai-session-open-project" type="button">打开所属工程</button>' : '';
+      const openDshProject = foreign && getConfig().engine === 'dsh';
+      bar.classList.toggle('hidden', !openDshProject);
+      bar.innerHTML = openDshProject ? '<button id="ai-session-open-project" type="button">打开所属工程</button>' : '';
       const button = bar.querySelector('#ai-session-open-project');
       if (button) button.onclick = async () => {
         const { rootDir, hostId } = dshSessionAccess;
@@ -2999,8 +3053,8 @@ const AiPanel = (() => {
     }
     return ids;
   }
-  function parkedRecordOf(sessionId) {
-    for (const [key, record] of backgroundRuns) if (record.scope === sessKey() && record.run?.identity?.sessionId === sessionId) return { key, record };
+  function parkedRecordOf(sessionId, scope = sessKey()) {
+    for (const [key, record] of backgroundRuns) if (record.scope === scope && record.run?.identity?.sessionId === sessionId) return { key, record };
     return null;
   }
   let codexCatalog = null, codexCatalogRequest = null, codexCatalogError = null;
@@ -3011,7 +3065,7 @@ const AiPanel = (() => {
   const currentCodexCatalog = () => codexProjectHistory() && codexCatalog?.launcher === (getConfig().codexPath || '') ? codexCatalog : null;
 
   function codexSelectedHistoryItem() {
-    const root = pathKey(window.App?.root);
+    const root = pathKey(sessionRoot());
     return currentCodexCatalog()?.items.find(item => item.localId === curSessionId && pathKey(item.rootDir) === root);
   }
 
@@ -3084,7 +3138,7 @@ const AiPanel = (() => {
     try {
       const result = await window.myIDE.ai.codexHistory(config, threadId);
       if (!result?.ok || result.threadId !== threadId || result.localId !== curSessionId ||
-          pathKey(result.rootDir) !== pathKey(window.App?.root) || !wanted()) return;
+          pathKey(result.rootDir) !== pathKey(sessionRoot()) || !wanted()) return;
       view.activity = result.activity;
       view.activityId = result.activityId;
       const turnId = result.activeTurnId || null;
@@ -3107,8 +3161,9 @@ const AiPanel = (() => {
         if (!await replayHistory(wanted, !appendFrom, appendFrom, follow)) return;
         if (!follow && !appendFrom) container.scrollTop = top;
         // Updating an observed history must not clear the user's unsent input or change the active session.
-        saveSessions(loadSessions().map(session => session.id === result.localId
-          ? { ...session, msgs: msgs.slice() } : session));
+        const key = codexHistoryKey(result.rootDir);
+        saveSessions(loadSessions(key).map(session => session.id === result.localId
+          ? { ...session, msgs: msgs.slice() } : session), key);
       }
       reconcileCodexReceipts(next);
       renderCodexObservedActivity();
@@ -3320,7 +3375,8 @@ const AiPanel = (() => {
         const native = { id: item.localId, codexThreadId: item.threadId, codexProjectId: item.projectId, title: item.title,
           archived: item.archived === true,
           rootDir: here ? root : item.rootDir, ts: item.ts, virtual: true };
-        if (item.running) running.add(item.localId);
+        if (item.running || currentRun?.status === 'active' && curSessionId === item.localId ||
+            parkedRecordOf(item.localId, codexHistoryKey(item.rootDir))?.record.run.status === 'active') running.add(item.localId);
         const localRow = here && currentRows.get(item.localId);
         if (localRow) Object.assign(localRow, native);
         else all.push(native);
@@ -3359,10 +3415,10 @@ const AiPanel = (() => {
   let historySearch = '';
 
   function isHistorySessionSelected(session) {
+    if (session.codexThreadId) return session.id === curSessionId && pathKey(session.rootDir) === pathKey(sessionRoot());
     return session.foreign
       ? dshSessionAccess?.hostId === session.hostId && pathKey(dshSessionAccess.rootDir) === pathKey(session.rootDir)
-      : !dshSessionAccess?.foreign && session.id === curSessionId &&
-        (!session.codexThreadId || pathKey(session.rootDir) === pathKey(window.App?.root));
+      : !dshSessionAccess?.foreign && session.id === curSessionId;
   }
 
   function defaultHistoryExpanded(key, items, root, running) {
@@ -4072,9 +4128,10 @@ const AiPanel = (() => {
     if (fork && codexForksInFlight.has(threadId)) return;
     const intent = ++codexOpenIntent, ticket = sessionLoadTicket;
     const current = () => intent === codexOpenIntent && codexProjectHistory();
-    const showingRun = id => id === curSessionId && currentRun?.status === 'active' || parkedRecordOf(id)?.record.run.status === 'active';
-    if (!fork && pathKey(target.rootDir) === pathKey(window.App?.root) && showingRun(target.id)) {
-      openSession(target.id);
+    const showingRun = (id, root) => id === curSessionId && pathKey(root) === pathKey(sessionRoot()) && currentRun?.status === 'active' ||
+      parkedRecordOf(id, codexHistoryKey(root))?.record.run.status === 'active';
+    if (!fork && showingRun(target.id, target.rootDir)) {
+      openSession(target.id, false, { ...target, threadId });
       return;
     }
     if (fork) { codexForksInFlight.add(threadId); App.showAi(); }
@@ -4082,15 +4139,11 @@ const AiPanel = (() => {
       const result = await (fork ? window.myIDE.ai.codexFork(getConfig(), threadId) : window.myIDE.ai.codexHistory(getConfig(), threadId, target.archived));
       if (!current() || ticket !== sessionLoadTicket) return;
       if (!result?.ok) throw Error(result?.error || (fork ? '无法分叉 Codex 会话' : '无法打开 Codex 会话'));
-      if (pathKey(result.rootDir) !== pathKey(window.App?.root)) {
-        if (!await App.openProject(result.rootDir)) return;
-        if (!current() || pathKey(result.rootDir) !== pathKey(window.App?.root)) return;
-        App.showTool('sessions');
-      }
-      if (!showingRun(result.localId)) {
-        const all = loadSessions(), previous = all.find(item => item.id === result.localId);
+      if (!showingRun(result.localId, result.rootDir)) {
+        const key = codexHistoryKey(result.rootDir);
+        const all = loadSessions(key), previous = all.find(item => item.id === result.localId);
         saveSessions([{ ...previous, id: result.localId, title: result.title, ts: result.ts,
-          msgs: result.messages }, ...all.filter(item => item.id !== result.localId)]);
+          msgs: result.messages }, ...all.filter(item => item.id !== result.localId)], key);
       }
       const catalog = currentCodexCatalog();
       if (catalog) {
@@ -4099,7 +4152,8 @@ const AiPanel = (() => {
         if (cached) Object.assign(cached, { rootDir, localId, ts, title, external });
         else catalog.items.unshift({ threadId, projectId, rootDir, localId, ts, title, external, archived: result.archived === true });
       }
-      openSession(result.localId, false);
+      const keepDraft = fork && target.id === curSessionId && pathKey(result.rootDir) === pathKey(sessionRoot());
+      openSession(result.localId, false, { ...result, keepDraft });
       if (!result.archived) void refreshNativeQueue(true);
       renderCurrentSessionTitle();
       refreshHistInPlace();
@@ -4110,18 +4164,24 @@ const AiPanel = (() => {
     }
   }
 
-  function openSession(id, showNotice = true) {
+  function openSession(id, showNotice = true, codexHistory = null) {
+    const ideRoot = window.App?.root || '', root = codexHistory?.rootDir || ideRoot;
+    if (id === curSessionId && currentRun?.status === 'active' && pathKey(currentRun.identity.rootId) === pathKey(root)) return;
     const ticket = ++sessionLoadTicket;
-    if (id === curSessionId && currentRun?.status === 'active' && currentRun.identity.rootId === (window.App?.root || '')) return;
+    const foreign = codexHistory && pathKey(root) !== pathKey(ideRoot);
+    const access = foreign ? { foreign: true, rootDir: root, sessionId: id, hostId: codexHistory.threadId,
+      title: codexHistory.title, state: 'ready', scope: 'project', epoch: pageEpoch } : null;
+    const cacheKey = foreign ? codexHistoryKey(root) : sessKey();
     // 切到「正在后台跑」的会话时，不能去读已落盘的旧正文：
     // 那份记录可能是一轮之前保存的，直接 replay 会把后台已经累积的输出丢掉，
     // 还给用户一种「切回来怎么变了」的错觉。改为把后台记录整个接回前台。
     resetDshWatch();
-    const parked = parkedRecordOf(id);
+    const parked = parkedRecordOf(id, cacheKey);
     if (parked) {
+      if (codexHistory) parked.record.view.dshSessionAccess = access;
       // 先把当前会话也挂起来，否则它的 DOM 会被这次接回顶掉。
-      const rest = restoreBackgroundRun({ sessionId: id });
-      if (rest) { rememberSession(); localStorage.removeItem(sessKey()+':draft'); refreshDshOptions(); renderUsage(); MI.toast('已接回运行中的会话', 'ok'); return; }
+      const rest = restoreBackgroundRun({ sessionId: id, hit: parked });
+      if (rest) { rememberSession(); if (!foreign) localStorage.removeItem(sessKey()+':draft'); refreshDshOptions(); renderUsage(); MI.toast('已接回运行中的会话', 'ok'); return; }
     }
     const host = catalogOf(id);
     if (host && (!host.cwd || pathKey(host.cwd) !== pathKey(window.App?.root))) {
@@ -4132,7 +4192,7 @@ const AiPanel = (() => {
     }
     if (host && host.cwd && pathKey(host.cwd) === pathKey(window.App?.root)) { loadHostSession(id, host.sessionId, ticket); return; }
     const draftKey = JSON.stringify([window.App?.root || '', id]);
-    const se = loadSessions().find(x => x.id === id) || (sessionDrafts.has(draftKey) && id === localStorage.getItem(sessKey()+':active') ? {id,title:'新会话',msgs:[]} : null);
+    const se = loadSessions(cacheKey).find(x => x.id === id) || (sessionDrafts.has(draftKey) && id === localStorage.getItem(sessKey()+':active') ? {id,title:'新会话',msgs:[]} : null);
     if (getConfig().engine === 'dsh' && se && (se.hostId || se.msgs?.length || /^(session-|myide-|host:)/.test(id))) {
       restoreDshSession(id,ticket);return;
     }
@@ -4148,16 +4208,17 @@ const AiPanel = (() => {
     releaseSessionPermissions(detachRun());
     msgs = repairToolHistory((se.msgs || []).slice());
     usageSum = Object.assign({ in: 0, out: 0, cacheHit: 0, cacheMiss: 0 }, se.usage || {});
-    switchSessionDraft(se.id);
+    if (codexHistory?.keepDraft) sessionDrafts.delete(JSON.stringify([sessionRoot(), curSessionId]));
+    else switchSessionDraft(se.id, root, !!foreign);
     curSessionId = se.id;
-    dshSessionAccess=null;
+    dshSessionAccess = access;
     setBusyUI(false);
     rememberSession();
-    localStorage.removeItem(sessKey()+':draft');
+    if (!foreign) localStorage.removeItem(sessKey()+':draft');
     refreshDshOptions();
     renderUsage();
     replayMsgs();
-    restoreBackgroundRun();
+    if (!foreign) restoreBackgroundRun();
     if (showNotice) MI.toast('已载入会话：' + se.title, 'ok');
   }
   /**
@@ -4564,7 +4625,7 @@ const AiPanel = (() => {
     while(msgsEl.firstChild)container.appendChild(msgsEl.firstChild);
     moveActivityObservers(msgsEl,container);
     // scope 在挂起这一刻就固定下来，恢复时原样比对（见 runKeyOf 的注释）
-    const scope=dshSessionAccess?.foreign ? LS_SESS+':'+run.identity.rootId+':dsh' : loadedSessionKey||LS_SESS+':'+run.identity.rootId+':'+run.engine;
+    const scope=dshSessionAccess?.foreign ? LS_SESS+':'+run.identity.rootId+':'+run.engine : loadedSessionKey||LS_SESS+':'+run.identity.rootId+':'+run.engine;
     const record={run,scope,view:{...captureRunView(),msgsEl:container},pending:[]};
     const key=runKeyOf(scope,curSessionId);
     backgroundRuns.set(key,record);run.background=record;
@@ -5543,6 +5604,7 @@ const AiPanel = (() => {
     const engine=document.getElementById('ai-engine');if(engine)engine.onchange=async()=>{await setConfig({engine:engine.value});};
     document.getElementById('ai-dsh-reasoning')?.addEventListener('change', event => { void changeNativeEffort(event.target.value); });
     document.getElementById('ai-dsh-reconnect')?.addEventListener('click',()=>{if(!busy)refreshDshOptions(false,true);});
+    initCodexLifecycleMenu();
     window.myIDE.ai.onDshEvent?.(handleDshEvent);
     window.myIDE.ai.onCodexEvent?.(handleDshEvent);
     const offDshWatch = window.myIDE.ai.onDshWatch?.(receiveDshWatch);

@@ -50,6 +50,7 @@ function createService(options={}){
   const runs=new Map(),sessions=new Map(),saved=new Map(),locks=new Map(),pendingChoices=new Map();
   const desktopTransfers = new Set();
   let connection=null,starting=null,loaded=false,loading=null,disposed=false,saving=Promise.resolve();
+  let stoppingBackend = false;
   const mapping=()=>valueOf(options.mappingFile),explicitHome=()=>valueOf(options.homeDir)||options.home;
   const observeDesktop=desktopState.createDesktopStatusReader();
   const desktopAvailable = () => !connection?.shared && options.desktopOwnsProjectThreads?.() === true;
@@ -227,6 +228,7 @@ function createService(options={}){
     activity(run);
   }
   async function connect(cfg={}){
+    if (stoppingBackend) throw Error('正在关闭 Codex 共享后台');
     if(disposed)throw Error('Codex 连接已关闭');const launcher=cfg.codexPath||'';
     if(starting){const conn=await starting;if(conn.launcher!==launcher)throw Error('Codex 启动路径已改变');return conn;}
     if(connection&&!connection.rpc.closed){if(connection.launcher!==launcher)throw Error('Codex 启动路径已改变，请重启 MyIDE 后重新连接');return connection;}
@@ -234,6 +236,9 @@ function createService(options={}){
       await load();
       const sharedRuntime = await options.sharedRuntime?.();
       const sharedLauncher = valueOf(options.sharedLauncher);
+      if (!sharedRuntime && options.requiresSharedRuntime?.()) {
+        throw Object.assign(Error('请在「管理 Codex」中启动共享后台'), { code: 'CODEX_BACKEND_OFF' });
+      }
       const runtime = sharedRuntime || await (options.resolveRuntime || resolveRuntime)(sharedLauncher || launcher || undefined);
       if(disposed)throw Error('Codex 连接已关闭');
       const env={...process.env,...runtime.env},home=explicitHome();if(typeof home==='string'&&home){env.CODEX_HOME=home;await fs.mkdir(home,{recursive:true});}
@@ -621,6 +626,7 @@ function createService(options={}){
       const input=promptContent(messages,context.page),info=await identity(context);live(run);statusEvent(run,'connecting','正在连接本机 Codex app-server');
       const conn=await connect(cfg);statusEvent(run,'catalog','正在核对 Codex 账号状态与模型目录');const data=await catalog(conn);live(run);if(data.requiresOpenaiAuth&&!data.loggedIn)throw Error('本机 Codex 尚未登录，请在 Codex 官方客户端或 CLI 中登录后重新连接');
       const binding = saved.get(info.key), request = historyRequest(conn);
+      if (context.expectedThreadId && binding?.id !== context.expectedThreadId) throw Error('Codex 历史会话身份失配');
       if (binding?.id && info.scope === 'project' && desktopAvailable()) {
         const submission = await submitToDesktop(run, request, binding, info, input, cfg.codexContinueTurnId, () => {
           queueing = true;
@@ -871,8 +877,16 @@ function createService(options={}){
       return { ok: false, available: false, connected: false, error: error.message };
     }
   }
+  async function stopSharedBackend(stop) {
+    if (stoppingBackend || starting || runs.size) throw Error('请等待当前 Codex 操作结束，再关闭共享后台');
+    stoppingBackend = true;
+    try {
+      await stop();
+      if (connection?.shared) connection.rpc.close();
+    } finally { stoppingBackend = false; }
+  }
   function hasRun(context){return [...runs.values()].some(run=>run.context.sessionId===context?.sessionId&&run.context.rootId===context?.rootId);}
   async function dispose(){if(disposed)return;disposed=true;for(const run of runs.values()){run.aborted=true;run.detached=run.conn?.shared;discardPending(run);resolveRun(run,{status:'interrupted'});}const conn=connection;conn?.rpc.close();conn?.child.kill();if(starting)try{const own=await starting;own.rpc.close();own.child.kill();}catch{}await saving;}
-  return {chat,inspect,listHistory,getHistoryProjectRoot,openHistory,openInDesktop,forkHistory,renameHistory,setHistoryArchived,changeInput,status,abort,detach,toolResult,permissionResult,questionResult,dispose,hasRun};
+  return {chat,inspect,listHistory,getHistoryProjectRoot,openHistory,openInDesktop,forkHistory,renameHistory,setHistoryArchived,changeInput,status,abort,detach,toolResult,permissionResult,questionResult,dispose,hasRun,stopSharedBackend};
 }
 module.exports={createService,promptContent,toolSpecs,configOptions};

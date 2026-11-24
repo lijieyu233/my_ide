@@ -11,7 +11,16 @@ for(const flag of ['disable-background-timer-throttling','disable-renderer-backg
 for(const name of ['readText','readHTML','readRTF','readFindText'])clipboard[name]=()=>'';clipboard.readImage=()=>nativeImage.createEmpty();clipboard.availableFormats=()=>[];clipboard.readBuffer=()=>Buffer.alloc(0);
 const fixture=require('./codex-test-server').createServer(),codex=require('../src/main/codex/ai-codex'),create=codex.createService;let service, desktopOwnsProjectThreads=false;
 codex.createService=options=>(service=create({...options,desktopOwnsProjectThreads:()=>desktopOwnsProjectThreads,resolveRuntime:async()=>({executable:process.execPath,args:[],launcher:'offline-fixture'}),spawn:fixture.spawn}));
-const network=[],checks=[],handle=ipcMain.handle.bind(ipcMain);ipcMain.handle=(channel,fn)=>handle(channel,(event,...args)=>{if(channel==='browser:tool-keys')return {ok:true};return fn(event,...args);});
+const lifecycle={backendRunning:false,desktopRunning:false}, lifecycleCalls=[];
+function fixtureLifecycle(action){
+ if(action!=='status')lifecycleCalls.push(action);
+ if(action==='start-backend')lifecycle.backendRunning=true;
+ if(action==='stop-backend')lifecycle.backendRunning=false;
+ if(action==='start-desktop')lifecycle.desktopRunning=true;
+ if(action==='stop-desktop')lifecycle.desktopRunning=false;
+ return {ok:true,supported:true,desktopAvailable:true,...lifecycle};
+}
+const network=[],checks=[],handle=ipcMain.handle.bind(ipcMain);ipcMain.handle=(channel,fn)=>handle(channel,(event,...args)=>{if(channel==='browser:tool-keys')return {ok:true};if(channel==='ai:codex-lifecycle')return fixtureLifecycle(args[0]);return fn(event,...args);});
 let win,done=false;app.on('browser-window-created',(_e,w)=>{w.setSkipTaskbar(true);w.on('show',()=>{throw Error('Test window became visible');});});app.on('web-contents-created',(_e,wc)=>wc.setBackgroundThrottling(false));app.on('ready',()=>session.defaultSession.webRequest.onBeforeRequest({urls:['http://*/*','https://*/*','ws://*/*','wss://*/*']},(data,reply)=>{network.push(data.url);reply({cancel:true});}));require('../main');
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),js=(fn,...args)=>win.webContents.executeJavaScript('('+fn.toString()+')('+args.map(a=>JSON.stringify(a)).join(',')+')');
 const until=async(fn,name)=>{const deadline=Date.now()+20000;while(Date.now()<deadline){if(await fn())return;await sleep(20);}throw Error('Timeout: '+name);};
@@ -83,14 +92,20 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  await js(()=>{document.querySelector('[data-codex-project="desktop-empty"] [data-hist-jump]').click();return true;});
  await until(()=>js(root=>App.root===root,emptyRoot),'open an empty native project');
  check('an empty Codex project can be opened even with no sessions',await js(root=>App.root===root,emptyRoot));
+ const editorFile=path.join(emptyRoot,'open-in-editor.txt');
+ fs.writeFileSync(editorFile,'Editor stays in the current project');
+ await js(file=>Viewer.openFile(file.replace(/\\/g,'/')),editorFile);
  await js(()=>{const row=[...document.querySelectorAll('.ai-hist-nm')].find(node=>node.textContent==='桌面 Codex 外部会话');
   const section=row.closest('.ai-hist-group'),toggle=section.querySelector('[data-hist-toggle]');
   if(toggle.getAttribute('aria-expanded')==='false')toggle.click();
   row.closest('button').click();
  });
- await until(()=>js(root=>App.root===root&&AiPanel.aiState().dshState==='ready'&&document.getElementById('ai-msgs').textContent.includes('CODEX_PREVIOUS_ANSWER'),roots[1]),'external history and project switch');
- check('Codex sidebar opens saved history in its original project without opening a native turn',fixture.requests.filter(r=>r.method==='turn/start').length===earlierTurns&&!fixture.requests.some(r=>r.method==='thread/resume'&&r.params.threadId===externalId));
- check('switching projects keeps the Codex session catalog available',await js(()=>!document.querySelector('[data-hist-refresh]').disabled&&!!document.querySelector('[data-codex-project="desktop-b"]')));
+ await until(()=>js(root=>AiPanel.dshView().rootId===root&&AiPanel.aiState().dshState==='ready'&&document.getElementById('ai-msgs').textContent.includes('CODEX_PREVIOUS_ANSWER'),roots[1]),'external history');
+ check('Codex session click preserves the active IDE project, editor tab and native thread',
+   await js((root,id)=>App.root===root&&document.querySelector('#project-bar .proj-btn.active')?.dataset.path===root&&
+     Viewer.activeTab?.path.split(/[\\/]/).at(-1)==='open-in-editor.txt'&&!!document.querySelector('[data-id="codex:'+id+'"][aria-current="true"]'),emptyRoot,externalId)&&
+   fixture.requests.filter(r=>r.method==='turn/start').length===earlierTurns&&!fixture.requests.some(r=>r.method==='thread/resume'&&r.params.threadId===externalId));
+ check('opening another project’s session keeps the Codex session catalog available',await js(()=>!document.querySelector('[data-hist-refresh]').disabled&&!!document.querySelector('[data-codex-project="desktop-b"]')));
  await capture('codex-history-sidebar');
  const renamedThreadTitle='桌面 Codex 新名称';
  await js(id=>{
@@ -368,7 +383,8 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  });
  await until(()=>fixture.requests.some(r=>r.method==='turn/start'&&r.params.threadId===externalId),'external continuation');
  check('Codex sends into the exact idle thread even if the sidebar still shows running',
-   fixture.requests.filter(r=>r.method==='thread/queue/add').length===queuedBeforeIdle&&fixture.requests.some(r=>r.method==='thread/resume'&&r.params.threadId===externalId)&&fixture.requests.filter(r=>r.method==='thread/start').length===1&&fixture.requests.find(r=>r.method==='turn/start'&&r.params.threadId===externalId).params.input[0].text==='HOLD_CODEX 续接桌面会话');
+   fixture.requests.filter(r=>r.method==='thread/queue/add').length===queuedBeforeIdle&&fixture.requests.some(r=>r.method==='thread/resume'&&r.params.threadId===externalId)&&fixture.requests.filter(r=>r.method==='thread/start').length===1&&fixture.requests.find(r=>r.method==='turn/start'&&r.params.threadId===externalId).params.input[0].text==='HOLD_CODEX 续接桌面会话'&&
+   await js((ideRoot,sessionRoot)=>App.root===ideRoot&&AiPanel.dshView().rootId===sessionRoot,emptyRoot,roots[1]));
  await js(()=>{document.getElementById('ai-send').click();return true;});
  await until(()=>fixture.requests.some(r=>r.method==='turn/interrupt'&&r.params.threadId===externalId),'external interrupt');
  await until(()=>fixture.requests.some(r=>r.method==='thread/unsubscribe'&&r.params.threadId===externalId)&&
@@ -582,5 +598,27 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
    original.inputQueue[0].input[0].text==='继续'&&
    !fixture.requests.slice(startDesktopRoute).some(r=>['thread/start','thread/resume','turn/start','thread/fork','turn/interrupt'].includes(r.method)));
  await capture('codex-desktop-owned');
+ check('Opening MyIDE and selecting Codex did not start either process',lifecycleCalls.length===0);
+ const lifecycleAction=async action=>{
+  await until(()=>js(()=>{
+   const button=document.getElementById('ai-codex-manage');
+   if(button&&!button.disabled&&button.checkVisibility()){button.click();return true;}
+  }),'Codex process menu button');
+  const selector='[data-act="codex-'+action+'"]';
+  await until(()=>js(selector=>document.querySelector(selector)?.checkVisibility(),selector),action+' menu item');
+  if(action==='start-backend')await capture('codex-lifecycle-menu');
+  await js(selector=>document.querySelector(selector).click(),selector);
+  await until(()=>lifecycleCalls.at(-1)===action,action+' IPC');
+ };
+ await lifecycleAction('start-backend');
+ assert(lifecycle.backendRunning&&!lifecycle.desktopRunning);
+ await lifecycleAction('start-desktop');
+ assert(lifecycle.backendRunning&&lifecycle.desktopRunning);
+ await lifecycleAction('stop-desktop');
+ assert(lifecycle.backendRunning&&!lifecycle.desktopRunning);
+ await lifecycleAction('stop-backend');
+ check('Codex process menu dispatches all four operations independently',
+   !lifecycle.backendRunning&&!lifecycle.desktopRunning&&
+   lifecycleCalls.join(',')==='start-backend,start-desktop,stop-desktop,stop-backend');
  const gap=await js(()=>Math.max(...window.__codexGaps));check('renderer stays responsive in native tool flow',gap<250,{maxHeartbeatMs:gap});check('isolated fixture remained hidden and offline',!network.length&&BrowserWindow.getAllWindows().every(w=>!w.isVisible()));await finish(0);
 })().catch(async error=>{console.error(error.stack);if(win&&!win.isDestroyed())try{console.error('CODEX_UI_STATE '+JSON.stringify(await js(()=>({state:AiPanel.aiState(),info:document.getElementById('ai-dsh-info')?.title,fixtureText:document.getElementById('ai-msgs')?.textContent.slice(-700)}))));}catch{}await finish(1,error.message);});
