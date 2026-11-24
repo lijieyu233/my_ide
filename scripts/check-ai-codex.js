@@ -262,6 +262,22 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
    const restored = await order();
    check('custom order survives reloading the renderer', JSON.stringify(restored.projects) === JSON.stringify(sorted.projects) &&
      JSON.stringify(restored.sessions) === JSON.stringify(sorted.sessions) && restored.recentLast);
+   const newest='019caa00-0000-7000-8000-000000000110';
+   fixture.threads.set(newest,{ ...fixture.threads.get(implicitId),id:newest,name:'会话排序目标',updatedAt:Date.now()/1000 });
+   await js(()=>document.querySelector('#panel-sessions [data-hist-refresh]').click());
+   await until(()=>js(selector=>!!document.querySelector(selector),row('desktop-b',newest)),'batch drag target available');
+   await js(({first,second})=>{
+     const toggle=document.querySelector('[data-codex-project="desktop-b"] [data-hist-toggle]');
+     if(toggle.getAttribute('aria-expanded')==='false')toggle.click();
+     for(const selector of [first,second])document.querySelector(selector+' .ai-hist-open')
+       .dispatchEvent(new MouseEvent('click',{bubbles:true,ctrlKey:true}));
+   },{first:row('desktop-b',implicitId),second:row('desktop-b',externalId)});
+   await fireDrag(row('desktop-b',implicitId),row('desktop-b',newest),'move');
+   const movedTogether=(await order()).sessions;
+   const selectedInProject=await js(()=>document.querySelectorAll('[data-codex-project="desktop-b"] .ai-hist-row[data-batch-selected]').length);
+   check('dragging selected sessions moves them together and preserves their relative order',
+     JSON.stringify(movedTogether)===JSON.stringify([implicitId,externalId,newest]) && selectedInProject===2,
+     {movedTogether,selectedInProject});
    await finish(0);
    return;
  }

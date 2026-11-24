@@ -3776,7 +3776,7 @@ const AiPanel = (() => {
   function finishCodexHistoryDrag() {
     if (!codexHistoryDrag) return;
     clearCodexDragTarget();
-    codexHistoryDrag.node.classList.remove('ai-hist-dragging');
+    for (const node of codexHistoryDrag.nodes) node.classList.remove('ai-hist-dragging');
     codexHistoryDrag = null;
     refreshHistInPlace();
   }
@@ -3788,7 +3788,7 @@ const AiPanel = (() => {
     function dropTarget(event) {
       if (!codexHistoryDrag || !canSort() || !event.dataTransfer?.types.includes(codexSortType)) return null;
       const anchor = anchorOf(event);
-      return anchor !== codexHistoryDrag.node && anchor?.dataset.codexOrderScope === codexHistoryDrag.node.dataset.codexOrderScope
+      return anchor?.dataset.codexOrderScope === codexHistoryDrag.scope && !codexHistoryDrag.ids.has(anchor.dataset.codexOrderId)
         ? anchor : null;
     }
     const placement = (anchor, event) => {
@@ -3799,10 +3799,15 @@ const AiPanel = (() => {
       const node = anchorOf(event);
       if (!canSort() || !node || !event.dataTransfer) return;
       if (aiContextMenu?.kind === 'session') aiContextMenu.close();
-      event.dataTransfer.setData(codexSortType, node.dataset.codexOrderId);
+      const { codexOrderScope: scope, codexOrderId: id } = node.dataset;
+      const nodes = node.hasAttribute('data-batch-selected')
+        ? visibleHistoryRows().filter(row => row.dataset.codexOrderScope === scope && row.hasAttribute('data-batch-selected'))
+        : [node];
+      const ids = new Set(nodes.map(row => row.dataset.codexOrderId));
+      event.dataTransfer.setData(codexSortType, id);
       event.dataTransfer.effectAllowed = 'move';
-      codexHistoryDrag = { node, target: null };
-      node.classList.add('ai-hist-dragging');
+      codexHistoryDrag = { nodes, ids, scope, target: null };
+      for (const picked of nodes) picked.classList.add('ai-hist-dragging');
     });
     rows.addEventListener('dragover', event => {
       const anchor = dropTarget(event);
@@ -3822,12 +3827,12 @@ const AiPanel = (() => {
       const anchor = dropTarget(event);
       if (anchor) {
         event.preventDefault();
-        const { codexOrderScope: scope, codexOrderId: moved } = codexHistoryDrag.node.dataset;
+        const { scope, ids: moved } = codexHistoryDrag;
         const ids = [...rows.querySelectorAll(codexOrderTarget)]
           .filter(node => node.dataset.codexOrderScope === scope).map(node => node.dataset.codexOrderId);
-        const reordered = ids.filter(id => id !== moved);
+        const reordered = ids.filter(id => !moved.has(id));
         const index = reordered.indexOf(anchor.dataset.codexOrderId);
-        reordered.splice(index + Number(placement(anchor, event) === 'after'), 0, moved);
+        reordered.splice(index + Number(placement(anchor, event) === 'after'), 0, ...moved);
         if (reordered.some((id, at) => id !== ids[at])) {
           try {
             const next = new Map(codexOrders).set(scope, reordered);
