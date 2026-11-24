@@ -31,6 +31,63 @@ async function finish(code,error){if(done)return;done=true;clearTimeout(watchdog
 const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
 (async()=>{await app.whenReady();await until(()=>{win=BrowserWindow.getAllWindows().find(w=>!w.webContents.isLoading()&&w.webContents.getURL().includes('renderer/index.html'));return win;},'window');await until(()=>js(()=>!!window.App&&!!window.AiPanel&&!!document.getElementById('btn-open').onclick),'app init');win.setContentSize(1440,900);
  await js(async root=>{Object.defineProperty(document,'hidden',{value:false,configurable:true});await App.setRoot(root);App.showAi();await AiPanel.setConfig({engine:'codex',autoIdeContext:false,injectMyideRules:false});return true;},roots[0]);await until(()=>js(()=>AiPanel.aiState().dshState==='ready'),'Codex options');check('Codex connects in existing mode selector and shows native model',await js(()=>document.getElementById('ai-engine').value==='codex'&&document.getElementById('ai-model').textContent.includes('Codex offline fixture')));check('inspect never creates a thread or starts a turn',!fixture.requests.some(r=>['thread/start','turn/start'].includes(r.method)));
+ if (process.argv.includes('--codex-goal-only')) {
+   const view = '#ai-codex-goal';
+   const shown = () => js(selector => document.querySelector(selector)?.checkVisibility(), view);
+   check('empty chat has no persistent placeholder for a goal', !await shown());
+   await js(() => {
+     const input = document.getElementById('ai-input');
+     input.value = '/';
+     input.setSelectionRange(1, 1);
+     input.dispatchEvent(new Event('input', { bubbles: true }));
+     [...document.querySelectorAll('.ai-at-name')].find(item => item.textContent === '/目标').parentElement.click();
+   });
+   await until(() => js(()=>document.querySelector('#ai-codex-goal form').checkVisibility()), 'inline goal editor');
+   await js(()=>{
+     const form = document.querySelector('#ai-codex-goal form');
+     form.elements.objective.value = '完成目标验证，直到断言通过';
+     form.requestSubmit();
+   });
+   const nativeGoal = () => [...fixture.threads.values()].find(thread=>thread.goal);
+   const status = expected => js(expected => document.querySelector('.ai-goal-status').textContent === expected, expected);
+   await until(()=>nativeGoal()?.goal.status === 'active' && status('进行中'), 'native goal and editor status');
+   const thread = nativeGoal();
+   check('goal opens a native thread with its current permission settings and preserves original objective',
+     thread.goal.objective === '完成目标验证，直到断言通过' && !!thread.threadSettings.approvalPolicy &&
+     fixture.requests.some(r=>r.method === 'thread/goal/set' && r.params.origin === 'user') &&
+     !fixture.requests.some(r=>r.method === 'turn/start'));
+   await capture('codex-goal-active');
+   await js(()=>document.querySelector('[data-goal-action="pause"]').click());
+   await until(()=>thread.goal.status === 'paused' && status('已暂停'), 'native pause');
+   const reloaded = new Promise(resolve => win.webContents.once('did-finish-load', resolve));
+   win.webContents.reload();
+   await reloaded;
+   await until(()=>js(()=>!!window.App && !!window.AiPanel && !!document.getElementById('btn-open').onclick), 'reloaded app init');
+   await js(async root=>{
+     Object.defineProperty(document,'hidden',{value:false,configurable:true});
+     await App.setRoot(root); App.showAi();
+   },roots[0]);
+   await until(()=>status('已暂停'), 'same native goal appears after reloading');
+   check('native goal is restored with its original session after reload', await js(()=>document.querySelector('.ai-goal-objective').textContent==='完成目标验证，直到断言通过'));
+   await js(()=>document.querySelector('[data-goal-action="resume"]').click());
+   await until(()=>thread.goal.status === 'active' && status('进行中'), 'native resume');
+   await js(()=>{
+     const input = document.getElementById('ai-input');
+     input.value = '/goal 完成更新后的验收';
+     input.setSelectionRange(input.value.length, input.value.length);
+     input.dispatchEvent(new Event('input',{bubbles:true}));
+     input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
+   });
+   await until(()=>thread.goal.objective === '完成更新后的验收' && js(()=>!document.getElementById('ai-input').value), 'slash goal updates original native goal');
+   check('pause and resume stay on the same thread and commands in the composer are consumed',
+     fixture.requests.filter(r=>r.method==='thread/start').length === 1 &&
+     await js(()=>!document.getElementById('ai-input').value));
+   await js(()=>document.querySelector('[data-goal-action="clear"]').click());
+   await until(async()=>!thread.goal && !await shown(), 'native clear');
+   check('clearing the goal keeps the original conversation', fixture.threads.has(thread.id));
+   await finish(0);
+   return;
+ }
  check('empty chat hides the jump controls',await js(()=>['ai-message-nav','ai-message-latest'].every(id=>getComputedStyle(document.getElementById(id)).display==='none')));
  await js(()=>{window.__codexGaps=[];let then=performance.now();setInterval(()=>{const now=performance.now();window.__codexGaps.push(now-then);then=now;},16);return AiPanel.ask('RETRY_CODEX 请读取合成文件');});await until(()=>js(()=>AiPanel.aiState().tasks[0]?.native?.phase==='retrying'),'native stream retry');check('four native stream disconnects are visible without claiming a generated reply',await js(()=>AiPanel.aiState().tasks[0].native.errorCode==='responseStreamDisconnected'&&AiPanel.aiState().tasks[0].native.assistantCharacters===0&&document.getElementById('ai-runstate').textContent.includes('重试')&&!document.getElementById('ai-msgs').textContent.includes('SENSITIVE_ERROR_MUST_NOT_APPEAR')));check('retry never resubmits the user turn',fixture.requests.filter(r=>r.method==='turn/start').length===1);await capture('codex-native-retrying');fixture.control.resumeRetry();await until(()=>js(()=>!!document.querySelector('.ai-dsh-permission button')),'native approval');check('native confirmation is visible and not auto-approved',!fixture.receipts.some(r=>r.kind==='approval')&&await js(()=>document.querySelector('.ai-dsh-permission').textContent.includes('Codex 原生')));await capture('codex-native-approval');await js(()=>{document.querySelector('.ai-dsh-permission button').click();return true;});await until(()=>js(()=>document.getElementById('ai-msgs').textContent.includes('CODEX_FINAL_SENTINEL')&&AiPanel.__testParked().currentRun==='completed'),'Codex completion');check('MyIDE dynamic tool traverses real IPC and permission authority',fixture.receipts.some(r=>r.kind==='dynamic'&&r.result.success&&JSON.stringify(r.result).includes('MYIDE_DYNAMIC_READ_SENTINEL')));check('one prompt and no synthetic native command was executed twice',fixture.requests.filter(r=>r.method==='turn/start').length===1&&fixture.requests.filter(r=>r.method==='thread/start').length===1);await capture('codex-connected-completed');
  const firstThread=fixture.requests.find(r=>r.method==='turn/start').params.threadId;await js(()=>AiPanel.ask('继续原来的会话'));await until(()=>js(()=>!!document.querySelector('.ai-dsh-permission button')),'second turn approval');await js(()=>{document.querySelector('.ai-dsh-permission button').click();return true;});await until(()=>fixture.receipts.filter(r=>r.kind==='dynamic').length===2&&js(()=>AiPanel.__testParked().currentRun==='completed'),'second done');check('continuation reuses the exact native thread without replaying user history',fixture.requests.filter(r=>r.method==='thread/start').length===1&&fixture.requests.filter(r=>r.method==='turn/start').every(r=>r.params.threadId===firstThread&&r.params.input.filter(i=>i.type==='text').length===1));

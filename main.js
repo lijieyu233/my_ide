@@ -942,6 +942,25 @@ async function codexHistoryConfig(event, cfg) {
   const engine = await event.sender.executeJavaScript('AiPanel.getConfig().engine');
   if (engine !== 'codex' || cfg?.engine !== 'codex') throw Error('当前未连接 Codex');
 }
+ipcMain.handle('ai:codex-goal', async (event, cfg, target, action) => {
+  try {
+    aiSender(event);
+    if (cfg?.engine !== 'codex' || typeof target?.sessionId !== 'string' || !target.sessionId || target.sessionId.length > 200) {
+      throw Error('Codex 会话视图已变化');
+    }
+    const state = await codexSessionView(event, target);
+    aiSender(event, state);
+    const result = await CODEX.changeGoal(cfg, { ...state, expectedThreadId: state.foreignHostId }, action);
+    if (result.wakeDesktop) {
+      await CODEX.openInDesktop(cfg, result.threadId, openCodexDesktopThread).catch(() => { result.wakeFailed = true; });
+    }
+    return { ok: true, ...result };
+  } catch (error) {
+    const message = error.code === -32601 ? '本机 Codex 版本暂不支持此操作'
+      : error.rpcResponseReceived ? 'Codex 拒绝了此操作' : error.message;
+    return { ok: false, error: message };
+  }
+});
 ipcMain.handle('ai:codex-input', async (event, cfg, target, action) => {
   try {
     aiSender(event);

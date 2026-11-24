@@ -63,6 +63,23 @@ function createServer(){
     const queuedSubmission={id:'queued-'+p.clientUserMessageId,clientUserMessageId:p.clientUserMessageId,input:p.input};
     t.inputQueue.push(queuedSubmission);return reply(message.id,{queuedSubmission});
    }
+   if (message.method === 'thread/settings/update') {
+    const t = threads.get(p.threadId);
+    t.threadSettings = p;
+    return reply(message.id, {});
+   }
+   if (message.method.startsWith('thread/goal/')) {
+    const t = threads.get(p.threadId);
+    if (!t) return send({ id: message.id, error: { code: -32600, message: 'Unknown synthetic thread' } });
+    if (message.method === 'thread/goal/get') return reply(message.id, { goal: t.goal || null });
+    if (message.method === 'thread/goal/clear') {
+     const cleared = !!t.goal;
+     delete t.goal;
+     return reply(message.id, { cleared });
+    }
+    t.goal = { threadId: p.threadId, objective: p.objective ?? t.goal?.objective, status: p.status };
+    return reply(message.id, { goal: t.goal });
+   }
    if(message.method==='turn/settings/update'){
     const thread=threads.get(p.threadId);
     if(!thread?.running||thread.turn?.id!==p.turnId)return reply(message.id,{status:'targetUnavailable'});

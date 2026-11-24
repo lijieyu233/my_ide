@@ -485,6 +485,20 @@
       <!-- 上下文就一条线：跟随的当前文件 / 固定项 / @ 引用都在这一行里横向滚动，
            不再「正在看」独占一行 + chips 换行 + 回形针按钮，贴着输入框堆三层。 -->
       <div id="ai-chips" class="hidden"></div>
+      <section id="ai-codex-goal" aria-label="Codex 目标" hidden>
+        <div class="ai-goal-row" hidden>
+          <span class="ai-goal-status" aria-live="polite"></span>
+          <span class="ai-goal-objective"></span>
+          <button type="button" class="tb-btn" data-goal-action="edit">编辑</button>
+          <button type="button" class="tb-btn" data-goal-action="pause" hidden>暂停</button>
+          <button type="button" class="tb-btn" data-goal-action="resume" hidden>继续</button>
+          <button type="button" class="tb-btn" data-goal-action="clear">清除</button>
+        </div>
+        <form hidden>
+          <textarea name="objective" maxlength="4000" required rows="3" placeholder="输入目标和完成标准" aria-label="Codex 目标内容"></textarea>
+          <div class="ai-goal-actions"><button type="button" class="tb-btn" data-goal-action="cancel">取消</button><button type="submit" class="tb-btn m-ok">设定目标</button></div>
+        </form>
+      </section>
       <section id="ai-input-queue" class="ai-input-queue hidden" aria-label="DSH 待发消息"></section>
       <div class="ai-input-row">
         <!-- 输入框与发送按钮是同一个卡片：按钮在框内右下角。

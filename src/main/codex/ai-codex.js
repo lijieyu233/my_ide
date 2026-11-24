@@ -78,7 +78,7 @@ function createService(options={}){
   async function locked(key,task){const next=(locks.get(key)||Promise.resolve()).catch(()=>{}).then(task);locks.set(key,next);try{return await next;}finally{if(locks.get(key)===next)locks.delete(key);}}
   async function releaseIdleThread(session) {
     const conn = session.conn;
-    if (!session.attached || session.run || session.stopping || conn.rpc.closed) return;
+    if (!session.attached || session.run || session.goalAttached || session.stopping || conn.rpc.closed) return;
     try {
       const { status } = await conn.rpc.request('thread/unsubscribe', { threadId: session.id }, 2000);
       if (['unsubscribed', 'notLoaded', 'notSubscribed'].includes(status)) session.attached = false;
@@ -621,7 +621,7 @@ function createService(options={}){
         await history.assertThreadIdle(request, native);
         live(run);
       }
-      const specs=session.external?[]:toolSpecs(tools);
+      const specs=session.external||run.goalControl?[]:toolSpecs(tools);
       const needsAttach = !session.attached || session.conn !== conn;
       if (needsAttach) {
         const fresh=!session.id,pending=pendingChoices.get(info.key),requested=pending?.model||(!fresh?null:cfg.codexModel)||null;
@@ -681,6 +681,98 @@ function createService(options={}){
     const pending=pendingChoices.get(info.key);if(pending && !desktopOwned){model=pending.model;effort=pending.effort;}
     return {ok:true,...data,desktopOwned,sessionId:session?.id||record?.id||null,modelConfirmation:session?.attached?'native-resumed':record?'pending-native-resume':'catalog-only',configOptions:configOptions(data.models,model,effort),transport:conn.shared?'shared':'stdio',experimentalTools:true};
   }
+  async function attachGoalThread(conn, cfg, context, info) {
+    const data = await catalog(conn);
+    if (data.requiresOpenaiAuth && !data.loggedIn) throw Error('本机 Codex 尚未登录');
+    const request = historyRequest(conn);
+    const permission = require('./codex-permissions').policy(cfg.codexPermission);
+    if (permission.thread.permissions) {
+      const profiles = await request('permissionProfile/list', { cwd: info.cwd });
+      if (!profiles?.data?.some(profile => profile.id === permission.thread.permissions && profile.allowed === true)) {
+        throw Error('当前 Codex 配置不允许使用工作区写入权限');
+      }
+    }
+    const prep = { goalControl: true };
+    const { session, model, effort, pending } = await attach(conn, cfg, context, [], prep, data, info, permission.thread);
+    try {
+      await request('thread/settings/update', { threadId: session.id, model, ...(effort ? { effort } : {}), ...permission.turn });
+      if (pendingChoices.get(info.key) === pending) pendingChoices.delete(info.key);
+      return session;
+    } catch (error) {
+      if (session.run === prep) session.run = null;
+      await releaseIdleThread(session);
+      throw error;
+    } finally {
+      if (session.run === prep) session.run = null;
+    }
+  }
+
+  async function changeGoal(cfg, context, action) {
+    const kind = action?.kind;
+    if (!['get', 'set', 'pause', 'resume', 'clear'].includes(kind)) throw Error('Codex 目标操作无效');
+    const objective = typeof action.objective === 'string' ? action.objective.trim() : '';
+    if (kind === 'set' && (!objective || [...objective].length > 4000 || objective.includes('\0'))) {
+      throw Error('目标须为 1 至 4000 个字符');
+    }
+    const info = await identity(context);
+    if (info.scope !== 'project') throw Error('请在项目会话中使用目标');
+    await load();
+    return locked('goal:' + info.key, async () => {
+      const expected = context.expectedThreadId, record = saved.get(info.key);
+      if (expected && record?.id !== expected || record?.blocked || record && norm(record.cwd) !== norm(info.cwd)) {
+        throw Error('Codex 会话身份已变化');
+      }
+      if (!record && kind === 'get') return { goal: null };
+      if (!record && kind !== 'set') throw Error('当前会话还没有 Codex 目标');
+      const conn = await connect(cfg), request = historyRequest(conn);
+      let threadId = record?.id, attached, wakeDesktop = false;
+      const starts = kind === 'set' || kind === 'resume';
+      if (starts) {
+        const session = sessions.get(info.key);
+        const loaded = session?.attached && session.conn === conn;
+        if (!loaded && threadId) {
+          const thread = await history.readProjectThread(request, threadId);
+          if (norm(await projectThreadRoot(thread)) !== norm(info.cwd)) throw Error('无法核对原 Codex 会话');
+          if (thread.status?.type === 'notLoaded') {
+            if (desktopAvailable()) wakeDesktop = true;
+            else attached = await attachGoalThread(conn, cfg, context, info);
+          }
+        } else if (!threadId) {
+          attached = await attachGoalThread(conn, cfg, context, info);
+          threadId = attached.id;
+        }
+      }
+      const session = sessions.get(info.key);
+      const applyStatus = status => {
+        if (session?.attached && session.conn === conn) session.goalAttached = status === 'active';
+      };
+      try {
+        if (kind === 'clear') {
+          await request('thread/goal/clear', { threadId, origin: 'user' });
+          applyStatus();
+          return { goal: null };
+        }
+        const result = kind === 'get' ? await request('thread/goal/get', { threadId })
+          : await request('thread/goal/set', { threadId, origin: 'user',
+            ...(kind === 'set' ? { objective } : {}), status: kind === 'pause' ? 'paused' : 'active' });
+        const goal = result?.goal;
+        if (goal == null && kind === 'get') {
+          applyStatus();
+          return { goal: null };
+        }
+        if (goal?.threadId !== threadId || typeof goal.objective !== 'string' ||
+            !['active', 'paused', 'blocked', 'usageLimited', 'budgetLimited', 'complete'].includes(goal.status)) {
+          throw Error('Codex 未确认目标状态');
+        }
+        applyStatus(goal.status);
+        return { goal: { objective: goal.objective, status: goal.status }, threadId, wakeDesktop };
+      } catch (error) {
+        if (attached) await releaseIdleThread(attached);
+        throw error;
+      }
+    });
+  }
+
   async function assertContinuation(request, thread, turnId) {
     const { thread: checkedThread, turn } = await history.readLatestTurn(request, thread);
     if (turn?.id !== turnId || turn.status !== 'interrupted' || checkedThread.status?.type === 'active') {
@@ -1042,6 +1134,6 @@ function createService(options={}){
   }
   function hasRun(context){return [...runs.values()].some(run=>run.context.sessionId===context?.sessionId&&run.context.rootId===context?.rootId);}
   async function dispose(){if(disposed)return;disposed=true;for(const run of runs.values()){run.aborted=true;run.detached=run.conn?.shared;discardPending(run);resolveRun(run,{status:'interrupted'});}const conn=connection;conn?.rpc.close();conn?.child.kill();if(starting)try{const own=await starting;own.rpc.close();own.child.kill();}catch{}await saving;}
-  return {chat,inspect,listHistory,getHistoryProjectRoot,renameProject,openHistory,openInDesktop,forkHistory,renameHistory,setHistoryArchived,changeInput,status,abort,detach,toolResult,permissionResult,questionResult,dispose,hasRun,stopSharedBackend};
+  return {chat,inspect,listHistory,getHistoryProjectRoot,renameProject,openHistory,openInDesktop,forkHistory,renameHistory,setHistoryArchived,changeInput,changeGoal,status,abort,detach,toolResult,permissionResult,questionResult,dispose,hasRun,stopSharedBackend};
 }
 module.exports={createService,promptContent,toolSpecs,configOptions};

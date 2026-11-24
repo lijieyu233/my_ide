@@ -2372,6 +2372,7 @@ const AiPanel = (() => {
   // 内容整理高频动作的快捷入口（Cursor/Copilot 的 /命令 同款）。视觉上复用 @ 补全的弹窗样式，
   // 少一套 CSS、行为也一致（↑↓ 选择 / Enter 确认 / Esc 关闭）。
   const SLASH_CMDS = [
+    { cmd: '/目标', alias: 'goal', tip: '设定或查看 Codex 目标', action: 'goal', codex: true },
     { cmd: '/精简', tip: '压缩篇幅、去掉废话，保持原意', prompt: '把当前内容精简一下：去掉重复和废话，保持原意不变。' },
     { cmd: '/扩写', tip: '把要点展开成完整表达', prompt: '把当前内容扩写成完整表达，补上必要的细节和过渡。' },
     { cmd: '/润色', tip: '只改表达，不动事实和结构', prompt: '润色当前内容：只改表达和语气，不要改变事实与结构。' },
@@ -2433,7 +2434,7 @@ const AiPanel = (() => {
     closeSlash();
     if (!it) return;
     inputEl.value = '';
-    if (it.action) { await runSlashAction(it.action); return; }
+    if (it.action) { autoGrowInput(); await runSlashAction(it.action); return; }
     // 内容整理类命令：有选区就带上选区（用户说「精简」多半指他选中的那段），否则跟随当前文件
     let hasSel = false;
     try {
@@ -2448,6 +2449,7 @@ const AiPanel = (() => {
     MI.toast('指令已填好，按 Enter 发送', 'ok');
   }
   async function runSlashAction(kind) {
+    if (kind === 'goal') { openCodexGoal(); return; }
     if (kind === 'compact') {
       const before = msgs.reduce((n, m) => n + msgChars(m), 0);
       compressHistory();
@@ -2471,6 +2473,166 @@ const AiPanel = (() => {
     }
     if (kind === 'commitmsg') { await genCommitMsg(); return; }
   }
+  const goalStatusLabels = { active: '进行中', paused: '已暂停', blocked: '受阻', usageLimited: '用量受限', budgetLimited: '预算用尽', complete: '已完成' };
+  let codexGoalView = null;
+
+  function codexGoalContext() {
+    if (!codexProjectHistory() || !window.myIDE.ai.codexGoal) return null;
+    const { rootId, sessionId, foreignHostId } = dshView();
+    return { rootId, sessionId, foreignHostId };
+  }
+
+  function goalView() {
+    const target = codexGoalContext();
+    const key = target && inputViewKey();
+    if (!key) { codexGoalView = null; return null; }
+    if (codexGoalView?.key !== key) codexGoalView = { key, goal: null, target };
+    return codexGoalView;
+  }
+
+  function renderCodexGoal() {
+    if (backgroundView) return;
+    const box = document.getElementById('ai-codex-goal');
+    if (!box) return;
+    const view = goalView();
+    const goal = view?.goal, form = box.querySelector('form');
+    box.hidden = !goal && !view?.editing;
+    const row = box.querySelector('.ai-goal-row');
+    row.hidden = !goal || !!view?.editing;
+    form.hidden = !view?.editing;
+    if (form.dataset.view !== view?.key || !view?.editing) {
+      form.dataset.view = view?.key || '';
+      form.elements.objective.value = goal?.objective || '';
+    }
+    if (goal) {
+      const label = row.querySelector('.ai-goal-objective');
+      label.textContent = goal.objective;
+      label.title = goal.objective;
+      row.querySelector('.ai-goal-status').textContent = goalStatusLabels[goal.status];
+      row.querySelector('[data-goal-action="pause"]').hidden = goal.status !== 'active';
+      row.querySelector('[data-goal-action="resume"]').hidden = !['paused', 'blocked', 'usageLimited'].includes(goal.status);
+    }
+    for (const button of box.querySelectorAll('button')) button.disabled = view?.pending === true;
+  }
+
+  async function refreshCodexGoal(force = false) {
+    if (backgroundView || !panel || panel.classList.contains('hidden')) return;
+    const view = goalView();
+    if (!view?.target.sessionId || view.pending || view.reading || (!force && (view.unsupported || Date.now() - (view.readAt || 0) < 4500))) return;
+    view.readAt = Date.now();
+    view.reading = true;
+    const revision = view.revision;
+    try {
+      const result = await window.myIDE.ai.codexGoal(getConfig(), view.target, { kind: 'get' });
+      if (view !== goalView() || view.revision !== revision) return;
+      if (result?.ok) {
+        const area = document.querySelector('#ai-codex-goal textarea');
+        if (view.editing && !view.goal && !area.value && result.goal) area.value = result.goal.objective;
+        view.goal = result.goal;
+      } else view.unsupported = result?.error === '本机 Codex 版本暂不支持此操作';
+      renderCodexGoal();
+    } catch {}
+    finally { view.reading = false; }
+  }
+
+  function openCodexGoal() {
+    const view = goalView();
+    if (!view) return;
+    view.editing = true;
+    renderCodexGoal();
+    const area = document.querySelector('#ai-codex-goal textarea');
+    area.value = view.goal?.objective || '';
+    area.focus();
+    void refreshCodexGoal(true);
+  }
+
+  async function updateCodexGoal(kind, objective, composerDraft) {
+    const previous = goalView();
+    if (!previous || previous.pending) return false;
+    if (kind === 'set' && !curSessionId) curSessionId = 's-' + window.crypto.randomUUID();
+    const view = goalView();
+    if (!view.target.sessionId) { MI.toast('当前会话还没有 Codex 目标', 'err'); return false; }
+    if (view !== previous && previous.editing) {
+      view.editing = true;
+      renderCodexGoal();
+      document.querySelector('#ai-codex-goal textarea').value = objective;
+    }
+    const draftRevision = inputDraftRevision;
+    const cfg = getConfig();
+    view.pending = true;
+    view.revision = (view.revision || 0) + 1;
+    renderCodexGoal();
+    try {
+      const result = await window.myIDE.ai.codexGoal(cfg, view.target, { kind, ...(kind === 'set' ? { objective } : {}) });
+      if (view !== goalView()) return false;
+      if (!result?.ok) throw Error(result?.error || 'Codex 未确认目标操作');
+      view.goal = result.goal;
+      view.editing = false;
+      view.readAt = Date.now();
+      if (kind === 'set' && !dshSessionAccess?.foreign) {
+        const sessions = loadSessions();
+        if (!sessions.some(item => item.id === view.target.sessionId)) {
+          const title = view.goal.objective.replace(/\s+/g, ' ').slice(0, 40);
+          saveSessions([{ id: view.target.sessionId, title, ts: Date.now(), msgs: [] }, ...sessions]);
+        }
+        rememberSession();
+        renderCurrentSessionTitle();
+      }
+      if (result?.wakeFailed) MI.toast('目标已保存，请在 Codex 中打开会话以继续', 'err');
+      if (composerDraft && inputEl.value === composerDraft && inputDraftRevision === draftRevision) {
+        inputEl.value = '';
+        autoGrowInput();
+      }
+      void refreshCodexCatalog({ background: true });
+      return true;
+    } catch (error) {
+      if (view === goalView()) MI.toast(error.message, 'err');
+      return false;
+    } finally {
+      view.pending = false;
+      renderCodexGoal();
+    }
+  }
+
+  function submitCodexGoalCommand() {
+    if (!codexGoalContext()) return false;
+    const raw = inputEl?.value || '';
+    const command = /^\/(?:goal|目标)(?:\s+([\s\S]*))?$/i.exec(raw.trim());
+    if (!command) return false;
+    closeSlash();
+    const value = command[1]?.trim();
+    if (!value || /^(edit|编辑)$/i.test(value)) {
+      inputEl.value = '';
+      autoGrowInput();
+      openCodexGoal();
+    } else {
+      const actions = { pause: 'pause', resume: 'resume', clear: 'clear', 暂停: 'pause', 继续: 'resume', 清除: 'clear' };
+      const action = value.toLowerCase();
+      void updateCodexGoal(Object.hasOwn(actions, action) ? actions[action] : 'set', value, raw);
+    }
+    return true;
+  }
+
+  function bindCodexGoal() {
+    const box = document.getElementById('ai-codex-goal');
+    if (!box) return;
+    box.addEventListener('click', event => {
+      const action = event.target.closest('[data-goal-action]')?.dataset.goalAction;
+      if (action === 'edit') openCodexGoal();
+      else if (action === 'cancel') {
+        const view = goalView();
+        if (view) view.editing = false;
+        renderCodexGoal();
+        inputEl.focus();
+      } else if (action) void updateCodexGoal(action);
+    });
+    box.querySelector('form').addEventListener('submit', event => {
+      event.preventDefault();
+      const objective = event.currentTarget.elements.objective.value.trim();
+      if (objective) void updateCodexGoal('set', objective);
+    });
+  }
+
   // 按当前工作区改动生成提交信息（把 diff 作为上下文，不需要执行命令）
   async function genCommitMsg() {
     const root = (window.App && App.root) || '';
@@ -2494,7 +2656,8 @@ const AiPanel = (() => {
     const tok = activeSlashToken();
     if (!tok) { closeSlash(); return false; }
     const q = tok.query.toLowerCase();
-    const items = SLASH_CMDS.filter((c) => (c.cmd + ' ' + c.tip).toLowerCase().includes(q)).slice(0, 12);
+    const items = SLASH_CMDS.filter(c => (!c.codex || codexProjectHistory()) &&
+      (c.cmd + ' ' + (c.alias || '') + ' ' + c.tip).toLowerCase().includes(q));
     if (slashState) { slashState.items = items; slashState.sel = 0; renderSlash(); return true; }
     if (items.length) openSlash(items);
     return true;
@@ -3151,6 +3314,8 @@ const AiPanel = (() => {
     }
     const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect){reconnect.disabled=b||dshOptionsState==='loading';reconnect.setAttribute('aria-label','重新连接 '+nativeLabel());reconnect.title='重新连接 '+nativeLabel()+'，保留会话，不重发任务';}
     renderCodexObservedActivity();
+    renderCodexGoal();
+    void refreshCodexGoal();
     const headerStop = document.getElementById('ai-stop'); if (headerStop) { headerStop.onclick = stopVisibleRun; headerStop.disabled = stopping; headerStop.classList.toggle('hidden',!b&&!external); }
     renderNativeInputUI(b);
   }
@@ -3589,7 +3754,10 @@ const AiPanel = (() => {
       return;
     }
     historyCatalogTimer ??= setInterval(() => {
-      if (!document.hidden) visibleHistoryRefresh()?.({ background: true });
+      if (!document.hidden) {
+        visibleHistoryRefresh()?.({ background: true });
+        void refreshCodexGoal();
+      }
     }, 5000);
     if (refresh === refreshDshCatalog) return refresh({ background: catalogUsable() });
     if (!currentCodexCatalog()) return refresh();
@@ -5021,7 +5189,9 @@ const AiPanel = (() => {
       setBusyUI(busy);
     }
   }
-  function stopVisibleRun() {
+  async function stopVisibleRun() {
+    const view = goalView();
+    if (view?.goal?.status === 'active' && (!await updateCodexGoal('pause') || view !== goalView())) return;
     if (dshOwnRun() || currentRun?.status === 'active') stopRun();
     else if (codexSharedTurn()) return stopObservedCodex();
     else if (dshObservedRunning()) return stopDshHost();
@@ -6362,6 +6532,7 @@ const AiPanel = (() => {
     };
     if (sendBtn) {
       sendBtn.onclick = () => {
+        if (submitCodexGoalCommand()) return;
         if (busy || dshObservedRunning() || codexSharedTurn()) { stopVisibleRun(); return; }
         if (codexPrimaryQueues()) { void submitRunningInput('queue'); return; }
         const turnId = codexContinuationId();
@@ -6384,6 +6555,7 @@ const AiPanel = (() => {
         if (onKeydownMention(e)) return; // @ 补全弹窗接管：↑↓/Enter/Esc
         if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
           e.preventDefault();
+          if (submitCodexGoalCommand()) return;
           if (codexPrimaryQueues()) {
             if (e.altKey && codexObservedRunning()) void submitRunningInput('steer');
             else if (!e.altKey) void submitRunningInput('queue');
@@ -6393,6 +6565,7 @@ const AiPanel = (() => {
       });
       inputEl.addEventListener('paste', onPasteImage);
     }
+    bindCodexGoal();
     document.getElementById('ai-queue-submit')?.addEventListener('click', () => {
       if (getConfig().engine === 'codex' && codexConflictForCurrentDraft()?.needsOriginalSettings) {
         void send({ codexIdle: true, codexUseThreadSettings: true });

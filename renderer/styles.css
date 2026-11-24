@@ -4948,6 +4948,14 @@ details[open] > .ai-tool-summary > .ai-tool-ic::after { transform: rotate(225deg
 .ai-running-input-actions > span { flex: 1; min-width: 0; font-size: 10px; }
 .ai-running-input-actions .tb-btn { flex: none; padding: 3px 9px; font-size: 12px; border-radius: 6px; }
 .ai-running-input-actions #ai-steer-submit { color: var(--ai-link-text); }
+#ai-codex-goal { width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--ui-line); border-radius: 8px; box-sizing: border-box; font-size: 12px; }
+#ai-codex-goal [hidden] { display: none; }
+.ai-goal-row, .ai-goal-actions { display: flex; align-items: center; gap: 6px; }
+.ai-goal-status { color: var(--ai-link-text); flex: none; }
+.ai-goal-objective { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ai-goal-row .tb-btn { flex: none; padding-inline: 5px; }
+#ai-codex-goal textarea { box-sizing: border-box; width: 100%; padding: 6px; color: var(--text); background: var(--bg-input); border: 1px solid var(--border-mid); border-radius: 5px; font: inherit; resize: vertical; }
+.ai-goal-actions { justify-content: flex-end; margin-top: 4px; }
 .ai-input-queue { flex: 0 1 auto; width: 100%; min-width: 0; max-height: 154px; overflow: auto; border: 1px solid var(--ui-line); border-radius: 8px; padding: 5px 8px; box-sizing: border-box; color: var(--ai-body-text); font-size: 12px; }
 .ai-queue-head { display: flex; align-items: center; gap: 8px; color: var(--ai-process-text); min-height: 22px; }
 .ai-queue-head > span { flex: 1; }
