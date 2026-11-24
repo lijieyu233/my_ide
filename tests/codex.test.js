@@ -57,11 +57,15 @@ function fixture(config={}){
      send(c,{id:r.id,result:{data,nextCursor:p.cursor?null:'older'}});
    }else if(r.method==='thread/turns/list'&&config.history){
      assert.equal(p.itemsView,'notLoaded');
-     send(c,{id:r.id,result:{data:[{status:config.activeHistory?'inProgress':'completed'}],nextCursor:null}});
-   }else if(r.method==='thread/queue/add'&&config.history){
-     const {threadId,clientUserMessageId,input}=p;
-     assert(config.history.some(thread=>thread.id===threadId));
-     send(c,{id:r.id,result:{queuedSubmission:{id:'queued-fixture',clientUserMessageId,input}}});
+     send(c,{id:r.id,result:{data:[{status:config.activeHistory?'inProgress':config.latestStatus||'completed'}],nextCursor:null}});
+   }else if(r.method==='thread/queue/list'&&config.history&&config.queue){
+      send(c,{id:r.id,result:{data:config.queue,nextCursor:null}});
+    }else if(r.method==='thread/queue/add'&&config.history){
+      const {threadId,clientUserMessageId,input}=p;
+      assert(config.history.some(thread=>thread.id===threadId));
+      const queuedSubmission={id:'queued-fixture',clientUserMessageId,input};
+      config.queue?.push(queuedSubmission);
+      send(c,{id:r.id,result:{queuedSubmission}});
    }else if(r.method==='thread/unsubscribe'){
     send(c,{id:r.id,result:{status:'unsubscribed'}});
    }else if(r.method==='thread/start'||r.method==='thread/resume'){
@@ -224,7 +228,7 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
   const normalized=process.platform==='win32'?root.toLowerCase():root;
   const key=JSON.stringify([c.sessionId,normalized,'project']);
   fs.writeFileSync(map,JSON.stringify({[key]:{id,cwd:root,model:'native-model'}}));
-  const config={map,writerLocked:true,history:[{id,cwd:root,historyMode:'paginated',status:{type:'notLoaded'}}]};
+  const config={map,writerLocked:true,queue:[],history:[{id,cwd:root,historyMode:'paginated',status:{type:'notLoaded'}}]};
   const f=fixture(config);
   const url='data:image/png;base64,YQ==';
   const message={role:'user',content:[{type:'text',text:'续聊原会话'},{type:'image_url',image_url:{url}}]};
@@ -239,8 +243,15 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
    assert.equal(idle.rejectedBeforeTurn,true);
    assert.equal(idle.canQueueOnConflict,true);
    assert(!f.requests.some(r=>r.method==='thread/queue/add'||r.method==='turn/start'));
-   const result=await f.service.chat({codexQueueOnConflict:true},[message],[],{...c,requestId:'codex-approved-queue'});
+   const selected={codexModel:'other-model',codexReasoning:'high'};
+   await f.service.inspect(selected,c,[],true);
+   const protectedDraft=await f.service.chat({codexQueueOnConflict:true},[message],[],{...c,requestId:'codex-blocked-settings'});
+   assert.equal(protectedDraft.needsOriginalSettings,true);
+   assert(!f.requests.some(r=>r.method==='thread/queue/add'));
+   const result=await f.service.chat({codexQueueOnConflict:true,codexUseThreadSettings:true},[message],[],{...c,requestId:'codex-approved-queue'});
    assert.equal(result.status,'queued');
+   assert.equal(result.wakeDesktop,true);
+   assert.equal((await f.service.inspect({},c,[])).configOptions.find(option=>option.id==='model').currentValue,'other-model');
    assert.equal(result.threadId,id);
    const submissions=f.requests.filter(r=>r.method==='thread/queue/add');
    assert.equal(submissions.length,1);
@@ -248,6 +259,14 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
    assert.deepEqual(submissions[0].params.input,[{type:'text',text:'续聊原会话',text_elements:[]},{type:'image',url}]);
    assert.equal(submissions[0].params.clientUserMessageId,result.clientUserMessageId);
    assert.deepEqual(await f.service.changeInput({},c,target,{kind:'openDesktop'}),{ok:true,desktopThreadId:id});
+   const other=await f.service.chat({codexQueueOnConflict:true,codexUseThreadSettings:true},[message],[],{...c,requestId:'codex-another-pending'});
+   assert.equal(other.status,'queued');
+   assert.equal(other.wakeDesktop,false);
+   config.queue.length=0;
+   config.latestStatus='interrupted';
+   const paused=await f.service.chat({codexQueueOnConflict:true,codexUseThreadSettings:true},[message],[],{...c,requestId:'codex-paused-queue'});
+   assert.equal(paused.status,'queued');
+   assert.equal(paused.wakeDesktop,false);
    assert(!f.requests.some(r=>r.method==='thread/start'||r.method==='turn/start'));
   }finally{await f.service.dispose();}
  });

@@ -2187,18 +2187,20 @@ const AiPanel = (() => {
   }
 
   const nativeInputRequests=new Map();let nativeInputPending=false,nativeQueueReadTicket=0,inputDraftRevision=0;
-  let codexQueue = null, codexBusyDraft = null;
+  let codexQueue = null, codexConflictDraft = null;
   function inputScopeKey(){return JSON.stringify([sessKey(),curSessionId,currentPage().id,sessionRoot()]);}
   function inputViewKey(){return JSON.stringify([inputScopeKey(),pageEpoch]);}
   function codexRunningInput() {
     return getConfig().engine === 'codex' && (busy || codexObservedRunning());
   }
+  function codexConflictForCurrentDraft() {
+    return codexConflictDraft?.key === inputViewKey() && codexConflictDraft.revision === inputDraftRevision &&
+      codexConflictDraft.raw === inputEl.value ? codexConflictDraft : null;
+  }
   function codexPrimaryQueues() {
     if (getConfig().engine !== 'codex' || busy) return false;
-    const item = codexSelectedHistoryItem();
-    return !!item && !item.archived && (item.running ||
-      codexBusyDraft?.key === inputViewKey() && codexBusyDraft.revision === inputDraftRevision &&
-      codexBusyDraft.raw === inputEl.value);
+    const item = codexSelectedHistoryItem(), conflict = codexConflictForCurrentDraft();
+    return !!item && !item.archived && !conflict?.needsOriginalSettings && (item.running || !!conflict);
   }
   function nativeInputTarget(){
     if (getConfig().engine === 'codex') {
@@ -2258,7 +2260,8 @@ const AiPanel = (() => {
     }
     const running = codex ? codexRunningInput() : getConfig().engine === 'dsh' && (busy || dshObservedRunning());
     const target = nativeInputTarget(), queue = nativeQueueSource();
-    const showActions = !codexPrimaryQueues() && running;
+    const offerOriginalSettings = codex && !b && !!codexConflictForCurrentDraft()?.needsOriginalSettings;
+    const showActions = offerOriginalSettings || !codexPrimaryQueues() && running;
     const actions=document.getElementById('ai-running-input-actions');
     actions?.classList.toggle('hidden', !showActions);
     actions?.querySelector('span')?.classList.toggle('hidden', codex);
@@ -2267,7 +2270,9 @@ const AiPanel = (() => {
     const queueButton=document.getElementById('ai-queue-submit'),steerButton=document.getElementById('ai-steer-submit');
     if (queueButton) {
       queueButton.disabled = !ready;
-      queueButton.title = codex ? '加入原会话的待发队列，沿用原会话权限' : '本轮结束后按顺序处理，不停止当前任务';
+      queueButton.textContent = offerOriginalSettings ? '用原设置发送' : '排队';
+      queueButton.title = offerOriginalSettings ? '只对这条消息沿用原会话的模型、思考强度和权限'
+        : codex ? '加入原会话的待发队列，沿用原会话权限' : '本轮结束后按顺序处理，不停止当前任务';
     }
     if (steerButton) {
       steerButton.classList.toggle('hidden', codex && !busy);
@@ -2449,7 +2454,7 @@ const AiPanel = (() => {
     busy = true;
     setBusyUI(true);
     const run = beginRun();
-    if (inputOptions?.codexIdle) run.inputTransport = { codexQueueOnConflict: true };
+    if (inputOptions?.codexIdle) run.inputTransport = { codexQueueOnConflict: true, ...(inputOptions.codexUseThreadSettings ? { codexUseThreadSettings: true } : {}) };
     if (continuation) {
       run.inputTransport = { codexContinueTurnId: continuation };
       codexQueue.value.interruptedTurnId = null;
@@ -2591,13 +2596,14 @@ const AiPanel = (() => {
         nativeInputRequests.set(run.identity.requestId, { run,
           draft: { ...draft, text: draft.raw, imgs: draft.images }, error: '原会话正在 Codex 中打开' });
       }
-      if (!backgroundView) codexBusyDraft = result.canQueueOnConflict
-        ? { key: draft.key, revision: draft.revision, raw: draft.raw } : null;
+      if (!backgroundView) codexConflictDraft = result.canQueueOnConflict || result.needsOriginalSettings
+        ? { key: draft.key, revision: draft.revision, raw: draft.raw, needsOriginalSettings: result.needsOriginalSettings === true } : null;
     }
     stream.element.remove();
     if (occupied) {
       const owner = result.errorCode === 'threadBusy' ? '原会话仍在运行' : '原会话正在 Codex 中打开';
-      run.codexInputStatus = owner + (result.canQueueOnConflict ? '，再按发送可加入待发' : '，草稿已保留');
+      run.codexInputStatus = owner + (result.needsOriginalSettings ? '，新设置待应用'
+        : result.canQueueOnConflict ? '，再按发送可加入待发' : '，草稿已保留');
     }
     endRun(run, queued ? 'queued' : 'occupied');
     if (!backgroundView) void refreshNativeQueue(true);
@@ -5518,7 +5524,11 @@ const AiPanel = (() => {
       });
       inputEl.addEventListener('paste', onPasteImage);
     }
-    document.getElementById('ai-queue-submit')?.addEventListener('click',()=>submitRunningInput('queue'));
+    document.getElementById('ai-queue-submit')?.addEventListener('click', () => {
+      if (getConfig().engine === 'codex' && codexConflictForCurrentDraft()?.needsOriginalSettings) {
+        void send({ codexIdle: true, codexUseThreadSettings: true });
+      } else submitRunningInput('queue');
+    });
     document.getElementById('ai-steer-submit')?.addEventListener('click',()=>submitRunningInput('steer'));
     renderImages();
     const newBtn = document.getElementById('ai-new');

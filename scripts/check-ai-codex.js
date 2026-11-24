@@ -437,6 +437,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  check('Full access queues the text and image once on the idle original writer',
    idleQueue.length===1&&idleQueue[0].params.threadId===externalId&&idleQueue[0].params.input[1]?.type==='image'&&
    await js(selector=>!document.getElementById('ai-input').value&&!document.querySelector(selector),draftImageSelector));
+ check('An idle Desktop wake targets only the original accepted submission',desktopLinks.includes('codex://threads/wake/'+externalId));
  await js(()=>[...document.querySelectorAll('#ai-input-queue button')].find(b=>b.textContent==='在 Codex 中打开').click());
  await until(()=>desktopLinks.includes('codex://threads/'+externalId),'pending action opens the exact native conversation');
  await capture('codex-idle-writer-queue');
