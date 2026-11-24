@@ -2522,16 +2522,23 @@ const AiPanel = (() => {
     for(const image of draft.imgs){const index=pendingImages.indexOf(image);if(index>=0)pendingImages.splice(index,1);}
     autoGrowInput();renderImages();
   }
-  function showConsumedInput(run,requestId,consumedContent){
-    const item=nativeInputRequests.get(requestId);if(!item||item.rendered||item.run!==run)return;
-    item.rendered=true;sealDshSegment(run);sealActivityGroup();
+  function showConsumedInput(run,requestId,consumedContent,queued=false){
+    const item=nativeInputRequests.get(requestId);
+    if (queued ? !Array.isArray(consumedContent) : !item || item.rendered || item.run !== run) return;
+    if (item) item.rendered = true;
+    sealDshSegment(run);sealActivityGroup();
     const stream=run.stream;
     if(stream.timeline.length)msgs.push({role:'assistant',content:stream.partText??stream.text,_dshTimeline:stream.timeline});
     stream.timeline=[];stream.partText='';
     const actualText=Array.isArray(consumedContent)?consumedContent.find(block=>block?.type==='text')?.text:undefined;
-    const text=typeof actualText==='string'?actualText:item.draft.text,imgs=Array.isArray(consumedContent)&&!consumedContent.some(block=>block?.type==='image')?[]:item.draft.imgs;
-    const user={...item.draft.message,content:imgs.length?[{type:'text',text},...imgs.map(url=>({type:'image_url',image_url:{url}}))]:text,_text:text,_imgs:imgs,_ui:'u'+(++uiSeq)};msgs.push(user);const row=addMsg('user',text,{imgs});row.dataset.mid=user._ui;lastUserAt=msgs.length-1;
-    clearAcceptedDraft(item.draft);if(item.accepted)nativeInputRequests.delete(requestId);
+    const text = typeof actualText === 'string' ? actualText : item?.draft.text || '（图片或附件）';
+    const imgs = queued ? consumedContent.filter(block => block?.type === 'image' && /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(block.url)).map(block => block.url)
+      : Array.isArray(consumedContent) && !consumedContent.some(block => block?.type === 'image') ? [] : item.draft.imgs;
+    const user={...item?.draft.message,role:'user',content:imgs.length?[{type:'text',text},...imgs.map(url=>({type:'image_url',image_url:{url}}))]:text,_text:text,_imgs:imgs,_ui:'u'+(++uiSeq)};msgs.push(user);const row=addMsg('user',text,{imgs});row.dataset.mid=user._ui;lastUserAt=msgs.length-1;
+    if (item) {
+      clearAcceptedDraft(item.draft);
+      if (item.accepted) nativeInputRequests.delete(requestId);
+    }
   }
   function renderNativeInputUI(b = busy){
     if(backgroundView)return;
@@ -2543,6 +2550,7 @@ const AiPanel = (() => {
     }
     const running = codex ? codexRunningInput() : getConfig().engine === 'dsh' && (busy || dshObservedRunning());
     const target = nativeInputTarget(), queue = nativeQueueSource();
+    const canInsertQueuedCodex = codex && running && !!(target?.run || target?.turnId);
     const draftConflict = codexConflictForCurrentDraft();
     const offerOriginalSettings = codex && !b && !draftConflict?.turnId && !!draftConflict?.needsOriginalSettings;
     const desktopSteer = codex && !b && running && !!target?.threadId && !codexSelectedHistoryItem()?.sharedControl;
@@ -2586,7 +2594,13 @@ const AiPanel = (() => {
       const row=document.createElement('div');row.className='ai-queue-item';row.dataset.queueId=item.id;
       const mode=document.createElement('span');mode.className='ai-queue-mode';mode.textContent=item.syncing?'确认中':item.mode==='steer'?'下一步':'下一轮';const text=document.createElement('span');text.className='ai-queue-text';text.textContent=item.text||'（图片或附件）';text.title=text.textContent;row.append(mode,text);
       const add=(name,kind,disabled=false)=>{const button=document.createElement('button');button.type='button';button.className='ai-queue-action';button.textContent=name;button.disabled=!target||nativeInputPending||disabled;button.dataset.queueAction=kind;button.onclick=()=>updateNativeQueue(item,kind);row.appendChild(button);};
-      if(item.editable)add('编辑','edit');if(!codex&&item.mode==='queue'&&running)add('插入','steer',target?.kind==='run'?!currentRun?.inputActive:!dshWatch?.state?.running);if (!item.syncing) add('撤回','remove');box.appendChild(row);
+      if (item.editable) add('编辑', 'edit');
+      if (!item.syncing && item.mode === 'queue') {
+        if (canInsertQueuedCodex) add('插入', 'steerQueued');
+        if (!codex && running) add('插入', 'steer', target?.kind === 'run' ? !currentRun?.inputActive : !dshWatch?.state?.running);
+      }
+      if (!item.syncing) add('撤回', 'remove');
+      box.appendChild(row);
     }
     for(const item of failed){const row=document.createElement('div');row.className='ai-queue-item ai-queue-failed';const text=document.createElement('span');text.className='ai-queue-text';text.textContent='待确认／可恢复：'+item.draft.text;text.title=item.error;const restore=document.createElement('button');restore.type='button';restore.className='ai-queue-action';restore.textContent='恢复草稿';restore.onclick=async()=>{if(inputEl.value.trim()&&inputEl.value!==item.draft.raw&&(!await Modal.confirm('恢复草稿','输入框已有其他内容，确定替换为这条未确认的消息？')))return;if(item.draft.scope!==inputScopeKey())return;inputEl.value=item.draft.raw;pendingImages=item.draft.imgs.slice();autoGrowInput();renderImages();nativeInputRequests.delete(item.requestId);renderNativeInputUI();};row.append(text,restore);box.appendChild(row);}
   }
@@ -2660,11 +2674,17 @@ const AiPanel = (() => {
       try {
         nativeInputPending = true; renderNativeInputUI();
         const result = await window.myIDE.ai.codexInput(getConfig(), target, { kind, itemId: item?.id });
-        if (!result?.ok) throw Error(result?.error || (kind === 'openDesktop' ? '无法打开 Codex 会话' : '撤回失败'));
+        if (!result?.ok) {
+          const label = { openDesktop: '无法打开 Codex 会话', steerQueued: '插入失败', remove: '撤回失败' };
+          throw Error(result?.error || label[kind]);
+        }
         if (kind === 'openDesktop') return;
         if (key === inputViewKey()) {
-          if (codexQueue?.key === key) codexQueue.receipts.delete(item.id);
-          await refreshNativeQueue();
+          if (codexQueue?.key === key) {
+            codexQueue.receipts.delete(item.id);
+            codexQueue.value.items = codexQueue.value.items.filter(queued => queued.id !== item.id);
+          }
+          await refreshNativeQueue(true);
         }
       } catch (error) { if (key === inputViewKey()) MI.toast(error.message, 'err'); }
       finally { nativeInputPending = false; renderNativeInputUI(); }
@@ -5759,7 +5779,7 @@ const AiPanel = (() => {
       renderCodexMedia(event.images, event.label, event.id);
       return;
     }
-    if (event.type === 'codexInputConsumed') { showConsumedInput(run, event.requestId, event.content); return; }
+    if (event.type === 'codexInputConsumed') { showConsumedInput(run, event.requestId, event.content, event.queued === true); return; }
     if(event.type==='config'){if(backgroundView||getConfig().engine!==run.engine)return;dshOptionsState='ready';dshConfigOptions=event.configOptions||[];showDshConnectedInfo(dshSessionAccess?.hostId);refreshModelSel();setBusyUI(busy);return;}
     if(event.type==='native'&&event.update?.sessionUpdate==='myide_input_state'){
       const update=event.update;run.inputReady=update.ready===true;run.inputActive=update.active===true;if(update.queue)run.inputQueue=update.queue;

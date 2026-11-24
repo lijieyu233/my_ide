@@ -48,7 +48,11 @@ function createServer(){
     if(message.method==='thread/queue/list')return t.queueListUnavailable
       ? send({id:message.id,error:{code:-32603,message:'Synthetic queue list unavailable'}})
       : reply(message.id,{data:t.inputQueue,nextCursor:null});
-    if(message.method==='thread/queue/delete'){t.inputQueue=t.inputQueue.filter(item=>item.id!==p.queuedSubmissionId);return reply(message.id,{});}
+    if (message.method === 'thread/queue/delete') {
+      const length = t.inputQueue.length;
+      t.inputQueue = t.inputQueue.filter(item => item.id !== p.queuedSubmissionId);
+      return reply(message.id, { deleted: t.inputQueue.length !== length });
+    }
     const queuedSubmission={id:'queued-'+p.clientUserMessageId,clientUserMessageId:p.clientUserMessageId,input:p.input};
     t.inputQueue.push(queuedSubmission);return reply(message.id,{queuedSubmission});
    }
@@ -60,7 +64,9 @@ function createServer(){
    }
    if(message.method==='turn/steer'){
     const t=threads.get(p.threadId);if(!t?.running||t.turn?.id!==p.expectedTurnId)return send({id:message.id,error:{code:-32600,message:'Turn ended'}});
-    notice('item/completed',{threadId:t.id,turnId:t.turn.id,item:{type:'userMessage',id:'steered-item',clientId:p.clientUserMessageId,content:p.input}});
+    const item = { type: 'userMessage', id: 'steered-' + p.clientUserMessageId, clientId: p.clientUserMessageId, content: p.input };
+    t.items?.push(item);
+    notice('item/completed', { threadId: t.id, turnId: t.turn.id, item });
     return reply(message.id,{turnId:t.turn.id});
    }
    if(message.method==='thread/read'){

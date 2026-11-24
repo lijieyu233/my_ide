@@ -98,6 +98,37 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  await until(()=>js(()=>document.getElementById('ai-msgs').textContent.includes('补充当前轮')&&!document.getElementById('ai-input').value),'steer consumption');
  check('MyIDE inserts into the exact active Codex turn without starting another turn',
    fixture.requests.filter(r=>r.method==='turn/steer').length===1&&fixture.requests.filter(r=>r.method==='turn/start').length===3);
+ await js(()=>{
+   const input = document.getElementById('ai-input');
+   input.value = '从待发队列插入当前轮';
+   input.dispatchEvent(new Event('input', { bubbles: true }));
+   document.getElementById('ai-queue-submit').click();
+ });
+ const held = fixture.threads.get(firstThread);
+ await until(()=>held.inputQueue?.length === 1 && js(()=>{
+   const insert = document.querySelector('[data-queue-action="steerQueued"]');
+   return !document.getElementById('ai-input').value && insert?.checkVisibility() && !insert.disabled;
+ }), 'queued message has its own insert button with an empty composer');
+ const queued = held.inputQueue[0];
+ await capture('codex-queued-insert');
+ await js(()=>{
+   const input = document.getElementById('ai-input');
+   input.value = '保留我的新草稿';
+   input.dispatchEvent(new Event('input', { bubbles: true }));
+   document.querySelector('[data-queue-action="steerQueued"]').click();
+ });
+ await until(()=>!held.inputQueue.length && js(()=>
+   document.getElementById('ai-msgs').textContent.includes('从待发队列插入当前轮') &&
+   document.getElementById('ai-input-queue').classList.contains('hidden')), 'queued input consumed in the current turn');
+ const relocation = fixture.requests.find(r=>r.method === 'turn/steer' && r.params.clientUserMessageId === queued.clientUserMessageId);
+ const removal = fixture.requests.find(r=>r.method === 'thread/queue/delete' && r.params.queuedSubmissionId === queued.id);
+ check('Queued Codex input moves into the same turn once and leaves the composer draft intact',
+   relocation?.params.expectedTurnId === held.turn.id && relocation.params.input[0].text === queued.input[0].text &&
+   fixture.requests.indexOf(removal) > fixture.requests.indexOf(relocation) &&
+   fixture.requests.filter(r=>r.method === 'turn/start').length === 3 &&
+   await js(()=>document.getElementById('ai-input').value === '保留我的新草稿' &&
+     [...document.querySelectorAll('#ai-msgs .ai-user')].filter(row=>row.textContent.includes('从待发队列插入当前轮')).length === 1));
+ await js(()=>{const input=document.getElementById('ai-input');input.value='';input.dispatchEvent(new Event('input',{bubbles:true}));});
  await js(()=>{document.getElementById('ai-send').click();return true;});await until(()=>fixture.requests.some(r=>r.method==='turn/interrupt')&&js(()=>AiPanel.__testParked().currentRun!=='active'),'interrupt');check('stop targets only the owned thread and no DSH queue is advertised',fixture.requests.find(r=>r.method==='turn/interrupt').params.threadId===firstThread&&await js(()=>document.getElementById('ai-input-queue').classList.contains('hidden')&&document.getElementById('ai-running-input-actions').classList.contains('hidden')));
  const externalId='019caa00-0000-7000-8000-000000000003';
  const recentId='019caa00-0000-7000-8000-000000000005';

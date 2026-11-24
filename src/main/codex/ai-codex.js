@@ -48,7 +48,7 @@ function configOptions(models,model,effort){
 function validateChoice(models,model,effort){const selected=models.find(m=>m.model===model);if(!selected)throw Error('Codex 模型不在本机当前模型目录中，请明确选择可用模型');if(effort&&!selected.supportedReasoningEfforts.some(e=>e.reasoningEffort===effort))throw Error('当前 Codex 模型不支持此思考强度');return selected;}
 function createService(options={}){
   const runs=new Map(),sessions=new Map(),saved=new Map(),locks=new Map(),pendingChoices=new Map();
-  const desktopTransfers = new Set();
+  const desktopTransfers = new Set(), queueInsertions = new Map();
   let connection=null,starting=null,loaded=false,loading=null,disposed=false,saving=Promise.resolve();
   let stoppingBackend = false;
   let workspaceBindings;
@@ -183,7 +183,8 @@ function createService(options={}){
         }return;
       }
       if (item.type === 'userMessage' && message.method === 'item/completed' && run.steered?.delete(item.clientId)) {
-        emit(run, { type: 'codexInputConsumed', requestId: item.clientId, content: item.content });
+        const queued = run.queuedSteers?.delete(item.clientId) === true;
+        emit(run, { type: 'codexInputConsumed', requestId: item.clientId, content: item.content, queued });
         return;
       }
       if(message.method==='item/completed'){
@@ -840,9 +841,74 @@ function createService(options={}){
     return result.queuedSubmission.id;
   }
 
+  async function steerInput(request, run, params, turnId) {
+    const id = params.clientUserMessageId;
+    if (run) {
+      run.steered ||= new Set();
+      if (run.steered.has(id)) throw Error('请等待上一次插入确认');
+      run.steered.add(id);
+    }
+    try {
+      const reply = await request('turn/steer', { ...params, expectedTurnId: turnId });
+      if (reply.turnId !== turnId) throw Error('Codex 未确认接收补充消息');
+    } catch (error) {
+      if (error.rpcNotSent || error.rpcResponseReceived) run?.steered.delete(id);
+      throw error;
+    }
+  }
+
+  async function steerQueued(request, run, threadId, turnId, itemId, target) {
+    const key = JSON.stringify([threadId, itemId]);
+    const existing = queueInsertions.get(key);
+    if (existing?.pending) throw Error('请等待上一次插入确认');
+    if (existing && !existing.accepted) throw Error('插入结果待确认，请查看原会话');
+    const entry = { pending: true, accepted: existing?.accepted === true };
+    queueInsertions.set(key, entry);
+    let sent = entry.accepted;
+    try {
+      if (!entry.accepted) {
+        const { data } = await request('thread/queue/list', { threadId, limit: 100 });
+        const queued = Array.isArray(data) && data.find(item => item.id === itemId);
+        const id = queued?.clientUserMessageId;
+        if (typeof id !== 'string' || !id || !Array.isArray(queued.input) || !queued.input.length) {
+          throw Error('这条待发消息已变化，请刷新后重试');
+        }
+        if (run && (!owned(target.run) || run.turnId !== turnId)) throw Error('Codex 当前轮次已结束');
+        const { input, responsesapiClientMetadata } = queued;
+        if (run) {
+          run.queuedSteers ||= new Set();
+          run.queuedSteers.add(id);
+        }
+        sent = true;
+        try {
+          await steerInput(request, run, { threadId, input, clientUserMessageId: id, responsesapiClientMetadata }, turnId);
+          entry.accepted = true;
+        } catch (error) {
+          if (error.rpcNotSent || error.rpcResponseReceived) {
+            sent = false;
+            run?.queuedSteers.delete(id);
+            throw error;
+          }
+          throw Error('插入结果待确认，请查看原会话');
+        }
+      }
+      try {
+        await request('thread/queue/delete', { threadId, queuedSubmissionId: itemId });
+      } catch {
+        throw Error('已插入，待发项清理失败，再点「插入」可重试清理');
+      }
+      queueInsertions.delete(key);
+      return { ok: true };
+    } finally {
+      entry.pending = false;
+      if (!sent) queueInsertions.delete(key);
+    }
+  }
+
   async function changeInput(cfg, context, target, action) {
-    if (!['list', 'queue', 'remove', 'steer', 'effort', 'interrupt', 'openDesktop'].includes(action?.kind)) throw Error('Codex 队列操作无效');
+    if (!['list', 'queue', 'remove', 'steer', 'steerQueued', 'effort', 'interrupt', 'openDesktop'].includes(action?.kind)) throw Error('Codex 队列操作无效');
     const run = target.run ? owned(target.run) : null;
+    const inserting = action.kind === 'steer' || action.kind === 'steerQueued';
     let conn, threadId, record, thread, info;
     if (target.run) {
       if (['openDesktop', 'interrupt'].includes(action.kind)) throw Error('请先在当前视图操作运行中的轮次');
@@ -853,7 +919,7 @@ function createService(options={}){
     } else {
       info = await identity(context);
       conn = await connect(cfg);
-      if (!conn.shared && action.kind === 'steer') throw Error('桌面端任务请在 Codex 中插入消息');
+      if (!conn.shared && inserting) throw Error('桌面端任务请在 Codex 中插入消息');
       if (!conn.shared && action.kind === 'interrupt') throw Error('请在 Codex 中停止当前轮次');
       record = saved.get(info.key);
       if (info.scope !== 'project' || !record?.id || record.blocked || record.id !== target.threadId ||
@@ -876,7 +942,7 @@ function createService(options={}){
     }
     const request = historyRequest(conn);
     let observedTurn;
-    if (!run && conn.shared && ['steer', 'interrupt', 'effort'].includes(action.kind)) {
+    if (!run && conn.shared && (inserting || ['interrupt', 'effort'].includes(action.kind))) {
       const { turn } = await history.readLatestTurn(request, thread);
       if (!target.turnId || turn?.id !== target.turnId || turn?.status !== 'inProgress') {
         throw Error('Codex 当前轮次已变化');
@@ -919,30 +985,18 @@ function createService(options={}){
         text: (input || []).find(block => block.type === 'text')?.text?.slice(0, 20000) || '',
       })) } };
     }
-    if (action.kind === 'remove') {
+    if (action.kind === 'remove' || action.kind === 'steerQueued') {
       if (typeof action.itemId !== 'string' || !action.itemId || action.itemId.length > 128) throw Error('队列消息身份无效');
+      if (action.kind === 'steerQueued') return steerQueued(request, run, threadId, run?.turnId ?? observedTurn.id, action.itemId, target);
       await request('thread/queue/delete', { threadId, queuedSubmissionId: action.itemId });
+      queueInsertions.delete(JSON.stringify([threadId, action.itemId]));
       return { ok: true };
     }
     if (!history.inputId(action.requestId)) throw Error('补充消息身份无效');
     const input = promptContent([action.message], context.page);
     const params = { threadId, input, clientUserMessageId: action.requestId };
     if (action.kind === 'steer') {
-      if (observedTurn) {
-        const reply = await request('turn/steer', { ...params, expectedTurnId: observedTurn.id });
-        if (reply.turnId !== observedTurn.id) throw Error('Codex 未确认接收补充消息');
-        return { ok: true };
-      }
-      run.steered ||= new Set();
-      if (run.steered.has(action.requestId)) throw Error('请等待上一次插入确认');
-      run.steered.add(action.requestId);
-      try {
-        const reply = await request('turn/steer', { ...params, expectedTurnId: run.turnId });
-        if (reply.turnId !== run.turnId) throw Error('Codex 未确认接收补充消息');
-      } catch (error) {
-        if (error.rpcNotSent || error.rpcResponseReceived) run.steered.delete(action.requestId);
-        throw error;
-      }
+      await steerInput(request, run, params, run?.turnId ?? observedTurn.id);
       return { ok: true };
     }
     return { ok: true, itemId: await enqueueInput(request, params) };

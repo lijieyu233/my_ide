@@ -66,6 +66,15 @@ function fixture(config={}){
       const queuedSubmission={id:'queued-fixture',clientUserMessageId,input};
       config.queue?.push(queuedSubmission);
       send(c,{id:r.id,result:{queuedSubmission}});
+   }else if(r.method==='thread/queue/delete'&&config.history&&config.queue){
+    if (config.deleteFails) {
+     config.deleteFails = false;
+     send(c,{id:r.id,error:{code:-32603,message:'fixture queue unavailable'}});
+    } else {
+     const index = config.queue.findIndex(item=>item.id===p.queuedSubmissionId);
+     if (index >= 0) config.queue.splice(index,1);
+     send(c,{id:r.id,result:{deleted:index >= 0}});
+    }
    }else if(r.method==='thread/unsubscribe'){
     send(c,{id:r.id,result:{status:'unsubscribed'}});
    }else if(r.method==='thread/start'||r.method==='thread/resume'){
@@ -96,7 +105,8 @@ function fixture(config={}){
      complete(c,threadId,id);
     }
    }else if(r.method==='turn/steer'&&config.sharedLauncher){
-    send(c,{id:r.id,result:{turnId:p.expectedTurnId}});
+    if (config.rejectSteer) send(c,{id:r.id,error:{code:-32600,message:'fixture turn ended'}});
+    else send(c,{id:r.id,result:{turnId:p.expectedTurnId}});
    }else if(r.method==='turn/settings/update'&&config.sharedLauncher){
     send(c,{id:r.id,result:{status:'applied'}});
    }else if(r.method==='turn/interrupt'){
@@ -368,6 +378,36 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
     r.method,r.params.threadId,r.params.turnId||r.params.expectedTurnId,
    ]),['turn/steer','turn/settings/update','turn/interrupt'].map(method=>[method,id,turnId]));
   }finally{await f.service.dispose();}
+ });
+ await test('将待发消息插入原轮次，轮次拒绝时保留队列，清理重试不重复发送', async()=>{
+  const id = '019caa00-0000-7000-8000-000000000010', turnId = 'desktop-current-turn';
+  const queued = {
+   id: 'queued-1', clientUserMessageId: 'desktop-user-message-id',
+   input: [{type:'text',text:'补充资料'},{type:'localImage',path:'fixture.png'}],
+   responsesapiClientMetadata: {source:'fixture'},
+  };
+  const config = { sharedLauncher:'codex.exe', queue:[queued, { ...queued, id:'queued-2' }],
+   history:[{id,cwd:temp,historyMode:'paginated',status:{type:'active'},model:'native-model'}],
+   latestTurn:{id:turnId,status:'inProgress'}, rejectSteer:true, deleteFails:true };
+  const f = fixture(config);
+  try {
+   const view = await f.service.openHistory({},id);
+   const c = context(1,{sessionId:view.localId}), target = {threadId:id,turnId,sessionId:view.localId};
+   const action = {kind:'steerQueued', itemId:queued.id};
+   await assert.rejects(f.service.changeInput({},c,{...target,turnId:'old-turn'},action),/轮次已变化/);
+   await assert.rejects(f.service.changeInput({},c,target,action),{code:-32600});
+   assert.equal(config.queue.length,2);
+   assert(!f.requests.some(r=>r.method==='thread/queue/delete'));
+   config.rejectSteer = false;
+   await assert.rejects(f.service.changeInput({},c,target,action),/已插入，待发项清理失败/);
+   assert.deepEqual(await f.service.changeInput({},c,target,action),{ok:true});
+   const steers = f.requests.filter(r=>r.method==='turn/steer');
+   assert.equal(steers.length,2);
+   assert.deepEqual(steers[1].params,{threadId:id,expectedTurnId:turnId,input:queued.input,
+    clientUserMessageId:queued.clientUserMessageId,responsesapiClientMetadata:queued.responsesapiClientMetadata});
+   assert.deepEqual(config.queue.map(item=>item.id),['queued-2']);
+   assert(!f.requests.some(r=>r.method==='turn/start'||r.method==='thread/queue/add'));
+  } finally { await f.service.dispose(); }
  });
  await test('关闭 MyIDE 视图仅退订共享会话，显式停止仍中断原轮次',async()=>{
   const f=fixture({sharedLauncher:'codex.exe',hold:true});
