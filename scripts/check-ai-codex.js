@@ -387,14 +387,16 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  await until(()=>js(id=>AiPanel.aiState().current==='codex:'+id&&AiPanel.aiState().dshState==='ready',forkId),'native fork opened');
  check('manual fork opens copied history as a separate session, preserving the draft',
    fixture.requests.filter(r=>r.method==='thread/fork'&&r.params.threadId===externalId).length===1&&
+   fixture.requests.some(r=>r.method==='thread/unsubscribe'&&r.params.threadId===forkId)&&
    fixture.requests.filter(r=>r.method==='turn/start').length===beforeFork&&
    await js(()=>document.getElementById('ai-input').value==='HOLD_CODEX 接着讨论'&&document.getElementById('ai-msgs').textContent.includes('CODEX_PREVIOUS_ANSWER')&&document.getElementById('ai-current-session').textContent.endsWith('（分叉）')));
  await capture('codex-writer-fork');
+ const forkReleases=fixture.requests.filter(r=>r.method==='thread/unsubscribe'&&r.params.threadId===forkId).length;
  await js(()=>{document.getElementById('ai-send').click();return true;});
  await until(()=>fixture.requests.some(r=>r.method==='turn/start'&&r.params.threadId===forkId),'continue fork');
  check('the stored draft goes to the fork only on explicit send',fixture.requests.find(r=>r.method==='turn/start'&&r.params.threadId===forkId).params.input[0].text==='HOLD_CODEX 接着讨论');
  await js(()=>{document.getElementById('ai-send').click();return true;});
- await until(()=>fixture.requests.some(r=>r.method==='thread/unsubscribe'&&r.params.threadId===forkId),'release fork subscription after interrupt');
+ await until(()=>fixture.requests.filter(r=>r.method==='thread/unsubscribe'&&r.params.threadId===forkId).length>forkReleases,'release fork subscription after interrupt');
  const chooseHistoryAction=(label,id=null)=>js(({label,id})=>{
    if(id){
      const row=document.querySelector('[data-id="codex:'+id+'"]');
@@ -513,6 +515,27 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  check('Continue sends one new continuation on the same thread with the selected effort',
    continued.params.threadId===externalId&&continued.params.input[0].text==='继续'&&continued.params.effort==='high'&&
    fixture.requests.filter(r=>r.method==='turn/start').length===effortTurns+1);
+ const linksBeforeHandoff=desktopLinks.length;
+ const requestsBeforeHandoff=fixture.requests.length;
+ await js(()=>AiPanel.ask('HOLD_CODEX handoff fixture'));
+ await until(()=>fixture.control.finishHandoff&&js(()=>AiPanel.__testParked().currentRun==='active'),'handoff while MyIDE owns the turn');
+ original.delayUnload=true;
+ const requestsBeforeOpen=fixture.requests.length;
+ await chooseHistoryAction('本轮结束后在 Codex 中打开',externalId);
+ await until(()=>fixture.requests.slice(requestsBeforeOpen).some(r=>r.method==='thread/list'&&r.params.includedThreadIds?.includes(externalId)),'handoff verifies the original thread');
+ check('Opening in Codex waits without interrupting or navigating during the MyIDE turn',
+   desktopLinks.length===linksBeforeHandoff&&original.running&&
+   !fixture.requests.slice(requestsBeforeHandoff).some(r=>r.method==='turn/interrupt'||r.method==='thread/unsubscribe'));
+ await capture('codex-handoff-waiting');
+ fixture.control.finishHandoff();
+ await until(()=>desktopLinks.length>linksBeforeHandoff,'opens the original thread after unload');
+ const handoffRequests=fixture.requests.slice(requestsBeforeHandoff);
+ check('Desktop receives the exact thread after native unsubscribe and delayed writer unload',
+   desktopLinks.at(-1)==='codex://threads/'+externalId&&
+   handoffRequests.filter(r=>r.method==='thread/unsubscribe'&&r.params.threadId===externalId).length===1&&
+   handoffRequests.filter(r=>r.method==='thread/loaded/list').length>=3&&
+   handoffRequests.filter(r=>r.method==='turn/start').length===1);
+ original.delayUnload=false;
  original.turn={id:'offline-interrupted-by-desktop',status:'interrupted'};
  original.writerLocked=true;
  const beforeContinuedQueue=fixture.requests.filter(r=>r.method==='turn/start').length;

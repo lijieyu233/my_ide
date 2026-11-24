@@ -2989,7 +2989,7 @@ const AiPanel = (() => {
   }
   let codexCatalog = null, codexCatalogRequest = null, codexCatalogError = null;
   let codexOpenIntent = 0, codexLiveView = null;
-  const codexForksInFlight = new Set(), codexArchiveRequests = new Set();
+  const codexForksInFlight = new Set(), codexArchiveRequests = new Set(), codexDesktopTransfers = new Set();
   let codexArchiveOnly = false;
   const codexProjectHistory = () => getConfig().engine === 'codex' && dshScope() !== 'reader';
   const currentCodexCatalog = () => codexProjectHistory() && codexCatalog?.launcher === (getConfig().codexPath || '') ? codexCatalog : null;
@@ -3850,8 +3850,15 @@ const AiPanel = (() => {
     if (!target || target.unknownRoot) return false;
     const scope = sessKey(), engine = getConfig().engine;
     const action = (key, label) => ({ key, label, run: () => actOnHistorySession(target, key, anchor) });
+    const runningInMyide = [currentRun, parkedRecordOf(target.id)?.record.run].some(run =>
+      run?.engine === 'codex' && run.identity.sessionId === target.id &&
+      pathKey(run.identity.rootId) === pathKey(target.rootDir) && ['active', 'stopping'].includes(run.status));
     const actions = target.codexThreadId ? [
       action('open', '打开会话'),
+      ...(target.archived ? [] : [{
+        label: runningInMyide ? '本轮结束后在 Codex 中打开' : '在 Codex 中打开',
+        run: () => transferCodexToDesktop(target.codexThreadId, runningInMyide),
+      }]),
       action('ren', '重命名'),
       ...(target.archived ? [] : [{ label: '分叉', run: () => openCodexHistory(target, true) }]),
       { label: '复制会话 ID', run: () => MI.copyText(target.codexThreadId) },
@@ -4017,6 +4024,18 @@ const AiPanel = (() => {
       await refreshCodexCatalog({ background: true });
     } finally {
       codexArchiveRequests.delete(id);
+    }
+  }
+
+  async function transferCodexToDesktop(threadId, waiting) {
+    if (codexDesktopTransfers.has(threadId)) return;
+    codexDesktopTransfers.add(threadId);
+    try {
+      if (waiting) MI.toast('本轮结束后将在 Codex 中打开', 'ok');
+      const result = await window.myIDE.ai.codexDesktopThread(getConfig(), threadId);
+      if (!result?.ok) throw Error(result?.error || '无法打开 Codex 会话');
+    } finally {
+      codexDesktopTransfers.delete(threadId);
     }
   }
 

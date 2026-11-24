@@ -895,7 +895,7 @@ ipcMain.handle('ai:codex-input', async (event, cfg, target, action) => {
     }
     const result = await CODEX.changeInput(cfg, state, target, action);
     if (action?.kind === 'openDesktop' && result.desktopThreadId) {
-      await shell.openExternal('codex://threads/' + result.desktopThreadId);
+      await CODEX.openInDesktop(cfg, result.desktopThreadId, openCodexDesktopThread);
     }
     return result;
   } catch (error) {
@@ -919,6 +919,16 @@ ipcMain.handle('ai:codex-desktop-project', async (event, cfg, projectId) => {
     await shell.openExternal(url.href);
     return { ok: true };
   } catch (error) { return { ok: false, error: error.message }; }
+});
+const openCodexDesktopThread = threadId => shell.openExternal('codex://threads/' + threadId);
+ipcMain.handle('ai:codex-desktop-thread', async (event, cfg, threadId) => {
+  try {
+    await codexHistoryConfig(event, cfg);
+    await CODEX.openInDesktop(cfg, threadId, openCodexDesktopThread);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.rpcResponseReceived ? 'Codex 未确认会话交接' : error.message };
+  }
 });
 ipcMain.handle('ai:codex-history',async (event, cfg, threadId, archived) => {
   try {
