@@ -2199,7 +2199,9 @@ const AiPanel = (() => {
   }
   function codexPrimaryQueues() {
     if (getConfig().engine !== 'codex' || busy) return false;
-    const item = codexSelectedHistoryItem(), conflict = codexConflictForCurrentDraft();
+    const item = codexSelectedHistoryItem();
+    const draftConflict = codexConflictForCurrentDraft();
+    const conflict = draftConflict?.turnId ? null : draftConflict;
     return !!item && !item.archived && !conflict?.needsOriginalSettings && (item.running || !!conflict);
   }
   function nativeInputTarget(){
@@ -2260,7 +2262,8 @@ const AiPanel = (() => {
     }
     const running = codex ? codexRunningInput() : getConfig().engine === 'dsh' && (busy || dshObservedRunning());
     const target = nativeInputTarget(), queue = nativeQueueSource();
-    const offerOriginalSettings = codex && !b && !!codexConflictForCurrentDraft()?.needsOriginalSettings;
+    const draftConflict = codexConflictForCurrentDraft();
+    const offerOriginalSettings = codex && !b && !draftConflict?.turnId && !!draftConflict?.needsOriginalSettings;
     const showActions = offerOriginalSettings || !codexPrimaryQueues() && running;
     const actions=document.getElementById('ai-running-input-actions');
     actions?.classList.toggle('hidden', !showActions);
@@ -2456,7 +2459,11 @@ const AiPanel = (() => {
     const run = beginRun();
     if (inputOptions?.codexIdle) run.inputTransport = { codexQueueOnConflict: true, ...(inputOptions.codexUseThreadSettings ? { codexUseThreadSettings: true } : {}) };
     if (continuation) {
-      run.inputTransport = { codexContinueTurnId: continuation };
+      const conflict = codexConflictForCurrentDraft();
+      const confirmed = conflict?.turnId === continuation;
+      run.inputTransport = { codexContinueTurnId: continuation, codexQueueOnConflict: confirmed,
+        ...(confirmed && conflict.needsOriginalSettings ? { codexUseThreadSettings: true } : {}) };
+      codexConflictDraft = null;
       codexQueue.value.interruptedTurnId = null;
     }
     if(inputOptions?.draft){run.initialInputDraft=inputOptions.draft;run.inputTransport={dshWatchId:inputOptions.dshWatchId,dshInputMode:inputOptions.dshInputMode,expectedRunId:inputOptions.expectedRunId};}
@@ -2587,9 +2594,10 @@ const AiPanel = (() => {
     const queued = result?.status === 'queued' && result.ok === true;
     const occupied = ['threadInUse','threadBusy'].includes(result?.errorCode) && result.rejectedBeforeTurn;
     if (!queued && !occupied) return false;
+    const continuation = run.inputTransport?.codexContinueTurnId;
     if (queued) {
       removeCodexDraftMessage(draft);
-      if (!backgroundView) rememberCodexSubmission(draft.key, result.itemId, result.clientUserMessageId, draft.raw.trim());
+      if (!backgroundView) rememberCodexSubmission(draft.key, result.itemId, result.clientUserMessageId, draft.message._text);
     } else {
       if (!recoverRejectedCodexDraft(run, result)) {
         removeCodexDraftMessage(draft);
@@ -2597,13 +2605,17 @@ const AiPanel = (() => {
           draft: { ...draft, text: draft.raw, imgs: draft.images }, error: '原会话正在 Codex 中打开' });
       }
       if (!backgroundView) codexConflictDraft = result.canQueueOnConflict || result.needsOriginalSettings
-        ? { key: draft.key, revision: draft.revision, raw: draft.raw, needsOriginalSettings: result.needsOriginalSettings === true } : null;
+        ? { key: draft.key, revision: draft.revision, raw: draft.raw, turnId: continuation, needsOriginalSettings: result.needsOriginalSettings === true } : null;
     }
     stream.element.remove();
     if (occupied) {
       const owner = result.errorCode === 'threadBusy' ? '原会话仍在运行' : '原会话正在 Codex 中打开';
-      run.codexInputStatus = owner + (result.needsOriginalSettings ? '，新设置待应用'
-        : result.canQueueOnConflict ? '，再按发送可加入待发' : '，草稿已保留');
+      const detail = continuation
+        ? result.needsOriginalSettings ? '，再点「继续」可沿用原设置加入待发'
+          : result.canQueueOnConflict ? '，再点「继续」可加入待发' : ''
+        : result.needsOriginalSettings ? '，新设置待应用'
+          : result.canQueueOnConflict ? '，再按发送可加入待发' : '，草稿已保留';
+      run.codexInputStatus = owner + detail;
     }
     endRun(run, queued ? 'queued' : 'occupied');
     if (!backgroundView) void refreshNativeQueue(true);
@@ -2731,7 +2743,9 @@ const AiPanel = (() => {
     sendBtn.disabled = queueMode ? !inputEl.value.trim() || submitting || !nativeInputTarget()
       : codexArchived || stopping || !b && !external && (!dshCanSend() || submitting);
     sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b || external ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : continuation ? '<path d="M5 3v10l8-5z" fill="currentColor" stroke="none"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b || external ? '⏹' : '➤') + '</span>';
-    sendBtn.title = continuation ? '继续上一次中断的任务' : queueMode ? '发送到原 Codex 会话，沿用原会话权限（Enter）' : codexArchived ? '请先取消归档再发送' : b && currentRun?.engine==='codex' ? '请求中断当前 Codex 轮次，不影响其他会话' : b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : external ? '停止 DSH 当前会话；Enter 排队，Alt+Enter 插入' : '发送（Enter）';
+    const continuationTitle = continuation && codexConflictForCurrentDraft()?.turnId === continuation
+      ? '加入待发，沿用原会话的设置和权限' : '继续上一次中断的任务';
+    sendBtn.title = continuation ? continuationTitle : queueMode ? '发送到原 Codex 会话，沿用原会话权限（Enter）' : codexArchived ? '请先取消归档再发送' : b && currentRun?.engine==='codex' ? '请求中断当前 Codex 轮次，不影响其他会话' : b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : external ? '停止 DSH 当前会话；Enter 排队，Alt+Enter 插入' : '发送（Enter）';
     sendBtn.setAttribute('aria-label', codexArchived ? sendBtn.title : b || external ? '停止生成' : continuation ? '继续' : '发送消息');
   }
 

@@ -512,6 +512,16 @@ function createService(options={}){
     const pending=pendingChoices.get(info.key);if(pending){model=pending.model;effort=pending.effort;}
     return {ok:true,...data,sessionId:session?.id||record?.id||null,modelConfirmation:session?.attached?'native-resumed':record?'pending-native-resume':'catalog-only',configOptions:configOptions(data.models,model,effort),transport:'stdio',experimentalTools:true};
   }
+  async function assertContinuation(request, thread, turnId) {
+    const { thread: checkedThread, turn } = await history.readLatestTurn(request, thread);
+    if (turn?.id !== turnId || turn.status !== 'interrupted' || checkedThread.status?.type === 'active') {
+      throw Error('上一次中断的轮次已变化，请查看会话最新状态');
+    }
+    const { data } = await request('thread/queue/list', { threadId: thread.id, limit: 1 });
+    if (!Array.isArray(data)) throw Error('无法确认 Codex 待发队列');
+    if (data.length) throw Error('原会话已有待发消息');
+  }
+
   async function chat(cfg={},messages,tools,context,onEvent=()=>{},onTool=()=>{}){
     if(runs.has(context.requestId))throw Error('Codex 请求身份重复');
     const run={context,onEvent,onTool,aborted:false,tools:new Map(),permissions:new Map(),nativeItems:new Map(),messageText:new Map(),text:'',queue:[],queuedBytes:0,buffering:true,accepting:false,settled:false};run.done=new Promise(resolve=>{run.resolveDone=resolve;});runs.set(context.requestId,run);
@@ -529,17 +539,15 @@ function createService(options={}){
       }
       statusEvent(run,'resuming','正在创建或恢复原生 Codex 线程');
       const binding = saved.get(info.key);
-      if (cfg.codexContinueTurnId) {
+      const continuation = cfg.codexContinueTurnId, request = historyRequest(conn);
+      const readContinuation = async () => {
         if (!binding?.id) throw Error('没有可继续的 Codex 原会话');
-        const request = historyRequest(conn);
         const { thread } = await request('thread/read', { threadId: binding.id, includeTurns: false });
         if (thread?.id !== binding.id || norm(await canonical(thread.cwd)) !== norm(info.cwd)) throw Error('Codex 会话身份不匹配');
-        const { thread: checkedThread, turn: latest } = await history.readLatestTurn(request, thread);
-        if (latest?.id !== cfg.codexContinueTurnId || latest.status !== 'interrupted' || checkedThread.status?.type === 'active') {
-          throw Error('上一轮已变化，无法继续该轮次');
-        }
+        await assertContinuation(request, thread, continuation);
         live(run);
-      }
+      };
+      if (continuation) await readContinuation();
       let attached;
       try { attached = await attach(conn,cfg,context,tools,run,data,info,permission.thread); }
       catch (error) {
@@ -547,17 +555,19 @@ function createService(options={}){
         const writerConflict = error.kind === 'threadInUse' && error.rpcMethod === 'thread/resume' &&
           error.rpcResponseReceived === true;
         const queueAllowed = cfg.codexQueueOnConflict === true || permission.thread.sandbox === 'danger-full-access';
-        if (cfg.codexContinueTurnId || (!writerConflict && error.kind !== 'threadBusy') || info.scope !== 'project' ||
+        if ((!writerConflict && (continuation || error.kind !== 'threadBusy')) || info.scope !== 'project' ||
             !binding?.id || binding.blocked || saved.get(info.key) !== binding) throw error;
-        const request = historyRequest(conn);
         let idleWriter = false;
         if (writerConflict) {
           const native = await history.readProjectThread(request, binding.id);
           if (norm(await projectThreadRoot(native)) !== norm(info.cwd)) throw error;
-          const probe = (method, params) => conn.rpc.request(method, params, 2000);
-          const latest = await history.readLatestTurn(probe, native).catch(() => null);
-          idleWriter = !!latest && latest.thread.status?.type !== 'active' &&
-            ['completed', 'failed'].includes(latest.turn?.status);
+          if (continuation) await assertContinuation(request, native, continuation);
+          else {
+            const probe = (method, params) => conn.rpc.request(method, params, 2000);
+            const latest = await history.readLatestTurn(probe, native).catch(() => null);
+            idleWriter = !!latest && latest.thread.status?.type !== 'active' &&
+              ['completed', 'failed'].includes(latest.turn?.status);
+          }
         }
         needsOriginalSettings = pendingChoices.has(info.key) && cfg.codexUseThreadSettings !== true;
         canQueueOnConflict = !needsOriginalSettings;
@@ -573,6 +583,7 @@ function createService(options={}){
         return { ...result('queued'), ok: true, threadId: binding.id, itemId, clientUserMessageId, wakeDesktop };
       }
       const {session,model,effort,pending} = attached;
+      if (continuation) await readContinuation();
       live(run);
       emit(run,{type:'config',configOptions:configOptions(data.models,model,effort)});statusEvent(run,'submitting','正在提交本轮输入，等待 Codex 原生确认');
       run.accepting=true;

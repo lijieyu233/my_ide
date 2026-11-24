@@ -57,7 +57,7 @@ function fixture(config={}){
      send(c,{id:r.id,result:{data,nextCursor:p.cursor?null:'older'}});
    }else if(r.method==='thread/turns/list'&&config.history){
      assert.equal(p.itemsView,'notLoaded');
-     send(c,{id:r.id,result:{data:[{status:config.activeHistory?'inProgress':config.latestStatus||'completed'}],nextCursor:null}});
+     send(c,{id:r.id,result:{data:[config.latestTurn||{status:config.activeHistory?'inProgress':config.latestStatus||'completed'}],nextCursor:null}});
    }else if(r.method==='thread/queue/list'&&config.history&&config.queue){
       send(c,{id:r.id,result:{data:config.queue,nextCursor:null}});
     }else if(r.method==='thread/queue/add'&&config.history){
@@ -70,6 +70,7 @@ function fixture(config={}){
     send(c,{id:r.id,result:{status:'unsubscribed'}});
    }else if(r.method==='thread/start'||r.method==='thread/resume'){
     if(r.method==='thread/resume'&&config.writerLocked){
+     if(config.turnOnConflict)config.latestTurn=config.turnOnConflict;
      send(c,{id:r.id,error:{code:-32600,message:'thread '+p.threadId+' already has an active writer'}});
      continue;
     }
@@ -267,6 +268,35 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
    const paused=await f.service.chat({codexQueueOnConflict:true,codexUseThreadSettings:true},[message],[],{...c,requestId:'codex-paused-queue'});
    assert.equal(paused.status,'queued');
    assert.equal(paused.wakeDesktop,false);
+   assert(!f.requests.some(r=>r.method==='thread/start'||r.method==='turn/start'));
+  }finally{await f.service.dispose();}
+ });
+ await test('继续原轮次时，写入冲突只会将核对后的请求送入原会话队列',async()=>{
+  const id='019caa00-0000-7000-8000-000000000009',interrupted={id:'interrupted-turn',status:'interrupted'};
+  const config={writerLocked:true,latestTurn:interrupted,queue:[],history:[{id,cwd:temp,historyMode:'paginated',status:{type:'notLoaded'}}]};
+  const f=fixture(config);
+  try{
+   const opened=await f.service.openHistory({},id);
+   const send=(n,permission)=>f.service.chat({codexContinueTurnId:interrupted.id,...permission},user('继续'),[],context(n,{sessionId:opened.localId,expectedThreadId:id}));
+   const queueAdds=()=>f.requests.filter(r=>r.method==='thread/queue/add');
+   const restricted=await send(1);
+   assert.equal(restricted.errorCode,'threadInUse');
+   assert.equal(restricted.canQueueOnConflict,true);
+   assert.equal(queueAdds().length,0);
+   config.turnOnConflict={id:'newer-turn',status:'completed'};
+   const stale=await send(2,{codexPermission:'danger-full-access'});
+   assert.match(stale.error,/上一次中断/);
+   assert.equal(queueAdds().length,0);
+   config.turnOnConflict=null;config.latestTurn=interrupted;
+   const queued=await send(3,{codexQueueOnConflict:true});
+   assert.equal(queued.status,'queued',queued.error);
+   assert.equal(queueAdds().length,1);
+   assert.equal(queueAdds()[0].params.threadId,id);
+   assert.equal(queueAdds()[0].params.input[0].text,'继续');
+   config.queue=[{id:queued.itemId}];
+   const duplicate=await send(4,{codexPermission:'danger-full-access'});
+   assert.match(duplicate.error,/待发/);
+   assert.equal(queueAdds().length,1);
    assert(!f.requests.some(r=>r.method==='thread/start'||r.method==='turn/start'));
   }finally{await f.service.dispose();}
  });

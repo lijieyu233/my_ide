@@ -501,5 +501,25 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  check('Continue sends one new continuation on the same thread with the selected effort',
    continued.params.threadId===externalId&&continued.params.input[0].text==='继续'&&continued.params.effort==='high'&&
    fixture.requests.filter(r=>r.method==='turn/start').length===effortTurns+1);
+ original.turn={id:'offline-interrupted-by-desktop',status:'interrupted'};
+ original.writerLocked=true;
+ const beforeContinuedQueue=fixture.requests.filter(r=>r.method==='turn/start').length;
+ const continuedQueues=()=>fixture.requests.filter(r=>r.method==='thread/queue/add'&&r.params.input[0].text==='继续');
+ await until(()=>js(()=>document.getElementById('ai-send').getAttribute('aria-label')==='继续'),'continue appears for an interrupted desktop-owned thread');
+ await js(()=>document.getElementById('ai-send').click());
+ await until(()=>js(()=>document.getElementById('ai-runstate').textContent.includes('再点「继续」')&&
+   document.getElementById('ai-send').getAttribute('aria-label')==='继续'),'protected continuation offers an explicit queue retry');
+ assert.equal(continuedQueues().length,0);
+ await js(()=>document.getElementById('ai-send').click());
+ await until(()=>js(()=>document.querySelector('#ai-input-queue .ai-queue-text')?.textContent==='继续'),'continue is visible in the native pending list');
+ check('Continue on an idle desktop writer confirms one submission to its original queue',
+   continuedQueues().length===1&&continuedQueues()[0].params.threadId===externalId&&
+   fixture.requests.filter(r=>r.method==='turn/start').length===beforeContinuedQueue&&
+   await js(()=>document.getElementById('ai-send').getAttribute('aria-label')!=='继续'&&
+     [...document.querySelectorAll('#ai-input-queue button')].some(button=>button.textContent==='在 Codex 中打开')));
+ await capture('codex-continue-pending');
+ await js(()=>document.querySelector('#ai-input-queue [data-queue-action="remove"]').click());
+ await until(()=>!original.inputQueue.length,'withdraw the continuation fixture');
+ original.writerLocked=false;
  const gap=await js(()=>Math.max(...window.__codexGaps));check('renderer stays responsive in native tool flow',gap<250,{maxHeartbeatMs:gap});check('isolated fixture remained hidden and offline',!network.length&&BrowserWindow.getAllWindows().every(w=>!w.isVisible()));await finish(0);
 })().catch(async error=>{console.error(error.stack);if(win&&!win.isDestroyed())try{console.error('CODEX_UI_STATE '+JSON.stringify(await js(()=>({state:AiPanel.aiState(),info:document.getElementById('ai-dsh-info')?.title,fixtureText:document.getElementById('ai-msgs')?.textContent.slice(-700)}))));}catch{}await finish(1,error.message);});
