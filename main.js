@@ -923,6 +923,12 @@ ipcMain.handle('ai:codex-history',async (event, cfg, threadId, archived) => {
     return { ok: true, ...await CODEX.openHistory(cfg, threadId, archived === true) };
   } catch (error) { return { ok: false, error: error.message }; }
 });
+ipcMain.handle('ai:codex-rename', async (event, cfg, threadId, title, archived) => {
+  try {
+    await codexHistoryConfig(event, cfg);
+    return { ok: true, ...await CODEX.renameHistory(cfg, threadId, title, archived === true) };
+  } catch (error) { return { ok: false, error: error.message }; }
+});
 ipcMain.handle('ai:codex-archive',async (event, cfg, threadId, archived) => {
   try {
     await codexHistoryConfig(event, cfg);

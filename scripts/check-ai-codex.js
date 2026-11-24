@@ -84,6 +84,31 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  check('Codex sidebar opens saved history in its original project without opening a native turn',fixture.requests.filter(r=>r.method==='turn/start').length===earlierTurns&&!fixture.requests.some(r=>r.method==='thread/resume'&&r.params.threadId===externalId));
  check('switching projects keeps the Codex session catalog available',await js(()=>!document.querySelector('[data-hist-refresh]').disabled&&!!document.querySelector('[data-codex-project="desktop-b"]')));
  await capture('codex-history-sidebar');
+ const renamedThreadTitle='桌面 Codex 新名称';
+ await js(id=>{
+   const row=document.querySelector('[data-id="codex:'+id+'"]');
+   row.querySelector('.ai-hist-open').dispatchEvent(new MouseEvent('contextmenu',{button:2,bubbles:true,cancelable:true}));
+   [...document.querySelectorAll('#ctx-menu button')].find(button=>button.textContent==='重命名').click();
+ },externalId);
+ await until(()=>js(()=>document.querySelector('.ai-hist-name-form input')?.value==='桌面 Codex 外部会话'),'native rename opens beside the row');
+ await capture('codex-rename-form');
+ await js(name=>{
+   const form=document.querySelector('.ai-hist-name-form');
+   form.querySelector('input').value=name;
+   form.requestSubmit();
+ },renamedThreadTitle);
+ const renamed=()=>js((id,name)=>{
+   const row=document.querySelector('[data-id="codex:'+id+'"] .ai-hist-nm');
+   return row?.textContent===name&&document.getElementById('ai-current-session').textContent===name;
+ },externalId,renamedThreadTitle);
+ await until(renamed,'renamed sidebar row and current title');
+ await js(()=>document.querySelector('[data-hist-refresh]').click());
+ await until(renamed,'renamed title after catalog refresh');
+ await js(id=>document.querySelector('[data-id="codex:'+id+'"] .ai-hist-open').click(),externalId);
+ await until(renamed,'renamed title after reopening');
+ check('Codex right-click rename persists on the original thread without spawning or resuming a turn',
+   fixture.threads.get(externalId).name===renamedThreadTitle&&fixture.requests.filter(r=>r.method==='thread/name/set'&&r.params.threadId===externalId).length===1&&
+   fixture.requests.filter(r=>r.method==='turn/start').length===earlierTurns&&!fixture.requests.some(r=>r.method==='thread/resume'&&r.params.threadId===externalId));
  const original=fixture.threads.get(externalId);
  const historyImageSelector='#ai-msgs .ai-user .ai-image-preview';
  const draftImageSelector='#ai-images .ai-image-preview';
@@ -334,11 +359,11 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  await js(()=>AiPanel.ask('HOLD_CODEX 接着讨论'));
  await until(()=>js(()=>AiPanel.__testParked().currentRun==='occupied'&&document.getElementById('ai-input').value==='HOLD_CODEX 接着讨论'),'original writer locked again');
  const beforeFork=fixture.requests.filter(r=>r.method==='turn/start').length;
- await js(()=>{
-   const row=[...document.querySelectorAll('.ai-hist-nm')].find(el=>el.textContent==='桌面 Codex 外部会话').closest('button');
+ await js(name=>{
+   const row=[...document.querySelectorAll('.ai-hist-nm')].find(el=>el.textContent===name).closest('button');
    row.dispatchEvent(new MouseEvent('contextmenu',{button:2,bubbles:true,cancelable:true}));
    [...document.querySelectorAll('#ctx-menu button')].find(el=>el.textContent==='分叉').click();
- });
+ },renamedThreadTitle);
  const forkId='019caa00-0000-7000-8000-000000000004';
  await until(()=>js(id=>AiPanel.aiState().current==='codex:'+id&&AiPanel.aiState().dshState==='ready',forkId),'native fork opened');
  check('manual fork opens copied history as a separate session, preserving the draft',

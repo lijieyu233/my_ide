@@ -2896,7 +2896,7 @@ const AiPanel = (() => {
   function renderCurrentSessionTitle() {
     const label=document.getElementById('ai-current-session');if(!label)return;
     const saved=loadSessions().find(item=>item.id===curSessionId);
-    const native=getConfig().engine==='dsh' && catalogUsable() ? catalogOf(curSessionId) : null;
+    const native=codexSelectedHistoryItem() || (getConfig().engine==='dsh' && catalogUsable() ? catalogOf(curSessionId) : null);
     const title=native?.title || (dshSessionAccess?.foreign ? dshSessionAccess.title : saved?.title || sessTitle(msgs));
     label.textContent=title || '新对话';label.title=label.textContent;
   }
@@ -3066,6 +3066,7 @@ const AiPanel = (() => {
         const selected = codexSelectedHistoryItem();
         if (codexLiveView && selected?.running && !previous?.running) codexLiveView.activity = '';
         if (previous?.running !== selected?.running || previous?.archived !== selected?.archived) setBusyUI(busy);
+        else if (previous?.title !== selected?.title) renderCurrentSessionTitle();
         void syncCodexLiveHistory(selected, config);
         if (panel && !panel.classList.contains('hidden')) void refreshNativeQueue(true);
       } catch (error) {
@@ -3807,6 +3808,7 @@ const AiPanel = (() => {
     const action = (key, label) => ({ key, label, run: () => actOnHistorySession(target, key, anchor) });
     const actions = target.codexThreadId ? [
       action('open', '打开会话'),
+      action('ren', '重命名'),
       ...(target.archived ? [] : [{ label: '分叉', run: () => openCodexHistory(target, true) }]),
       { label: '复制会话 ID', run: () => MI.copyText(target.codexThreadId) },
       { label: target.archived ? '取消归档' : '归档', run: () => manageCodexArchive(target, !target.archived) },
@@ -3866,7 +3868,8 @@ const AiPanel = (() => {
       if (scope !== sessKey() || engine !== getConfig().engine) return;
       if (nm == null) return;
       const title = String(nm).trim().slice(0, 120);
-      if (!title) return;
+      if (!title || title === target.title) return;
+      if (target.codexThreadId) return manageCodexRename(target, title);
       // 用户要求「这里的名称修改和 DSH 同步」：写成以宿主为准。
       // 先写 DSH，再写本地副本（本地那份只用于离线回放，不参与显示优先级）。
       if (getConfig().engine === 'dsh') {
@@ -3927,6 +3930,31 @@ const AiPanel = (() => {
     else blockDshSession(dshSessionAccess.error);
     return ready;
   }
+  async function manageCodexRename(target, title) {
+    const config = getConfig(), threadId = target.codexThreadId;
+    const result = await window.myIDE.ai.codexRename(config, threadId, title, target.archived === true);
+    if (!result?.ok) throw Error(result?.error || '重命名失败');
+    if (!codexProjectHistory() || (getConfig().codexPath || '') !== (config.codexPath || '')) return;
+    const catalog = currentCodexCatalog();
+    const item = catalog?.items.find(item => item.threadId === threadId);
+    if (item) item.title = result.title;
+    if (pathKey(window.App?.root) === pathKey(target.rootDir)) {
+      const sessions = loadSessions();
+      const local = sessions.find(item => item.id === target.id);
+      if (local) {
+        local.title = result.title;
+        local.renamed = true;
+        saveSessions(sessions);
+      }
+    }
+    // Ignore catalog polls that started before the native rename acknowledgement.
+    if (codexCatalogRequest?.launcher === (config.codexPath || '')) codexCatalogRequest = null;
+    refreshHistInPlace();
+    renderCurrentSessionTitle();
+    MI.toast('已重命名', 'ok');
+    await refreshCodexCatalog({ background: true });
+  }
+
   async function manageCodexArchive(target, archived) {
     const id = target.codexThreadId, config = getConfig();
     if (codexArchiveRequests.has(id)) return;

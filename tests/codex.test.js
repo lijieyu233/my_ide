@@ -42,6 +42,11 @@ function fixture(config={}){
      assert.equal(p.useStateDbOnly,true);
      const entries=config.history.filter(t=>!!t.archived===!!p.archived&&(!p.includedThreadIds||p.includedThreadIds.includes(t.id)));
      send(c,{id:r.id,result:{data:entries,nextCursor:null}});
+   }else if(r.method==='thread/name/set'&&config.history){
+     const thread=config.history.find(t=>t.id===p.threadId);
+     assert(thread);
+     thread.name=p.name;
+     send(c,{id:r.id,result:{}});
    }else if(r.method==='thread/read'&&config.history){
      const thread=config.history.find(t=>t.id===p.threadId);
      send(c,{id:r.id,result:{thread}});
@@ -245,6 +250,22 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
    assert.deepEqual(await f.service.changeInput({},c,target,{kind:'openDesktop'}),{ok:true,desktopThreadId:id});
    assert(!f.requests.some(r=>r.method==='thread/start'||r.method==='turn/start'));
   }finally{await f.service.dispose();}
+ });
+ await test('在原生会话上持久化标题，支持归档会话且无需恢复轮次',async()=>{
+  const id='019caa00-0000-7000-8000-000000000001', archivedId='019caa00-0000-7000-8000-000000000002';
+  const history=[{id,cwd:temp,name:'原会话',historyMode:'paginated'},
+   {id:archivedId,cwd:temp,name:'旧会话',archived:true,historyMode:'paginated'}];
+  const f=fixture({history});
+  try {
+   await assert.rejects(f.service.renameHistory({},id,'  '),/会话名称/);
+   await assert.rejects(f.service.renameHistory({},'019caa00-0000-7000-8000-000000000099','未知会话'),/当前 Codex 账号/);
+   assert.deepEqual(await f.service.renameHistory({},id,'  会话新名称  '),{title:'会话新名称'});
+   assert.equal((await f.service.openHistory({},id)).title,'会话新名称');
+   assert.deepEqual(await f.service.renameHistory({},archivedId,'归档新名称',true),{title:'归档新名称'});
+   assert.equal((await f.service.listHistory({})).items.find(item=>item.threadId===archivedId).title,'归档新名称');
+   assert.deepEqual(f.requests.filter(r=>r.method==='thread/name/set').map(r=>r.params.threadId),[id,archivedId]);
+   assert(!f.requests.some(r=>['thread/start','thread/resume','turn/start'].includes(r.method)));
+  } finally { await f.service.dispose(); }
  });
  await test('从当前账号读取 Codex 原生历史，续聊只恢复同一个线程',async()=>{
   const id='019caa00-0000-7000-8000-000000000001',history=[{id,projectId:'desktop-a',cwd:temp,name:'外部会话',model:'native-model',historyMode:'paginated',status:{type:'notLoaded'}}];

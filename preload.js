@@ -264,6 +264,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     codexInput:(cfg,target,action)=>ipcRenderer.invoke('ai:codex-input',cfg,target,action),
     codexDesktopProject:(cfg,projectId)=>ipcRenderer.invoke('ai:codex-desktop-project',cfg,projectId),
     codexHistory:(cfg,threadId,archived)=>ipcRenderer.invoke('ai:codex-history',cfg,threadId,archived),
+    codexRename:(cfg,threadId,title,archived)=>ipcRenderer.invoke('ai:codex-rename',cfg,threadId,title,archived),
     codexArchive:(cfg,threadId,archived)=>ipcRenderer.invoke('ai:codex-archive',cfg,threadId,archived),
     codexFork:(cfg,threadId)=>ipcRenderer.invoke('ai:codex-fork',cfg,threadId),
     codexStatus:launcher=>ipcRenderer.invoke('ai:codex-status',launcher),

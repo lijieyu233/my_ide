@@ -306,6 +306,19 @@ function createService(options={}){
     return { ...await adoptHistory(request, thread, await projectThreadRoot(thread)), archived };
   }
 
+  async function renameHistory(cfg, threadId, name, archived = false) {
+    const title = typeof name === 'string' ? name.trim().replace(/\s+/g, ' ') : '';
+    if (!title || title.length > 120) throw Error('会话名称须为 1 至 120 个字符');
+    const request = historyRequest(await connect(cfg));
+    return locked('rename:' + threadId, async () => {
+      const thread = await history.findProjectThread(request, threadId, archived);
+      if (!thread) throw Error('当前 Codex 账号的目录中找不到此会话');
+      await projectThreadRoot(thread);
+      await request('thread/name/set', { threadId, name: title });
+      return { title };
+    });
+  }
+
   async function setHistoryArchived(cfg, threadId, archived) {
     if (typeof archived !== 'boolean') throw Error('归档操作无效');
     const conn = await connect(cfg), request = historyRequest(conn);
@@ -690,6 +703,6 @@ function createService(options={}){
   async function status(launcher){try{const runtime=await (options.resolveRuntime||resolveRuntime)(launcher||undefined);return {ok:true,available:true,connected:!!connection&&!connection.rpc.closed,launcher:runtime.launcher||runtime.executable,path:runtime.launcher||runtime.executable,transport:'stdio'};}catch(error){return {ok:false,available:false,connected:false,error:error.message};}}
   function hasRun(context){return [...runs.values()].some(run=>run.context.sessionId===context?.sessionId&&run.context.rootId===context?.rootId);}
   async function dispose(){if(disposed)return;disposed=true;for(const run of runs.values()){run.aborted=true;discardPending(run);resolveRun(run,{status:'interrupted'});}const conn=connection;conn?.rpc.close();conn?.child.kill();if(starting)try{const own=await starting;own.rpc.close();own.child.kill();}catch{}await saving;}
-  return {chat,inspect,listHistory,getHistoryProjectRoot,openHistory,forkHistory,setHistoryArchived,changeInput,status,abort,toolResult,permissionResult,questionResult,dispose,hasRun};
+  return {chat,inspect,listHistory,getHistoryProjectRoot,openHistory,forkHistory,renameHistory,setHistoryArchived,changeInput,status,abort,toolResult,permissionResult,questionResult,dispose,hasRun};
 }
 module.exports={createService,promptContent,toolSpecs,configOptions};

@@ -22,8 +22,9 @@ function isProjectThread(thread) {
 }
 
 function threadSummary(thread) {
-  let title = [thread.name, thread.preview].find(text => typeof text === 'string' && text.trim());
-  if (title?.startsWith('# Files mentioned by the user:') && title.includes('## My request:')) {
+  const name = typeof thread.name === 'string' ? thread.name.trim() : '';
+  let title = name || (typeof thread.preview === 'string' ? thread.preview : '');
+  if (!name && title.startsWith('# Files mentioned by the user:') && title.includes('## My request:')) {
     title = title.slice(title.indexOf('## My request:') + '## My request:'.length).trim() || thread.cwd;
   }
   return {
