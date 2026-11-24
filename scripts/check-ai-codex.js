@@ -155,8 +155,13 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  const secondPicture=path.join(roots[1],'native-preview-second.png');
  fs.writeFileSync(secondPicture,nativeImage.createFromPath(picture).resize({width:120}).toPNG());
  const mixedMessage='带图片的历史消息\n保留 <标签> 和 & 符号';
+ const visualizationDir=path.join(process.env.CODEX_HOME,'visualizations','fixture');
+ fs.mkdirSync(visualizationDir,{recursive:true});
+ const visualizationFile=path.join(visualizationDir,'interactive demo.html');
+ fs.writeFileSync(visualizationFile,'<style>body{color:#e5edf6;background:#121923;font:22px system-ui;padding:32px}</style><h2>互动预览</h2><button id="increment">计数 0</button><script>const button=document.querySelector("button");button.onclick=()=>{window.openai.setWidgetState(1);button.textContent="计数 "+window.openai.widgetState;};</script>');
+ const visualizationMarker='\uE200visualize\uE202'+JSON.stringify({path:visualizationFile,mode:'wide'})+'\uE201';
  fixture.threads.set(externalId,{id:externalId,projectId:'desktop-empty',cwd:roots[1],model:'offline-codex',historyMode:'paginated',name:'桌面 Codex 外部会话',updatedAt:1710000000,running:false,queueListUnavailable:true,
-  items:[{type:'userMessage',content:[{type:'text',text:'CODEX_PREVIOUS_QUESTION'}]},{type:'agentMessage',text:'CODEX_PREVIOUS_ANSWER'},{type:'userMessage',content:[{type:'text',text:mixedMessage},{type:'localImage',path:picture},{type:'localImage',path:secondPicture}]}]});
+  items:[{type:'userMessage',content:[{type:'text',text:'CODEX_PREVIOUS_QUESTION'}]},{type:'agentMessage',text:'CODEX_PREVIOUS_ANSWER\n\n'+visualizationMarker},{type:'userMessage',content:[{type:'text',text:mixedMessage},{type:'localImage',path:picture},{type:'localImage',path:secondPicture}]}]});
  const earlierTurns=fixture.requests.filter(r=>r.method==='turn/start').length;
  await js(()=>App.showTool('sessions'));
  await until(()=>js(()=>[...document.querySelectorAll('.ai-hist-nm')].some(node=>node.textContent==='桌面 Codex 外部会话')),'external catalog');
@@ -315,6 +320,26 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
      Viewer.activeTab?.path.split(/[\\/]/).at(-1)==='open-in-editor.txt'&&!!document.querySelector('[data-id="codex:'+id+'"][aria-current="true"]'),emptyRoot,externalId)&&
    fixture.requests.filter(r=>r.method==='turn/start').length===earlierTurns&&!fixture.requests.some(r=>r.method==='thread/resume'&&r.params.threadId===externalId));
  check('opening another project’s session keeps the Codex session catalog available',await js(()=>!document.querySelector('[data-hist-refresh]').disabled&&!!document.querySelector('[data-codex-project="desktop-b"]')));
+ await until(()=>js(()=>!!document.querySelector('.ai-visualization iframe[src^="myide-preview:"]')),'visualization preview lease');
+ await js(()=>document.querySelector('.ai-visualization iframe').scrollIntoView());
+ let widgetFrame;
+ await until(async()=>{
+   widgetFrame=win.webContents.mainFrame.frames.find(frame=>frame.url.startsWith('myide-preview:'));
+   return widgetFrame&&await widgetFrame.executeJavaScript('!!document.querySelector("#increment")').catch(()=>false);
+ },'visualization frame rendered');
+ check('Codex visualization marker renders inline and the sandboxed demo is interactive',
+   await widgetFrame.executeJavaScript('document.querySelector("#increment").click(); document.querySelector("#increment").textContent==="计数 1"')&&
+   await js(()=>!document.getElementById('ai-msgs').textContent.includes('\uE200visualize')&&
+     document.querySelector('.ai-visualization iframe').getAttribute('sandbox')==='allow-scripts'));
+ const outside=path.join(temp,'outside.html');
+ fs.writeFileSync(outside,'<p>outside artifact directory</p>');
+ check('Codex visualization preview rejects files outside the artifact directory',
+   !(await js(file=>window.myIDE.htmlPreview.open({path:file,disk:true,visualization:true}),outside)).ok);
+ await widgetFrame.executeJavaScript('location.href="https://visualization.invalid/"');
+ await sleep(80);
+ check('a visualization cannot navigate outside its sandboxed preview',
+   widgetFrame.url.startsWith('myide-preview:')&&!network.includes('https://visualization.invalid/'));
+ await capture('codex-inline-visualization');
  await capture('codex-history-sidebar');
  const renamedThreadTitle='桌面 Codex 新名称';
  await js(id=>{

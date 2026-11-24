@@ -1891,7 +1891,11 @@ const AiPanel = (() => {
       if(raw){if(!md.classList.contains('ai-stream-plain'))md.replaceChildren();md.classList.add('ai-stream-plain');if(!md.firstChild)md.appendChild(document.createTextNode(state.text));else md.firstChild.textContent=state.text;}
       else{md.classList.remove('ai-stream-plain');md.innerHTML=renderMd(state.text);}
       md.querySelector('.ai-cursor')?.remove();if(state.cursor&&!final){const dot=document.createElement('span');dot.className='ai-cursor';md.appendChild(dot);}
-      if(final&&!plain)decorateCodeBlocks(row);if(row.isConnected&&msgsEl.contains(row))scrollBottom();
+      if(final&&!plain){
+        decorateCodeBlocks(row);
+        renderVisualizations(md);
+      }
+      if(row.isConnected&&msgsEl.contains(row))scrollBottom();
     };
     if(final){if(state.timer)clearTimeout(state.timer);paint();return;}
     if(text.length<=LIVE_TEXT_LIMIT&&!state.timer){paint();return;}
@@ -1900,13 +1904,88 @@ const AiPanel = (() => {
   function finishLiveText(row){const state=livePaints.get(row);if(state)paintLiveText(row,state.text,{final:true,plain:state.plain});}
   function cancelLiveText(row){const state=livePaints.get(row);if(state?.timer)clearTimeout(state.timer);livePaints.delete(row);}
 
+  const visualizationPrefix='\uE200visualize\uE202';
+  const visualizationMarker=/^[ ]{0,3}\uE200visualize\uE202(\{[^\r\n]{1,8192}\})\uE201[ \t]*(?=\n|$)/;
+  function visualizationToken(source) {
+    const match=visualizationMarker.exec(source);
+    if(!match)return;
+    let preview;
+    try{preview=JSON.parse(match[1]);}catch{return;}
+    if(typeof preview?.path!=='string'||!preview.path)return;
+    return {type:'myideVisualization',raw:match[0],path:preview.path,mode:preview.mode};
+  }
   function renderMd(text) {
     try {
       // 工具调用块不进渲染（含流式中的未闭合半块）
       const clean = String(text || '').replace(/```tool_call[\s\S]*?```/g, '').replace(/```tool_call[\s\S]*$/g, '');
-      const html = window.marked.parse(clean);
+      const marked=window.marked;
+      let options;
+      if(clean.includes(visualizationPrefix)){
+        const extensions=marked.defaults?.extensions;
+        options={extensions:{
+          ...extensions,
+          block:[visualizationToken,...extensions?.block||[]],
+          startBlock:[source=>{const index=source.indexOf(visualizationPrefix);return index<0?undefined:index;},...extensions?.startBlock||[]],
+          renderers:{...extensions?.renderers,myideVisualization:token=>
+            '<template data-ai-visualization="'+esc(token.path)+'" data-mode="'+(token.mode==='wide'?'wide':'inline')+'"></template>'},
+        }};
+      }
+      const html = marked.parse(clean,options);
       return hljsWrap(html);
     } catch { return '<p>' + esc(text) + '</p>'; }
+  }
+  const visualizationLeases=new Map();
+  let visualizationObserver;
+  function createVisualization({path,mode}) {
+    const widget=document.createElement('span');
+    widget.className='ai-visualization';
+    widget.classList.toggle('ai-visualization-wide',mode==='wide');
+    const frame=document.createElement('iframe');
+    frame.title=path.split(/[\\/]/).pop()||'可视化预览';
+    frame.setAttribute('sandbox','allow-scripts');
+    frame.setAttribute('allow','fullscreen');
+    frame.loading='lazy';
+    const expand=document.createElement('button');
+    expand.type='button';
+    expand.className='ai-visualization-expand';
+    expand.textContent='全屏';
+    expand.onclick=()=>frame.requestFullscreen().catch(()=>{});
+    widget.append(frame,expand);
+    queueMicrotask(async()=>{
+      const mounted=()=>!!widget.closest('.ai-msg')?.parentNode;
+      if(!mounted())return;
+      let lease;
+      try{lease=await window.myIDE.htmlPreview.open({path,disk:true,visualization:true});}catch{}
+      if(!mounted()){
+        if(lease?.ok)window.myIDE.htmlPreview.close(lease.id);
+        return;
+      }
+      if(!lease?.ok||!lease.url?.startsWith('myide-preview://')){
+        const status=document.createElement('span');
+        status.className='ai-visualization-error';
+        status.textContent='预览不可用';
+        widget.replaceWith(status);
+        return;
+      }
+      visualizationLeases.set(widget,lease.id);
+      frame.src=lease.url;
+      if(!visualizationObserver){
+        visualizationObserver=new MutationObserver(()=>{
+          for(const [preview,id] of visualizationLeases){
+            if(preview.closest('.ai-msg')?.parentNode)continue;
+            visualizationLeases.delete(preview);
+            window.myIDE.htmlPreview.close(id);
+          }
+        });
+        visualizationObserver.observe(document.body,{childList:true,subtree:true});
+      }
+    });
+    return widget;
+  }
+  function renderVisualizations(container) {
+    for(const token of container.querySelectorAll('template[data-ai-visualization]')){
+      token.replaceWith(createVisualization({path:token.dataset.aiVisualization,mode:token.dataset.mode}));
+    }
   }
   // marked 输出的 <code> 块套 hljs 高亮（失败静默）
   function hljsWrap(html) {
@@ -2020,6 +2099,7 @@ const AiPanel = (() => {
       decorateCodeBlocks(row);
     }
     msgsEl.appendChild(row);
+    if(role==='assistant')renderVisualizations(pre);
     scrollBottom();
     return row;
   }

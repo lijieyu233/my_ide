@@ -7,7 +7,11 @@ const HtmlPreview = require('./src/main/browser/html-preview');
 const htmlPreview = HtmlPreview.createService();
 protocol.registerSchemesAsPrivileged([{scheme:HtmlPreview.SCHEME,privileges:{standard:true,secure:true,supportFetchAPI:true,corsEnabled:true}}]);
 ipcMain.handle('html-preview:open',async(event,request)=>{
-  try{if(event.sender!==mainWindow?.webContents||event.senderFrame!==event.sender.mainFrame)throw Error('无效的预览来源');return {ok:true,...await htmlPreview.open(event.sender.id,request)};}
+  try{
+    if(event.sender!==mainWindow?.webContents||event.senderFrame!==event.sender.mainFrame)throw Error('无效的预览来源');
+    const visualizationRoot=path.join(process.env.CODEX_HOME||path.join(os.homedir(),'.codex'),'visualizations');
+    return {ok:true,...await htmlPreview.open(event.sender.id,request,visualizationRoot)};
+  }
   catch(error){return {ok:false,error:error.message};}
 });
 ipcMain.handle('html-preview:close',(event,id)=>{if(event.sender===mainWindow?.webContents)htmlPreview.close(event.sender.id,id);});
@@ -284,6 +288,9 @@ function createWindow() {
     return { action: 'deny' };
   });
   aiHost.on('did-start-navigation', (_e, _url, _inPlace, isMainFrame) => { if (isMainFrame) { resetAi();htmlPreview.clear(aiHostId);if(browserFullscreen.active)browserFullscreen.set(false); } });
+  aiHost.on('will-frame-navigate', event => {
+    if(htmlPreview.isVisualization(aiHostId,event.initiator?.url)||htmlPreview.isVisualization(aiHostId,event.frame?.url)&&!htmlPreview.isVisualization(aiHostId,event.url))event.preventDefault();
+  });
   aiHost.on('destroyed', () => {resetAi();htmlPreview.clear(aiHostId);});
   // 异步工作区写入结束后再销毁渲染进程，关闭窗口不能丢掉最后一个书签。
   let readerCloseReady=false,readerClosePending=false;
