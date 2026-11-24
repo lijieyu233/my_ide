@@ -4692,16 +4692,21 @@ body.theme-light #ai-panel, body.theme-pink #ai-panel {
 #ai-msgs:focus { outline: none; }
 #ai-message-nav {
   position: absolute; z-index: 1; inset: 14px auto 14px 3px;
-  display: flex; flex-direction: column; align-items: stretch; width: 22px;
+  display: flex; flex-direction: column; justify-content: safe center; width: 22px;
   overflow: auto; overscroll-behavior: contain; scrollbar-width: none;
 }
 #ai-message-nav > button {
   flex: 0 0 11px; display: flex; align-items: center; padding: 0 0 0 5px;
   border: 0; background: transparent; color: var(--ai-process-text); cursor: pointer;
 }
-#ai-message-nav > button::before { content: ''; width: 5px; height: 1px; background: currentColor; opacity: .40; }
+#ai-message-nav > button::before {
+  content: ''; width: 5px; height: 1px; background: currentColor; opacity: .40;
+  transition: width .16s ease-out, opacity .16s ease-out;
+}
+#ai-message-nav > button:is(:hover, :focus-visible) + button::before,
+#ai-message-nav > button:has(+ button:is(:hover, :focus-visible))::before { width: 9px; opacity: .72; }
 #ai-message-nav > button:is(:hover, :focus-visible, [aria-current]) { color: var(--ai-body-text); }
-#ai-message-nav > button:is(:hover, :focus-visible, [aria-current])::before { width: 15px; opacity: 1; }
+#ai-message-nav > button:is(:hover, :focus-visible, [aria-current])::before { width: 16px; opacity: 1; }
 #ai-message-nav > button:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 #ai-message-preview {
   position: absolute; z-index: 2; left: 28px; max-width: min(280px, calc(100% - 40px));
@@ -4709,6 +4714,16 @@ body.theme-light #ai-panel, body.theme-pink #ai-panel {
   background: var(--bg-panel); color: var(--ai-body-text); box-shadow: 0 4px 16px #0004;
   font-size: calc(var(--ai-font-size, 13px) - 1px); line-height: 1.45;
   overflow-wrap: anywhere; pointer-events: none;
+  animation: ai-message-preview-in .16s ease-out;
+  transition: top .14s ease-out;
+}
+@keyframes ai-message-preview-in {
+  from { opacity: 0; transform: translateX(-5px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #ai-message-preview { animation: none; transition: none; }
+  #ai-message-nav > button::before { transition: none; }
 }
 #ai-message-latest {
   position: absolute; z-index: 1; bottom: 8px; left: 50%; transform: translateX(-50%);

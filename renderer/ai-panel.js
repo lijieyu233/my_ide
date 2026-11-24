@@ -1682,11 +1682,12 @@ const AiPanel = (() => {
     const latest = document.getElementById('ai-message-latest');
     if (!box || !rail || !preview || !latest) return;
     const transcript = box.parentElement;
-    const selector = '.ai-msg:is(.ai-user, .ai-assistant)';
-    let rows = [], active, selected, selectedTop, held, frame, listDirty = true;
+    const selector = '.ai-msg.ai-user';
+    let rows = [], active, selected, selectedTop, held, scrollFrame, frame, listDirty = true;
     const buttons = new Map();
     const atLatest = () => box.scrollHeight - box.clientHeight - box.scrollTop <= 8;
-    const paused = () => !!held && held.parentElement === box;
+    const paused = () => scrollFrame != null || held?.parentElement === box;
+    const motionAllowed = () => !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
     function showPreview(button) {
       const row = rows[Number(button.dataset.index)];
@@ -1698,7 +1699,8 @@ const AiPanel = (() => {
         ? excerpt + (excerpt.length < text.length ? '…' : '')
         : body?.querySelector('img') ? '图片' : button.getAttribute('aria-label');
       preview.hidden = false;
-      const offset = button.getBoundingClientRect().top - transcript.getBoundingClientRect().top;
+      const tick = button.getBoundingClientRect();
+      const offset = tick.top + (tick.height - preview.offsetHeight) / 2 - transcript.getBoundingClientRect().top;
       preview.style.top = Math.max(4, Math.min(offset, transcript.clientHeight - preview.offsetHeight - 4)) + 'px';
     }
 
@@ -1710,6 +1712,7 @@ const AiPanel = (() => {
         buttons.clear();
         active = null;
         preview.hidden = true;
+        resume();
       }
       const additions = document.createDocumentFragment();
       next.slice(append ? rows.length : 0).forEach((row, offset) => {
@@ -1717,7 +1720,7 @@ const AiPanel = (() => {
         const button = document.createElement('button');
         button.type = 'button';
         button.dataset.index = index;
-        button.setAttribute('aria-label', '第 ' + (index + 1) + ' 条消息 · ' + (row.classList.contains('ai-user') ? '你' : '助手'));
+        button.setAttribute('aria-label', '第 ' + (index + 1) + ' 条发送的消息');
         button.tabIndex = -1;
         buttons.set(row, button);
         additions.append(button);
@@ -1732,7 +1735,7 @@ const AiPanel = (() => {
     function refresh() {
       frame = null;
       if (listDirty) { syncRows(); listDirty = false; }
-      latest.hidden = !paused();
+      latest.hidden = !held;
       if (!rows.length || !box.clientHeight) return;
       let low = 0, high = rows.length - 1;
       const top = box.scrollTop + 20;
@@ -1757,22 +1760,55 @@ const AiPanel = (() => {
     function schedule() {
       if (frame == null) frame = requestAnimationFrame(refresh);
     }
+    function cancelScroll() {
+      if (scrollFrame == null) return;
+      cancelAnimationFrame(scrollFrame);
+      scrollFrame = selected = null;
+    }
     function resume() {
+      cancelScroll();
       held = selected = null;
       schedule();
+    }
+    function scrollTo(top, done) {
+      const from = box.scrollTop;
+      if (!motionAllowed() || Math.abs(from - top) <= 1) {
+        box.scrollTop = top;
+        done();
+      } else {
+        const start = performance.now();
+        const move = now => {
+          const progress = Math.min(1, (now - start) / 270);
+          box.scrollTop = from + (top - from) * (1 - (1 - progress) ** 3);
+          if (progress < 1) scrollFrame = requestAnimationFrame(move);
+          else {
+            scrollFrame = null;
+            done();
+            schedule();
+          }
+        };
+        scrollFrame = requestAnimationFrame(move);
+      }
+      schedule();
+    }
+    function highlight(row) {
+      if (motionAllowed()) {
+        row?.querySelector('.ai-md')?.animate?.([
+          { outline: '2px solid var(--accent)', outlineOffset: '3px' },
+          { outline: '2px solid transparent', outlineOffset: '3px' }
+        ], { duration: 550, easing: 'ease-out' });
+      }
     }
     function jump(button) {
       const row = rows[Number(button.dataset.index)];
       if (!row || row.parentElement !== box) return;
+      const bottom = box.scrollHeight - box.clientHeight;
+      cancelScroll();
       selected = row;
-      box.scrollTop = Math.max(0, row.offsetTop - 12);
-      selectedTop = box.scrollTop;
-      held = row === rows.at(-1) && atLatest() ? null : row;
+      selectedTop = Math.max(0, Math.min(row.offsetTop - 12, bottom));
+      held = row === rows.at(-1) && bottom - selectedTop <= 8 ? null : row;
       preview.hidden = true;
-      if (!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
-        row.querySelector('.ai-md')?.animate?.([{ backgroundColor: 'var(--bg-selected)', offset: .35 }, {}], 650);
-      }
-      schedule();
+      scrollTo(selectedTop, () => highlight(row));
     }
 
     rail.addEventListener('pointerover', event => {
@@ -1806,11 +1842,22 @@ const AiPanel = (() => {
       }
     });
     box.addEventListener('scroll', () => {
-      if (selected && Math.abs(selectedTop - box.scrollTop) > 1) selected = null;
-      if (!selected && atLatest()) held = null;
+      if (scrollFrame == null) {
+        if (selected && Math.abs(selectedTop - box.scrollTop) > 1) selected = null;
+        if (!selected && atLatest()) held = null;
+      }
       schedule();
     }, { passive: true });
-    latest.addEventListener('click', () => { resume(); scrollBottom(); box.focus({ preventScroll: true }); });
+    box.addEventListener('wheel', cancelScroll, { passive: true });
+    box.addEventListener('pointerdown', cancelScroll);
+    box.addEventListener('keydown', event => {
+      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) cancelScroll();
+    });
+    latest.addEventListener('click', () => {
+      resume();
+      box.focus({ preventScroll: true });
+      scrollTo(box.scrollHeight - box.clientHeight, scrollBottom);
+    });
 
     // Streaming updates are inside a row. Only additions and removals change the message index.
     new MutationObserver(records => {
