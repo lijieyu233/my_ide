@@ -17,6 +17,7 @@ async function fixture(overrides = {}) {
   w.HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); };
   w.myIDE = { quickLaunch: { ...service, cancelImport: async token => service.cancelImport(token), pick: async () => ({ ok: true, target, name: '中文 文件' }), ...overrides } };
   w.Modal = { confirm: async () => true };
+  w.eval(fs.readFileSync(path.join(__dirname, '../renderer/plugin-loader.js'), 'utf8'));
   w.App = { backToEditor: () => w.QuickLaunch.hide() };
   w.eval(source); w.QuickLaunch.show();
   const q = id => w.document.getElementById(id), sel = s => w.document.querySelector(s);
@@ -48,7 +49,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     await test('保存失败保留完整草稿与原配置，重试成功才关闭', async () => {
       const f = await fixture({ save: async () => ({ ok: false, error: '磁盘只读' }) }); await f.add('失败草稿');
       assert(f.sel('.ql-dialog')); assert.equal(f.field('name').value, '失败草稿'); assert.equal(f.field('target').value, f.target);
-      assert(!fs.existsSync(f.file)); assert(f.q('ql-status').textContent.includes('磁盘只读')); f.api.save = f.service.save; await f.submit(); assert(!f.sel('.ql-dialog')); assert(fs.existsSync(f.file));
+      assert(!fs.existsSync(f.file)); assert(f.q('toast-wrap').textContent.includes('磁盘只读')); f.api.save = f.service.save; await f.submit(); assert(!f.sel('.ql-dialog')); assert(fs.existsSync(f.file));
     });
     await test('保存期间禁输入/重复提交/Escape取消，结束后恢复焦点', async () => {
       const gate = deferred(); let saves = 0; const f = await fixture({ save: async (c, v) => { saves++; await gate.promise; return f.service.save(c, v); } });
@@ -61,7 +62,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     await test('取消不保存；重复目标展示所属组并能定位已有入口', async () => {
       const f = await fixture(); f.q('ql-add').click(); f.field('name').value = '取消'; f.sel('[data-cancel]').click(); assert(!fs.existsSync(f.file));
       await f.add('已有'); const id = (await f.service.load()).config.entries[0].id;
-      await f.add('重复'); assert(f.sel('.ql-dialog-error').textContent.includes('工作')); assert(!f.sel('[data-locate]').hidden);
+      await f.add('重复'); assert(f.q('toast-wrap').textContent.includes('工作')); assert(!f.sel('[data-locate]').hidden);
       f.sel('[data-locate]').click(); assert(!f.sel('.ql-dialog')); assert.equal(f.w.document.activeElement.dataset.id, id);
     });
     await test('中文/路径/地址搜索保持分组；IME不打开，Enter首条与Escape清空', async () => {
@@ -75,7 +76,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     await test('打开在途去重/失败不删入口，结算后可重试', async () => {
       const f = await fixture(); await f.add('目标'); const id = (await f.service.load()).config.entries[0].id; const gate = deferred(); let opens = 0;
       f.api.open = async () => { opens++; return gate.promise; }; f.click('open', id); f.click('open', id); assert.equal(opens, 1); assert.equal(f.sel('[data-action="open"]').getAttribute('aria-disabled'), 'true');
-      gate.resolve({ ok: false, error: '无关联程序' }); await wait(() => f.sel('[data-action="open"]').getAttribute('aria-disabled') === 'false'); assert(f.q('ql-status').textContent.includes('无关联程序')); assert.equal((await f.service.load()).config.entries.length, 1);
+      gate.resolve({ ok: false, error: '无关联程序' }); await wait(() => f.sel('[data-action="open"]').getAttribute('aria-disabled') === 'false'); assert(f.q('toast-wrap').textContent.includes('无关联程序')); assert.equal((await f.service.load()).config.entries.length, 1);
       f.api.open = f.service.open; f.click('open', id); await wait(() => f.q('ql-status').textContent.includes('已交给系统打开'));
     });
     await test('卡片打开在途保持键盘位置，完成后不抢用户移走的焦点', async () => {
@@ -123,7 +124,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
       const f = await fixture(); await f.add('文件'); f.q('ql-group-add').click(); f.field('name').value = '新组'; await f.submit();
       f.manage(); const last = (await f.service.load()).config.groups.at(-1).id;
       f.click('group-rename', last); f.field('name').value = '改名'; await f.submit(); f.click('group-up', last); await wait(() => f.q('ql-status').textContent === '已保存' && !f.q('ql-add').disabled);
-      assert.equal((await f.service.load()).config.groups[2].name, '改名'); f.click('group-delete', 'group-0'); assert(f.q('ql-status').textContent.includes('迁移'));
+      assert.equal((await f.service.load()).config.groups[2].name, '改名'); f.click('group-delete', 'group-0'); assert(f.q('toast-wrap').textContent.includes('迁移'));
       f.click('group-delete', last); await wait(() => !f.w.document.querySelector('[data-group="' + last + '"]'));
     });
     await test('前移/后移/编辑跨组，搜索禁排序，失败保持原顺序', async () => {
@@ -161,7 +162,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
       f.sel('[data-cancel]').click(); await f.w.QuickLaunch.reload(); assert(f.q('ql-groups').textContent.includes('另一窗口')); assert(!f.q('ql-add').disabled);
     });
     await test('配置损坏禁修改，重新加载保留原字节并显示位置', async () => {
-      const f = await fixture(); fs.writeFileSync(f.file, '{bad'); await f.w.QuickLaunch.reload(); assert(f.q('ql-add').disabled); assert(f.q('ql-status').textContent.includes(f.file)); assert.equal(fs.readFileSync(f.file, 'utf8'), '{bad');
+      const f = await fixture(); fs.writeFileSync(f.file, '{bad'); await f.w.QuickLaunch.reload(); assert(f.q('ql-add').disabled); assert(f.q('toast-wrap').textContent.includes(f.file)); assert.equal(fs.readFileSync(f.file, 'utf8'), '{bad');
     });
     await test('图标迟到不覆盖新目标，连续搜索最多四个在途采集', async () => {
       const f = await fixture();
@@ -206,7 +207,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
       f.api.previewImport = () => f.service.previewImport({ kind: 'config', file: incoming }); let fail = true;
       f.api.applyImport = async (...args) => fail ? { ok: false, error: '权限拒绝' } : f.service.applyImport(...args);
       f.q('ql-import').click(); await f.submit(); f.sel('[data-import-entry]').checked = false; f.sel('.ql-import-list').dispatchEvent(new f.w.Event('change'));
-      assert(f.sel('[data-import-summary]').textContent.includes('1 个')); await f.submit(); assert(f.sel('.ql-import-dialog')); assert(f.sel('.ql-dialog-error').textContent.includes('权限拒绝')); assert(!fs.existsSync(f.file));
+      assert(f.sel('[data-import-summary]').textContent.includes('1 个')); await f.submit(); assert(f.sel('.ql-import-dialog')); assert(f.q('toast-wrap').textContent.includes('权限拒绝')); assert(!fs.existsSync(f.file));
       fail = false; await f.submit(); assert(!f.sel('.ql-dialog')); assert.equal((await f.service.load()).config.entries[0].name, '乙入口'); assert(!f.q('ql-groups').textContent.includes('甲入口')); assert(f.q('ql-status').textContent.includes('已导入 1 个入口'));
     });
     await test('多选应用分组明确，重新选择释放计划；全部无效不能确认', async () => {
@@ -232,7 +233,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
       const f = await fixture(); await f.add('原入口'); const before = fs.readFileSync(f.file), gate = deferred(); let calls = 0;
       f.api.export = () => { calls++; return gate.promise; }; f.q('ql-export').click(); f.q('ql-export').click(); assert.equal(calls, 1); assert(f.q('ql-import').disabled);
       gate.resolve({ ok: true, canceled: true }); await wait(() => !f.q('ql-export').disabled); assert.deepEqual(fs.readFileSync(f.file), before); assert.equal(f.w.document.activeElement.id, 'ql-export');
-      f.api.export = async () => ({ ok: false, error: '磁盘拒绝' }); f.q('ql-export').click(); await wait(() => !f.q('ql-export').disabled); assert(f.q('ql-status').textContent.includes('磁盘拒绝'));
+      f.api.export = async () => ({ ok: false, error: '磁盘拒绝' }); f.q('ql-export').click(); await wait(() => !f.q('ql-export').disabled); assert(f.q('toast-wrap').textContent.includes('磁盘拒绝'));
       const output = path.join(f.dir, '导出.json'); f.api.export = () => f.service.exportTo(output); f.q('ql-export').click(); await wait(() => !f.q('ql-export').disabled); assert.equal(JSON.parse(fs.readFileSync(output)).entries[0].name, '原入口'); assert.deepEqual(fs.readFileSync(f.file), before);
     });
     await test('逐项参数保存、编辑、删除与工作目录选择；空格/引号/空参数完整回读', async () => {

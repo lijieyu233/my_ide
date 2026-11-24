@@ -2548,9 +2548,6 @@ body.theme-light #set-box, body.theme-pink #set-box { color-scheme: light; }
 #command-box .cp-empty { padding: 24px; text-align: center; color: var(--text-dim); }
 #command-status, #command-box .cp-foot { padding: 6px 14px; font-size: 11px; color: var(--text-dim); flex-shrink: 0; }
 #command-box .cp-foot { border-top: 1px solid var(--border); }
-#command-failure { padding: 8px 14px; border-bottom: 1px solid var(--border); max-height: 110px; overflow: auto; font-size: 12px; }
-#command-failure[hidden] { display: none; }
-#command-failure-text { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-bright); margin-bottom: 4px; }
 #command-box .cp-head { flex-shrink: 0; }
 #sr-box { max-height: calc(100vh - 64px); display: flex; flex-direction: column; }
 #sr-box .qo-head { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
@@ -2592,6 +2589,8 @@ body.theme-light #set-box, body.theme-pink #set-box { color-scheme: light; }
   padding: 6px 14px; font-size: 11px; color: var(--text-dim);
   border-top: 1px solid var(--border);
 }
+
+#toast-wrap:popover-open { position: fixed; inset: auto 0 34px; margin: 0 auto; padding: 0; border: 0; overflow: visible; background: transparent; max-width: min(420px, calc(100% - 24px)); pointer-events: none; }
 
 /* ---------- 浮动消息 ---------- */
 /* 提示在文件操作进度上方堆叠，淡出期间也可操作下方控件。 */
@@ -2643,7 +2642,7 @@ body.theme-light #set-box, body.theme-pink #set-box { color-scheme: light; }
   animation: toast-in .18s ease-out;
 }
 .toast.ok { border-left-color: var(--green); }
-.toast.err { border-left-color: var(--red); }
+.toast.err { border-left-color: var(--red); white-space: pre-wrap; }
 @keyframes toast-in { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
 
 /* ---------- 浅色主题（PyCharm Light 风格） ---------- */
@@ -3718,9 +3717,6 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .ai-hist-b:hover { background: var(--bg-hover); color: var(--text-bright); }
 .ai-hist-dock button:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
-.ai-hist-status { font-size: .83em; color: var(--text-dim); padding: 0 11px 7px; overflow-wrap: anywhere; flex-shrink: 0; }
-.ai-hist-status:empty { display: none; }
-.ai-hist-status.error { color: var(--danger); }
 .ai-hist-rows { flex: 1; min-height: 0; overflow: auto; padding: 4px 0; }
 .ai-hist-group-head, .ai-hist-row { display: flex; align-items: center; min-width: 0; height: var(--sidebar-tree-row-height); }
 .ai-hist-group-head { padding-right: 8px; }
@@ -4512,9 +4508,8 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 #launch-main { font-size: var(--tool-font, 13px); }
 
 /* 状态文字与持续错误独立于日志滚动；端口响应不能只画成表示进程存活的绿点。 */
-.launch-state, .launch-entry-error { font-size: .85em; color: var(--text-dim); overflow-wrap: anywhere; margin-top: .35em; }
-.launch-entry-error { color: var(--del-text, #e06c75); }
-.launch-entry-error[hidden], .launch-operation[hidden], .launch-operation button[hidden], .launch-operation details[hidden] { display: none; }
+.launch-state { font-size: .85em; color: var(--text-dim); overflow-wrap: anywhere; margin-top: .35em; }
+.launch-operation[hidden], .launch-operation button[hidden], .launch-operation details[hidden] { display: none; }
 #lm-state { font-size: .85em; color: var(--text-dim); overflow-wrap: anywhere; }
 #launch-main .launch-main-title, #launch-main .launch-main-acts { flex-wrap: wrap; }
 #launch-main .launch-main-title { flex: 1 1 18em; }

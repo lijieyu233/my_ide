@@ -17,7 +17,7 @@ window.Bookshelf=(()=>{
   function timeLabel(value){if(!value)return '尚未阅读';const date=new Date(value);return Number.isNaN(date.getTime())?'尚未阅读':new Intl.DateTimeFormat('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).format(date);}
   function progress(book){const line=document.createElement('progress');line.max=book.total||1;line.value=book.updated&&book.total?Math.min(book.index+1,book.total):0;line.setAttribute('aria-label',book.updated?position(book):'尚未阅读');return line;}
   function feedback(message,error=false,undo=false){
-    if(!host)return;const box=host.querySelector('.shelf-feedback');box.replaceChildren();box.classList.toggle('error',error);box.setAttribute('role',error?'alert':'status');
+    if(!host)return;const box=host.querySelector('.shelf-feedback');box.replaceChildren();if(error){MI.toast(message,'err');return;}
     if(message)box.append(text('span',message));if(undo)box.append(button('撤销',()=>{if(!removed)return;Reader.setListed(removed,true);removed=null;feedback('已恢复到书架');}));
   }
   async function add(){

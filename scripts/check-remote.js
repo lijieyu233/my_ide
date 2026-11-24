@@ -146,7 +146,7 @@ app.whenReady().then(async () => {
     await sleep(200); check('窄窗大字号文件面板不横向溢出', await probe('(()=>{const e=document.getElementById("remote-main");return e.scrollWidth<=e.clientWidth+1&&[...document.querySelectorAll(".remote-file-pane")].every(p=>p.scrollWidth<=p.clientWidth+1)})()')); await snapshot('files-narrow-light');
     win.setContentSize(1280, 850); await probe('Theme.set("crimson");for(let n=0;n<4;n++)document.getElementById("sb-tf-dec").click()'); await snapshot('files-crimson');
     await probe('document.getElementById("remote-local-pane").querySelector("[data-action=upload]").click()'); await sleep(100);
-    check('操作错误在导航栏显示且可读完整提示', await probe('(()=>{const n=document.getElementById("remote-notice");return n.classList.contains("error")&&getComputedStyle(n).display!=="none"&&n.title.includes("请先选择文件")})()'));
+    check('操作错误只显示在通知区', await probe('!document.getElementById("remote-notice").textContent&&document.getElementById("toast-wrap").textContent.includes("请先选择文件")'));
     await snapshot('files-error-crimson');
     // ⑭ 文件页「算大小」：行内单项目按钮 + 大值进位到 GB（2026-10-29）
     // 用户两次点名：①「应该有单独计算按钮」②「文件过大显示应该转为 G」。
@@ -180,7 +180,7 @@ app.whenReady().then(async () => {
       await probe(`(()=>{const rows=[...document.querySelectorAll("#remote-remote-pane [data-path]")];
         return rows.length===3 && document.querySelector("#remote-remote-pane [data-path=\\"/proc\\"] .remote-file-size").textContent==="—"})()`));
     await probe('document.querySelector("#remote-remote-pane [data-calc=\\"/proc\\"]").click()');
-    await wait('document.getElementById("remote-notice").textContent.includes("算不出")');
+    await wait('document.getElementById("toast-wrap").textContent.includes("算不出")');
     check('/proc 这类虚拟文件系统显示「—」并提示算不出（不是 128 TiB 的假数字）',
       await probe('document.querySelector("#remote-remote-pane [data-path=\\"/proc\\"] .remote-file-size").textContent==="—"'));
     // 批量按钮：点完要能回到「算全部大小」且重新可用。这里不能在 Node 侧同步断言 ——

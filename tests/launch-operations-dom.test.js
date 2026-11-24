@@ -108,7 +108,7 @@ const test = async (name, run) => { await run(); passed++; console.log('  ok ' +
       const f = await fixture(); f.statuses.a = running('a'); await f.poll(); const before = f.q('lm-log').textContent;
       f.api.status = async () => { throw Error('状态断线'); }; await f.poll();
       assert.match(f.q('lm-state').textContent, /上次确认/); assert(f.q('lm-stop').disabled); assert.equal(f.q('lm-log').textContent, before);
-      f.api.status = async () => []; await f.poll(); assert.match(f.q('launch-summary-text').textContent, /格式不完整/);
+      f.api.status = async () => []; await f.poll(); assert.match(f.q('launch-summary-text').textContent, /状态暂不可用/); await f.q('launch-status-retry').onclick(); assert(f.toasts.some(([message,type])=>type==='err'&&message.includes('格式不完整')));
       f.api.status = async () => [running('a'), idle('b')]; f.q('launch-status-retry').click(); await tick(); assert(!f.q('lm-stop').disabled);
     });
     await test('全部启动预留所有目标、连续点击去重、失败继续、逐项汇总并只重试失败项', async () => {
@@ -156,7 +156,7 @@ const test = async (name, run) => { await run(); passed++; console.log('  ok ' +
     });
     await test('配置读取失败保留列表并可重试，未知状态不能伪装停止', async () => {
       const f = await fixture(); f.api.config = async () => { throw Error('配置断线'); }; await f.refresh(); assert.equal(f.q('launch-body').querySelectorAll('.launch-card').length, 2);
-      assert.match(f.q('launch-summary-text').textContent, /配置断线/); assert(f.q('lm-del').disabled); assert(f.q('launch-add').disabled); assert(f.q('lm-start').disabled);
+      assert.match(f.q('launch-summary-text').textContent, /配置暂不可用/); assert(f.toasts.some(([message,type])=>type==='err'&&message.includes('配置断线'))); assert(f.q('lm-del').disabled); assert(f.q('launch-add').disabled); assert(f.q('lm-start').disabled);
       f.api.config = async () => f.config(); f.q('launch-status-retry').click(); await tick(); assert(f.q('launch-operation-summary').hidden);
     });
     await test('相同状态轮询不反复重写polite通知节点，真实状态变化才更新', async () => {

@@ -516,8 +516,7 @@ async function pinSelection(picked) {
       }
       renderAll();
     } catch (error) {
-      const host = q('clip-list');
-      if (host) host.innerHTML = '<div class="clip-empty">读取失败：' + esc(error.message) + '</div>';
+      MI.toast('读取剪贴板历史失败：' + error.message, 'err');
     } finally { loading = false; }
   }
 
@@ -580,7 +579,7 @@ async function pinSelection(picked) {
       watching = data.settings?.watch !== false;
       settings = data.settings || settings;
       renderStats();
-    } catch (error) { alert('切换监听失败：' + error.message); }
+    } catch (error) { MI.toast('切换剪贴板监听失败：' + error.message, 'err'); }
   }
 
   async function applyLimits() {

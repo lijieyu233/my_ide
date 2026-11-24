@@ -71,12 +71,12 @@ const QuickOpen = (() => {
       // 点击的身份来自这一行，不能依赖鼠标是否先经过另一行。
       row.onclick = event => pick(state,i,event.shiftKey?'regular':'browse'); state.list.appendChild(row);
     });
-    if (!state.results.length) {
+    if (!state.results.length && !state.error) {
       const empty = document.createElement('div'); empty.className = 'qo-empty';
-      empty.textContent = query ? (state.loading ? '正在读取项目文件…' : state.error ? '文件列表读取失败，请重试' : '没有匹配的文件') : '输入关键字开始搜索…';
+      empty.textContent = query ? (state.loading ? '正在读取项目文件…' : '没有匹配的文件') : '输入关键字开始搜索…';
       state.list.appendChild(empty);
     }
-    state.status.textContent = state.loading ? '正在读取项目文件…' : state.error ? '文件列表读取失败：' + state.error
+    state.status.textContent = state.loading ? '正在读取项目文件…' : state.error ? ''
       : state.index?.truncated ? '仅索引前 5 万个文件；结果可能不完整' : query ? '显示 ' + state.results.length + ' 项，最多 30 项' : '';
     state.retry.hidden = !state.error; state.input.setAttribute('aria-busy', String(state.loading));
     setSelection(state, resetSelection ? 0 : Math.max(0, state.results.findIndex(file => file.key === selectedKey)));
@@ -133,7 +133,12 @@ const QuickOpen = (() => {
       })().finally(() => { if (pending === request) pending = null; });
     }
     try { const index = await pending.promise; if (current(state) && state.generation === token) state.index = index; }
-    catch (error) { if (current(state) && state.generation === token) state.error = String(error?.message || error); }
+    catch (error) {
+      if (current(state) && state.generation === token) {
+        state.error = String(error?.message || error);
+        MI.toast('文件列表读取失败：' + state.error, 'err');
+      }
+    }
     if (current(state) && state.generation === token) { state.loading = false; render(state); }
   }
   async function open() {

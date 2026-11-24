@@ -76,7 +76,7 @@ app.whenReady().then(async () => {
     await probe('document.getElementById("launch-status-retry").click()'); await wait('document.getElementById("launch-status-retry").hidden');
     check('真实状态重试恢复来源提示', await probe('document.getElementById("lm-state").textContent.includes("端口有响应")'));
     ipcMain.removeHandler('launch:config'); ipcMain.handle('launch:config', () => { throw Error('fixture配置断线'); });
-    await probe('LaunchPanel.refresh()'); await wait('document.getElementById("launch-summary-text").textContent.includes("配置读取失败")');
+    await probe('LaunchPanel.refresh()'); await wait('document.getElementById("toast-wrap").textContent.includes("读取启动配置失败")');
     check('真实配置读取失败保留列表且禁止用旧配置修改/执行', await probe('document.querySelectorAll(".launch-card").length===2&&document.getElementById("lm-del").disabled&&document.getElementById("launch-add").disabled&&document.getElementById("launch-start-all").disabled'));
     ipcMain.removeHandler('launch:config'); ipcMain.handle('launch:config', () => service.loadConfig());
     await probe('document.getElementById("launch-status-retry").click()'); await wait('document.getElementById("launch-status-retry").hidden');

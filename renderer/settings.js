@@ -14,7 +14,8 @@ const Settings = (() => {
   const keysCurrent = box => activeBox === box && box.isConnected && ['keys', 'markdown'].includes(box.dataset.category) && Modal.stack.at(-1) === box;
   function keyStatus(text, error = false) {
     const hint = activeBox?.querySelector('#set-hint');
-    if (!hint) return; hint.replaceChildren(document.createTextNode(text)); hint.setAttribute('role', 'status'); hint.style.color = error ? 'var(--del-text)' : '';
+    if (error) { MI.toast(text, 'err'); return; }
+    if (!hint) return; hint.textContent = text; hint.setAttribute('role', 'status');
   }
   function confirmKeys(title, text) {
     const pending = Modal.confirm(title, text), panel = Modal.stack.at(-1);
@@ -249,7 +250,7 @@ const Settings = (() => {
         if (!dir) return;
         dirInput.value = dir;
         persist();
-      } catch (error) { hint.textContent = '选择目录失败：' + ((error && error.message) || error); }
+      } catch (error) { MI.toast('选择目录失败：' + (error?.message || error), 'err'); }
     };
     section.querySelector('#cos-test').onclick = async () => {
       const result = section.querySelector('#cos-test-result');
@@ -261,10 +262,10 @@ const Settings = (() => {
       try {
         const r = await window.myIDE.cosUpload?.({ ...cfg, key: (cfg.prefix ? cfg.prefix.replace(/^\/+|\/+$/g, '') + '/' : '') + 'myide-test.png', body: probe, contentType: 'image/png' });
         if (r?.ok) { result.textContent = '上传成功：' + r.url; result.style.color = 'var(--ok-text, #4caf50)'; }
-        else { result.textContent = '失败：' + (r?.error || '未知错误'); result.style.color = 'var(--del-text)'; }
+        else throw Error(r?.error || '未知错误');
       } catch (error) {
-        result.textContent = '失败：' + ((error && error.message) || error);
-        result.style.color = 'var(--del-text)';
+        result.textContent = '';
+        MI.toast('上传测试失败：' + (error?.message || error), 'err');
       }
     };
     refreshHint();

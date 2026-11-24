@@ -455,7 +455,8 @@ const GitLog = (() => {
         chip.onclick = () => { refreshEpoch++;selSeq++;diffRequest++;cancelSelection();pathFilter = null; selOid = null; refresh(); };
       }
       if (!lf.isRepo) {
-        listEl.innerHTML = '<div class="git-empty">' + esc(lf.error || '不是 Git 仓库') + '</div>';
+        if (lf.error) MI.toast(lf.error, 'err');
+        listEl.innerHTML = '<div class="git-empty">'+(lf.error ? '历史未载入' : '不是 Git 仓库')+'</div>';
         return;
       }
       const signature=JSON.stringify([pathFilter,lf]);if(signature===renderedHistory&&listEl.querySelector('.gl-rows')){resumeDetail();return;}renderedHistory=signature;
@@ -476,7 +477,8 @@ const GitLog = (() => {
     ]);
     if(!valid())return;
     if (!lg.isRepo) {
-      listEl.innerHTML = '<div class="git-empty">' + esc(lg.error || '不是 Git 仓库') + '</div>';
+      if (lg.error) MI.toast(lg.error, 'err');
+        listEl.innerHTML = '<div class="git-empty">'+(lg.error ? '历史未载入' : '不是 Git 仓库')+'</div>';
       return;
     }
     // HEAD与分支没变化时不要清空列表/重新选首文件；对比页退出则必须重新建回列表。
@@ -504,7 +506,10 @@ const GitLog = (() => {
     let br;try { br = await window.myIDE.git.branches(project); } catch(error) { br = {error:String(error.message || error)}; }
     if (seq !== cmpSeq || project !== root || !opened || !cmp) return;
     cmp.names = br?.branches || []; cmp.loading = false;
-    if (br?.error || !cmp.names.length) cmp.error = br?.error || '仓库中没有分支，无法对比';
+    if (br?.error || !cmp.names.length) {
+      cmp.error = br?.error || '仓库中没有分支，无法对比';
+      MI.toast(cmp.error, 'err');
+    }
     renderCompareList(cmp.names);
   }
 
@@ -552,8 +557,10 @@ const GitLog = (() => {
     let data;try { data = await window.myIDE.git.compareRefs(project, a, b); } catch(error) { data = {error:String(error.message || error)}; }
     if (seq !== cmpSeq || project !== root || !opened || cmp !== mode) return;
     mode.loading = false;
-    if (!data || data.error) mode.error = data?.error || '没有收到对比结果';
-    else mode.data = data;
+    if (!data || data.error) {
+      mode.error = data?.error || '没有收到对比结果';
+      MI.toast('对比分支失败：' + mode.error, 'err');
+    } else mode.data = data;
     renderCompareList(mode.names);
   }
 
@@ -565,7 +572,7 @@ const GitLog = (() => {
     if (!cmp || !cmp.data) {
       const tip = document.createElement('div');
       tip.className = 'diff-msg';
-      tip.textContent = cmp?.loading ? '对比中…' : cmp?.error ? '对比失败: ' + cmp.error + '（可重新对比或退出）' : '选择两个分支后点击「对比」';
+      tip.textContent = cmp?.loading ? '对比中…' : cmp?.error ? '结果未载入' : '选择两个分支后点击「对比」';
       listEl.appendChild(tip);
       return;
     }

@@ -6,7 +6,7 @@ const Shortcuts = (() => {
   const keysOf = id => custom(id) ? (Array.isArray(savedKey[id]) ? savedKey[id] : [savedKey[id]]) : registry[id].keys;
   let keyMap = {};     // combo -> id
   let captureCb = null; // 正在等待按键（设置面板修改快捷键时）
-  let projectEpoch = 0, lastFailure = null;
+  let projectEpoch = 0;
   const listeners = new Set();
   const changed = () => { for (const listener of listeners) { try { listener(); } catch (error) { console.error('[actions]', error); } } };
 
@@ -159,8 +159,8 @@ const Shortcuts = (() => {
       return { ok: true, result };
     } catch (error) {
       const message = String(error?.message || error);
-      lastFailure = { id, label: action.label, message, root: ctx.root, path: ctx.path, time: Date.now() };
-      changed(); window.MI?.toast(action.label + '失败：' + message, 'err');
+      const target = ctx.path || ctx.root;
+      changed(); window.MI?.toast(action.label + '失败：' + message + (target ? '\n执行位置：' + target : ''), 'err');
       return { ok: false, error: message };
     }
   }
@@ -282,8 +282,7 @@ const Shortcuts = (() => {
   });
 
   return { register, syncActions, bindings, bindingConflicts, defaultsFor: id => [...(registry[id]?.keys || [])], setBinding, setBindings, reset, resetAll, load, captureNext, cancelCapture, isCapturing, markToolJumps, comboOf,
-    context, availability, commands, execute, onChanged, describe, invalidateContext,
-    get lastFailure() { return lastFailure; }, clearFailure() { lastFailure = null; changed(); } };
+    context, availability, commands, execute, onChanged, describe, invalidateContext };
 })();
 window.Shortcuts = Shortcuts;
 

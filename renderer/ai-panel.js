@@ -2939,13 +2939,10 @@ const AiPanel = (() => {
     finishLiveText(stream.element);stream.element.querySelector('.ai-cursor')?.remove();
     if(run.thought)finishLiveText(run.thought.querySelector('pre'));
     if(!stream.segment?.text)stream.element.remove();
-    if(isErr || !complete){
-      const note=r?.error||warning||(r?.aborted?'已停止生成':'回复未完成');
-      const row=addMsg('assistant',note);row.querySelector('.ai-md').classList.add('ai-err');
-      if (restoredDraft) {
-        row.classList.add('ai-codex-rejected');
-      }
-      else stream.timeline.push({kind:'text',text:note});
+    if ((isErr || !complete) && !r?.aborted) {
+      const detail = r?.error || warning;
+      const note = (isErr ? '生成失败' : '回复未完成') + (detail ? '：' + detail : '') + (restoredDraft ? '，草稿已保留' : '');
+      MI.toast(note, 'err');
     }
     for(const row of msgsEl.querySelectorAll('.ai-msg.ai-assistant'))decorateCodeBlocks(row);
     if(stream.timeline.length)msgs.push({role:'assistant',content:stream.partText??stream.text,_dshTimeline:stream.timeline});
@@ -2978,21 +2975,21 @@ const AiPanel = (() => {
     if (!isErr && !String(text || '').trim()) {
       if (hasCalls) {
         try { curStream.remove(); } catch {}
-      } else {
-        md.innerHTML = '<p class="ai-err">（模型这轮没有返回内容）</p>';
+      } else if (complete) {
+        MI.toast('模型没有返回内容', 'err');
+        curStream.remove();
       }
     }
-    if (isErr) {
-      md.innerHTML = (r?.text ? renderMd(r.text) : '') + '<p class="ai-err">⚠ ' + esc(r?.error || text || '请求失败') + '</p>';
-    } else if (text) {
-      md.innerHTML = renderMd(text);
+    const replyText = isErr ? r?.text : text;
+    if (replyText) {
+      md.innerHTML = renderMd(replyText);
       decorateCodeBlocks(curStream);
+    } else if (isErr || !complete) curStream.remove();
+    if (!r?.aborted && (isErr || !complete && warning)) {
+      MI.toast((isErr ? '生成失败：' : '回复未完成：') + (warning || text || '请求失败'), 'err');
     }
-    if (!complete && !isErr && warning) { const note = document.createElement('p'); note.className = 'ai-err'; note.textContent = warning; md.appendChild(note); }
     if (r?.capabilities?.downgrades?.length) {
-      const note = document.createElement('p'); note.className = 'ai-run-state';
-      note.textContent = '兼容模式：' + r.capabilities.downgrades.map(d => (d.feature === 'nativeTools' ? '原生工具已停用，使用文本协议' : '用量统计已停用') + '（' + d.reason + '）').join('；');
-      md.appendChild(note);
+      MI.toast('兼容模式：' + r.capabilities.downgrades.map(d => (d.feature === 'nativeTools' ? '原生工具已停用，使用文本协议' : '用量统计已停用') + '（' + d.reason + '）').join('；'), 'err');
     }
     const nativeCalls = (!isErr && complete && r.finishReason === 'tool_calls' && Array.isArray(r.toolCalls)) ? r.toolCalls : [];
     if (!isErr) {
@@ -3287,7 +3284,24 @@ const AiPanel = (() => {
     }
     return null;
   }
-  let codexCatalog = null, codexCatalogRequest = null, codexCatalogError = null;
+  let codexCatalog = null, codexCatalogRequest = null;
+  const catalogFailures = new Map();
+  function reportCatalogFailure(engine, launcher, request, error) {
+    const config = getConfig();
+    if (engine !== config.engine || launcher !== ((engine === 'codex' ? config.codexPath : config.dshPath) || '')) return;
+    if (engine === 'codex' && request.workspaceRoot !== pathKey(window.App?.root)) return;
+    const message = String(error?.message || error || "未知错误");
+    const last = catalogFailures.get(engine);
+    const repeat = last?.launcher === launcher && last.message === message;
+    const failure = repeat ? last : { launcher, message, notified: false };
+    catalogFailures.set(engine, failure);
+    const text = (engine === "codex" ? "Codex" : "DSH") + " 会话目录更新失败：" + message;
+    if (!repeat) MI.log?.("WARN", "ai." + engine, text);
+    if (request.manual || !request.background && !failure.notified) {
+      failure.notified = true;
+      MI.toast(text, "err");
+    }
+  }
   let codexOpenIntent = 0, codexLiveView = null;
   const codexForksInFlight = new Set(), codexArchiveRequests = new Set(), codexDesktopTransfers = new Set();
   let codexArchiveOnly = false;
@@ -3408,18 +3422,21 @@ const AiPanel = (() => {
     if (!codexProjectHistory()) return;
     const config = getConfig(), codexPath = config.codexPath || '';
     const workspaceRoot = pathKey(window.App?.root);
-    if (codexCatalogRequest?.launcher === codexPath && codexCatalogRequest.workspaceRoot === workspaceRoot) return codexCatalogRequest.promise;
+    if (codexCatalogRequest?.launcher === codexPath && codexCatalogRequest.workspaceRoot === workspaceRoot) {
+      if (manual) codexCatalogRequest.manual = true;
+      return codexCatalogRequest.promise;
+    }
 
-    const request = { launcher: codexPath, workspaceRoot, background };
+    const request = { launcher: codexPath, workspaceRoot, background, manual };
     codexCatalogRequest = request;
-    if (!background) { codexCatalogError = null; refreshHistInPlace(); }
+    if (!background) refreshHistInPlace();
     request.promise = (async () => {
       try {
         const result = await window.myIDE.ai.codexSessions({ engine: 'codex', codexPath });
         if (codexCatalogRequest !== request) return;
         if (!result?.ok) throw Error(result?.error || '无法读取 Codex 会话');
         const previous = codexSelectedHistoryItem();
-        codexCatalogError = null;
+        catalogFailures.delete('codex');
         codexCatalog = { launcher: codexPath, items: result.items, projects: result.projects || [],
           bindings: result.bindings || [], activeBinding: result.activeBinding, workspaceRoot: pathKey(result.workspaceRoot) };
         const selected = codexSelectedHistoryItem();
@@ -3429,7 +3446,7 @@ const AiPanel = (() => {
         void syncCodexLiveHistory(selected, config);
         if (panel && !panel.classList.contains('hidden')) void refreshNativeQueue(true);
       } catch (error) {
-        if (!background && codexCatalogRequest === request) codexCatalogError = { launcher: codexPath, message: error.message };
+        if (codexCatalogRequest === request) reportCatalogFailure('codex', codexPath, request, error);
       } finally {
         if (codexCatalogRequest === request) {
           codexCatalogRequest = null;
@@ -3462,23 +3479,23 @@ const AiPanel = (() => {
   }
 
   // DSH 会话和工作区共用宿主目录，切换 IDE 项目不重读。
-  let dshCatalog = { launcher: null, items: [], workspaces: new Map(), archivedIds: new Set(), pinnedIds: new Set() }, dshCatalogRequest = null, dshCatalogError = null;
-  function refreshDshCatalog({ background = false } = {}) {
+  let dshCatalog = { launcher: null, items: [], workspaces: new Map(), archivedIds: new Set(), pinnedIds: new Set() }, dshCatalogRequest = null;
+  function refreshDshCatalog({ background = false, manual = false } = {}) {
     const config = getConfig(), launcher = config.dshPath || '';
     if (config.engine !== 'dsh') return;
-    if (dshCatalogRequest?.launcher === launcher) return dshCatalogRequest.promise;
-    const request = { launcher, background };
-    dshCatalogRequest = request;
-    if (!background) {
-      dshCatalogError = null;
-      refreshHistInPlace();
+    if (dshCatalogRequest?.launcher === launcher) {
+      if (manual) dshCatalogRequest.manual = true;
+      return dshCatalogRequest.promise;
     }
+    const request = { launcher, background, manual };
+    dshCatalogRequest = request;
+    if (!background) refreshHistInPlace();
     request.promise = (async () => {
       try {
         const result = await window.myIDE.ai.dshSessions({...config, catalogScope:'all'});
         if (dshCatalogRequest !== request) return;
         if (result?.ok) {
-          dshCatalogError = null;
+          catalogFailures.delete('dsh');
           dshCatalog = {
             launcher,
             items: Array.isArray(result.items) ? result.items : [],
@@ -3486,9 +3503,9 @@ const AiPanel = (() => {
             archivedIds: new Set(Array.isArray(result.archivedSessionIds) ? result.archivedSessionIds : []),
             pinnedIds: new Set(Array.isArray(result.pinnedSessionIds) ? result.pinnedSessionIds : []),
           };
-        } else dshCatalogError = { launcher, message: result?.error || '未能读取 DSH 会话目录' };
+        } else throw Error(result?.error || '未能读取 DSH 会话目录');
       } catch (error) {
-        if (dshCatalogRequest === request) dshCatalogError = { launcher, message: error?.message || 'DSH 会话目录读取失败' };
+        if (dshCatalogRequest === request) reportCatalogFailure('dsh', launcher, request, error);
       } finally {
         if (dshCatalogRequest === request) {
           dshCatalogRequest = null;
@@ -3872,10 +3889,7 @@ const AiPanel = (() => {
     if (title && title.textContent !== panelTitle) title.textContent = panelTitle;
     const launcher = (codex ? config.codexPath : config.dshPath) || '';
     const request = codex ? codexCatalogRequest : dshCatalogRequest;
-    const error = codex ? codexCatalogError : dshCatalogError;
     const histLoading = request?.launcher === launcher && !request.background;
-    const histError = error?.launcher === launcher ? error.message : '';
-    const status = sidebar.querySelector('.ai-hist-status');
     const refresh = sidebar.querySelector('[data-hist-refresh]');
     refresh.hidden = !dsh && !codex;
     refresh.disabled = histLoading;
@@ -4080,7 +4094,7 @@ const AiPanel = (() => {
       '<button type="button" class="ai-hist-b" data-hist-options title="会话列表选项" aria-label="会话列表选项" aria-haspopup="menu">' + historyIcon('M3 8h.01M8 8h.01M13 8h.01') + '</button>' +
       '<button type="button" class="ai-hist-b" data-hist-refresh title="刷新会话目录" aria-label="刷新会话目录">' + historyIcon('M13 7a5 5 0 1 0-1 4M13 3v4H9') + '</button>' +
       '<button type="button" class="ai-hist-b" data-hist-close title="收起会话" aria-label="收起会话">' + historyIcon('m4 4 8 8m0-8-8 8') + '</button></span></div>' +
-      '<div class="ai-hist-status" role="status"></div><div class="ai-hist-rows"></div>';
+      '<div class="ai-hist-rows"></div>';
     document.getElementById('panel-sessions').replaceChildren(sidebar);
 
     sidebar.addEventListener('contextmenu', event => {
@@ -4131,7 +4145,8 @@ const AiPanel = (() => {
       const options = sender.closest('[data-hist-options]');
       if (options) { event.stopPropagation(); showHistoryOptions(options); return; }
       if (sender.closest('[data-hist-refresh]')) {
-        await (getConfig().engine === 'codex' ? refreshCodexCatalog() : refreshDshCatalog());
+        const refresh = getConfig().engine === 'codex' ? refreshCodexCatalog : refreshDshCatalog;
+        await refresh({ manual: true });
         return;
       }
       const otherToggle = sender.closest('[data-hist-other]');
@@ -4295,7 +4310,7 @@ const AiPanel = (() => {
     if (!wanted()) return false;
     if (!result?.ok || result.readOnly !== true || pathKey(result.rootDir) !== pathKey(target.rootDir) || result.sessionId !== hostId) {
       const message = '跨工程正文读取失败：' + (result?.error || '宿主未确认会话归属');
-      blockDshSession(message); clearMessageView(); addMsg('assistant',message); return false;
+      blockDshSession(message); clearMessageView(); MI.toast(message, 'err'); return false;
     }
     const bound = await window.myIDE.ai.dshBind(getConfig(), dshView(),hostId).catch(error => ({ok:false,error:error.message}));
     if (!wanted()) return false;
@@ -4306,7 +4321,7 @@ const AiPanel = (() => {
     if(!await replayHistory(wanted))return false;
     renderUsage();refreshModelSel();setBusyUI(false);renderBackgroundStatus();
     if (ready) await refreshDshOptions();
-    else blockDshSession(dshSessionAccess.error);
+    else { blockDshSession(dshSessionAccess.error); MI.toast(dshSessionAccess.error, 'err'); }
     return ready;
   }
   async function manageCodexRename(target, title) {
@@ -4519,6 +4534,9 @@ const AiPanel = (() => {
     if (!dshWatchWanted(watch) || dshOwnRun() || backgroundView) return;
     const state = watch.state;
     if (!state) return;
+    const watchError = state.connected === false ? state.error || 'DSH 连接中断，请重新连接' : watch.needsSync ? watch.syncError : '';
+    if (watchError && watchError !== watch.reportedError) MI.toast(watchError, 'err');
+    watch.reportedError = watchError;
     watch.notice ||= createRunState();
     clearTimeout(currentRun?.notice?.hideTimer);
     if (state.connected === false) {
@@ -4526,20 +4544,20 @@ const AiPanel = (() => {
       if (watch.notice.timer) { clearInterval(watch.notice.timer); watch.notice.timer = null; }
       clearTimeout(watch.notice.hideTimer);
       watch.notice.element?.classList.remove('hidden','running');
-      if (watch.notice.textEl) watch.notice.textEl.textContent = state.error || 'DSH 连接中断，运行状态待确认';
+      if (watch.notice.textEl) watch.notice.textEl.textContent = 'DSH 已断开';
     } else if (state.running) {
       watch.disconnectedNotice = false;
       watch.timingKey=state.runId||watch.watchId;
       watch.timingStartedAt=Number.isFinite(state.runStartedAt)&&state.runStartedAt>=0?state.runStartedAt:null;
       watch.timingObserved=watch.timingStartedAt===null;
       const label=watch.stopping?'正在停止 DSH 会话':state.questions?.length?'DSH 等待回答':state.permissions?.length?'DSH 等待授权':state.preview?.thinking?'深度求索':'DSH 正在生成';
-      setRunState(watch,label+(watch.needsSync?watch.syncError?' · 正文同步失败，请重连':' · 正在同步正文':''));
+      setRunState(watch,label+(watch.needsSync?watch.syncError?' · 同步暂停':' · 正在同步正文':''));
     } else if (watch.needsSync&&watch.syncError) {
       activeRunNotice=watch.notice;
       if(watch.notice.timer){clearInterval(watch.notice.timer);watch.notice.timer=null;}
       clearTimeout(watch.notice.hideTimer);watch.notice.element?.classList.remove('hidden','running');
       if(watch.notice.element)watch.notice.element.dataset.outcome='unknown';
-      if(watch.notice.textEl)watch.notice.textEl.textContent='DSH 正文同步失败，运行状态待确认，请重新连接';
+      if(watch.notice.textEl)watch.notice.textEl.textContent='DSH 同步暂停';
     } else if (watch.disconnectedNotice) {
       // 重连到空闲态只撤回断线提示；没有新一轮生成，不能伪报“已完成”。
       watch.disconnectedNotice = false;
@@ -4794,7 +4812,7 @@ const AiPanel = (() => {
     if(ticket!==sessionLoadTicket||getConfig().engine!=='dsh'||root!==(window.App?.root||'')||epoch!==pageEpoch)return false;
     const saved=loadSessions().find(item=>item.id===id),host=catalogOf(id);
     if(host&&(!host.cwd||pathKey(host.cwd)!==pathKey(root))){
-      blockDshSession('该会话属于其他工作区，不能在当前项目续聊');clearMessageView();addMsg('assistant',dshSessionAccess.error);return false;
+      blockDshSession('该会话属于其他工作区，不能在当前项目续聊');clearMessageView();MI.toast(dshSessionAccess.error,'err');return false;
     }
     const nativeId=id?.startsWith('host:')?id.slice(5):/^(session-|myide-)/.test(id||'')?id:'';
     const hostId=nativeId || host?.sessionId || saved?.hostId;
@@ -4816,7 +4834,7 @@ const AiPanel = (() => {
     if (!stillWanted()) return;
     if (!result?.ok) {
       const error='读取会话失败：'+(result?.error||'未返回成功');blockDshSession(error);
-      clearMessageView();addMsg('assistant',error);MI.toast(error,'err');return false;
+      clearMessageView();MI.toast(error,'err');return false;
     }
     // 先绑定再读取模型选项，否则选项预取会以尚未绑定的身份创建另一条空会话。
     const bound = await window.myIDE.ai.dshBind(getConfig(), { sessionId:id, rootId: root, page: { id: page.id, projectContext: !!page.projectContext } }, hostId).catch(error => ({ ok: false, error: error.message }));
@@ -5724,7 +5742,7 @@ const AiPanel = (() => {
         if(typeof event.willRetry==='boolean')run.nativeState.willRetry=event.willRetry;
         const box=run.notice?.element;if(box){box.dataset.nativePhase=run.nativeState.phase||'connecting';box.title='Codex 阶段：'+(run.nativeState.phase||'connecting')+'\n原生线程：'+(run.nativeState.threadId||'尚未确认')+'\n原生轮次：'+(run.nativeState.turnId||'尚未确认');}
       }
-      setRunState(run,event.text);
+      setRunState(run,event.phase === 'error' ? '生成失败' : event.text);
       if (!backgroundView && run.engine === 'codex' && event.phase === 'accepted') {
         renderNativeInputUI(); void refreshNativeQueue(true);
       }

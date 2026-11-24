@@ -51,6 +51,10 @@ app.whenReady().then(async () => {
     await probe('Theme.set("crimson")'); await snapshot('empty-crimson');
     check('主操作与辅助操作分层，空分组引导与图标完整', await probe('!!document.querySelector(".ql-controls #ql-search")&&!!document.querySelector(".ql-controls #ql-add")&&!document.querySelector(".ql-toolbar #ql-search")&&document.querySelectorAll(".ql-empty strong").length===3&&!!document.querySelector(".ql-empty svg")'));
     // 单独探针核对当前Electron令牌实际可写；只创建独占随机文件，不读取/改动用户配置。
+    await probe('document.getElementById("ql-add").click(); MI.toast("通知位置验证", "err"); MI.toast("通知位置验证", "err");');
+    check('原生弹窗开启时错误仍固定在底部通知区，相同错误只显示一条', await probe('(()=>{const wrap=document.getElementById("toast-wrap"),nodes=[...wrap.querySelectorAll("[role=alert]")].filter(node=>node.textContent==="通知位置验证"); const rect=wrap.getBoundingClientRect();return wrap.matches(":popover-open")&&nodes.length===1&&Math.abs(rect.left+rect.width/2-innerWidth/2)<2&&Math.abs(innerHeight-rect.bottom-34)<2&&document.activeElement.closest("dialog.ql-dialog")})()'));
+    await snapshot('unified-error-position');
+    await probe('document.querySelector(".ql-dialog [data-cancel]").click();');
     const FileWrite = require('../src/main/files/file-write');
     const probeFile = path.join(actualHome, '.myide', '.quick-launch-probe-' + require('crypto').randomUUID());
     fs.mkdirSync(path.dirname(probeFile), { recursive: true });
@@ -217,7 +221,7 @@ app.whenReady().then(async () => {
     await wait('document.getElementById("ql-status").textContent.includes("已交给系统打开：项目文档")');
     check('真实渲染重建读取已保存入口与键位，无需先打开快速启动', opened.length===beforeReloadKey+1&&opened.at(-1)[1]==='https://example.com/docs');
     const changed = await service.load(); changed.config.entries.find(e=>e.id==='web').target='https://example.com/changed'; check('外部窗口修改测试配置', (await service.save(changed.config,changed.version)).ok);
-    const beforeStale = opened.length; await probe('document.activeElement.blur()'); await key('j',74,'',3); await wait('document.getElementById("ql-status").textContent.includes("重新加载")');
+    const beforeStale = opened.length; await probe('document.activeElement.blur()'); await key('j',74,'',3); await wait('document.getElementById("toast-wrap").textContent.includes("重新加载")');
     check('真实快捷键带配置版本，拒绝启动外部修改后的旧入口', opened.length===beforeStale);
     fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify({ passed, failed: 0, output, configIsolated: configuration, opened }, null, 2));
     console.log('快速启动真实窗口：' + passed + ' 通过 / 0 失败；截图：' + output);

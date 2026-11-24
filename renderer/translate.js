@@ -128,7 +128,8 @@ const Translate = (() => {
       if(ticket!==requestSerial||box!==currentBox||!currentBox.isConnected)return;
       button.disabled=false;
       dstEl.classList.remove('tr-pending');
-      dstEl.textContent = (r && r.error) ? ('❌ ' + r.error) : ((r && r.text) || '(空响应)');
+      if (r?.error || !r?.text) MI.toast('翻译失败：' + (r?.error || '服务没有返回结果'), 'err');
+      else dstEl.textContent = r.text;
       translated=!!(r&&!r.error&&r.text);
     }
 

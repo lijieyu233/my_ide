@@ -5344,7 +5344,7 @@ assert_(panel, 'CM6 搜索面板出现');
     stateCb.browser({ err: 'ERR_NAME_NOT_RESOLVED' });
     await tick();
     assert_(!$(dom, '#browser-error').classList.contains('hidden'), '加载失败显示错误页');
-    assert_($(dom, '#bw-err-msg').textContent.includes('ERR_NAME_NOT_RESOLVED'), '错误信息展示');
+    assert_($(dom, '#bw-err-msg').textContent==='页面未载入'&&$(dom, '#toast-wrap').textContent.includes('ERR_NAME_NOT_RESOLVED'), '错误原因只在通知区');
     await g(dom, 'BrowserPanel.hide()');
   });
 
@@ -9417,9 +9417,9 @@ assert_(panel, 'CM6 搜索面板出现');
     await w.App.setRoot(P);w.Search.showDock();assert.equal(w.document.querySelector('#search-input').value,'');assert.equal(w.document.querySelectorAll('#search-list .qo-item').length,0);assert.equal(driver.listeners.size,1);
   });
   await saveCase('常驻搜索B2：版本变化/dirty/删除定位失败保留列表与查询，重搜新版本',async(d,viewer,bridge)=>{
-    const w=d.window;FAKE_FS[P+'/versions.txt']={type:'file',content:'needle'};w.Search.showDock();await dockQuery(w,'needle');FAKE_FS[P+'/versions.txt'].content='later needle';w.document.querySelector('#search-list .qo-item').click();await tick();assert(w.document.querySelector('#search-status').textContent.includes('文件已改变'));assert.equal(w.document.querySelectorAll('#search-list .qo-item').length,1);
-    w.document.querySelector('#search-retry').click();await new Promise(r=>setTimeout(r,340));w.document.querySelector('#search-list .qo-item').click();await tick();await tick();assert.equal(selectedText(viewer),'needle');viewer.cm.setValue('后来输入');w.Search.focusDock();w.document.querySelector('#search-list .qo-item').click();await tick();assert(w.document.querySelector('#search-status').textContent.includes('未保存'));assert.equal(viewer.cm.getValue(),'后来输入');
-    delete FAKE_FS[P+'/versions.txt'];w.document.querySelector('#search-list .qo-item').click();await tick();assert(w.document.querySelector('#search-status').textContent.includes('文件已改变'));assert.equal(w.document.querySelector('#search-input').value,'needle');assert.equal(w.document.querySelectorAll('#search-list .qo-item').length,1);
+    const w=d.window;FAKE_FS[P+'/versions.txt']={type:'file',content:'needle'};w.Search.showDock();await dockQuery(w,'needle');FAKE_FS[P+'/versions.txt'].content='later needle';w.document.querySelector('#search-list .qo-item').click();await tick();assert(w.document.querySelector('#toast-wrap').textContent.includes('文件已改变'));assert(!w.document.querySelector('#search-status').textContent.includes('文件已改变'));assert.equal(w.document.querySelectorAll('#search-list .qo-item').length,1);
+    w.document.querySelector('#search-retry').click();await new Promise(r=>setTimeout(r,340));w.document.querySelector('#search-list .qo-item').click();await tick();await tick();assert.equal(selectedText(viewer),'needle');viewer.cm.setValue('后来输入');w.Search.focusDock();w.document.querySelector('#search-list .qo-item').click();await tick();assert(w.document.querySelector('#toast-wrap').textContent.includes('未保存'));assert.equal(viewer.cm.getValue(),'后来输入');
+    delete FAKE_FS[P+'/versions.txt'];w.document.querySelector('#search-list .qo-item').click();await tick();assert(w.document.querySelector('#toast-wrap').textContent.includes('文件已改变'));assert.equal(w.document.querySelector('#search-input').value,'needle');assert.equal(w.document.querySelectorAll('#search-list .qo-item').length,1);
   });
   await saveCase('常驻搜索B2：分屏textarea按规范化CRLF精确选区，保留原模式与结果焦点',async(d,viewer,bridge)=>{
     const w=d.window;FAKE_FS[P+'/split-search.md']={type:'file',content:'# title\r\n\t😀needle needle\r\n'};await viewer.openFile(P+'/split-search.md');viewer.activeTab.mode='split';viewer.renderActive();w.Search.showDock();const input=await dockQuery(w,'needle');qoKey(w,input,'ArrowDown');qoKey(w,input,'Enter');await tick();await tick();assert.equal(viewer.activeTab.mode,'split');const ta=viewer.activeTab.ta;assert.equal(ta.value.slice(ta.selectionStart,ta.selectionEnd),'needle');assert.equal(ta.selectionStart,'# title\n\t😀needle '.length);assert(w.document.activeElement===input);
@@ -9525,14 +9525,14 @@ assert_(panel, 'CM6 搜索面板出现');
   });
   await saveCase('搜索B1：批次缺口和无效位置持久报错，取消回复不能抹掉原因',async(d,_viewer,bridge)=>{
     const w=d.window,driver=srDriver(bridge);w.Search.open();await srQuery(w,'gap');let job=driver.jobs.at(-1);
-    driver.batch(job,2,[]);assert(w.document.querySelector('#sr-status').textContent.includes('批次缺失'));driver.finish(job,'cancelled');await tick();assert(w.document.querySelector('#sr-status').textContent.includes('批次缺失'));
+    driver.batch(job,2,[]);assert(w.document.querySelector('#toast-wrap').textContent.includes('批次缺失'));driver.finish(job,'cancelled');await tick();assert.equal([...w.document.querySelectorAll('#toast-wrap .err')].filter(node=>node.textContent.includes('批次缺失')).length,1);
     await srQuery(w,'bad');job=driver.jobs.at(-1);driver.batch(job,1,[{hitId:'bad',path:P+'/notes.txt',file:'notes.txt',encoding:'utf8',text:'bad',match:'bad',line:1,startColumn:1,endColumn:4,startOffset:0,endOffset:3,previewStartColumn:1,version:{schema:1,target:P+'/notes.txt'}}]);
-    driver.finish(job,'cancelled');await tick();assert(w.document.querySelector('#sr-status').textContent.includes('无效的文件位置'));assert.equal(w.document.querySelectorAll('#sr-list .qo-item').length,0);
+    driver.finish(job,'cancelled');await tick();assert(w.document.querySelector('#toast-wrap').textContent.includes('无效的文件位置'));assert.equal(w.document.querySelectorAll('#sr-list .qo-item').length,0);
   });
   await saveCase('搜索B1：上限/超时/失败与完整零结果区分，重试使用新请求',async(d,_viewer,bridge)=>{
     const w=d.window,driver=srDriver(bridge);w.Search.open();
     for(const [reason,label] of [['resultLimit','达到结果上限'],['timeLimit','搜索超时'],['error','fixture-denied'],['cancelled','搜索已取消']]){
-      await srQuery(w,'query');const job=driver.jobs.at(-1);driver.finish(job,reason,[],reason==='error'?'fixture-denied':undefined);await tick();assert(w.document.querySelector('#sr-status').textContent.includes(label));assert(!w.document.querySelector('#sr-retry').hidden);
+      await srQuery(w,'query');const job=driver.jobs.at(-1);driver.finish(job,reason,[],reason==='error'?'fixture-denied':undefined);await tick();assert(w.document.querySelector(reason==='error'?'#toast-wrap':'#sr-status').textContent.includes(label));assert(!w.document.querySelector('#sr-retry').hidden);
     }
     const previous=driver.jobs.at(-1).request.requestId;w.document.querySelector('#sr-retry').click();await new Promise(r=>setTimeout(r,340));assert.notEqual(driver.jobs.at(-1).request.requestId,previous);
     driver.finish(driver.jobs.at(-1));await tick();assert(w.document.querySelector('#sr-status').textContent.includes('没有匹配'));assert(w.document.querySelector('#sr-retry').hidden);
@@ -9541,7 +9541,7 @@ assert_(panel, 'CM6 搜索面板出现');
     const w=d.window,driver=srDriver(bridge),ack=deferred();bridge.cancelSearch=()=>ack.promise;
     w.Search.open();await srQuery(w,'stop');w.document.querySelector('#sr-stop').click();assert(w.document.querySelector('#sr-status').textContent.includes('正在停止'));assert(w.document.querySelector('#sr-stop').disabled);
     await tick();assert(!w.document.querySelector('#sr-status').textContent.includes('已取消'));driver.finish(driver.jobs[0],'cancelled');ack.resolve({ok:true,stopped:true});await tick();assert(w.document.querySelector('#sr-status').textContent.includes('搜索已取消'));
-    bridge.cancelSearch=async()=>{throw Error('停止通道失败');};await srQuery(w,'retry');w.document.querySelector('#sr-stop').click();await tick();assert(w.document.querySelector('#sr-status').textContent.includes('停止通道失败'));driver.finish(driver.jobs.at(-1),'cancelled');
+    bridge.cancelSearch=async()=>{throw Error('停止通道失败');};await srQuery(w,'retry');w.document.querySelector('#sr-stop').click();await tick();assert(w.document.querySelector('#toast-wrap').textContent.includes('停止通道失败'));driver.finish(driver.jobs.at(-1),'cancelled');
   });
   await saveCase('搜索B1：切项目立即关闭并解除订阅，旧项目终态不绘制',async(d,_viewer,bridge)=>{
     const w=d.window,driver=srDriver(bridge);w.Search.open();await srQuery(w,'old');const job=driver.jobs[0];await w.App.setRoot('C:/proj2');
@@ -9549,16 +9549,16 @@ assert_(panel, 'CM6 搜索面板出现');
   });
   await saveCase('搜索B1：磁盘变化或目标dirty拒绝旧定位，不覆盖新输入',async(d,viewer,bridge)=>{
     const w=d.window;FAKE_FS[P+'/search.txt']={type:'file',content:'needle'};w.Search.open();await srQuery(w,'needle');FAKE_FS[P+'/search.txt'].content='new needle';w.document.querySelector('#sr-list .qo-item').click();await tick();
-    assert(w.document.querySelector('#sr-status').textContent.includes('文件已改变'));assert(!viewer.openTabs.some(t=>t.path===P+'/search.txt'));
+    assert(w.document.querySelector('#toast-wrap').textContent.includes('文件已改变'));assert(!viewer.openTabs.some(t=>t.path===P+'/search.txt'));
     w.Modal.hide();await viewer.openFile(P+'/search.txt');viewer.cm.setValue('后来未保存输入');w.Search.open();await srQuery(w,'needle');w.document.querySelector('#sr-list .qo-item').click();await tick();
-    assert(w.document.querySelector('#sr-status').textContent.includes('未保存'));assert(viewer.activeTab.dirty);assert.equal(viewer.cm.getValue(),'后来未保存输入');
+    assert(w.document.querySelector('#toast-wrap').textContent.includes('未保存'));assert(viewer.activeTab.dirty);assert.equal(viewer.cm.getValue(),'后来未保存输入');
   });
   await saveCase('搜索B1：读失败和只读预览不假报定位成功，错误不会被迟到批次抹掉',async(d,viewer,bridge)=>{
     const w=d.window,search=bridge.search,hits=await srFixture({search}, {requestId:'seed',query:'needle'}),driver=srDriver(bridge);
-    bridge.readFile=async()=>({error:'fixture-read-denied'});w.Search.open();await srQuery(w,'needle');const job=driver.jobs[0];driver.batch(job,1,[hits[0]]);w.document.querySelector('.qo-item').click();await tick();await tick();assert(w.document.querySelector('#sr-status').textContent.includes('fixture-read-denied'));
-    driver.batch(job,2,[hits[1]]);driver.finish(job,'complete',hits);await tick();assert(w.document.querySelector('#sr-status').textContent.includes('fixture-read-denied'));
+    bridge.readFile=async()=>({error:'fixture-read-denied'});w.Search.open();await srQuery(w,'needle');const job=driver.jobs[0];driver.batch(job,1,[hits[0]]);w.document.querySelector('.qo-item').click();await tick();await tick();assert(w.document.querySelector('#toast-wrap').textContent.includes('fixture-read-denied'));
+    driver.batch(job,2,[hits[1]]);driver.finish(job,'complete',hits);await tick();assert.equal([...w.document.querySelectorAll('#toast-wrap .err')].filter(node=>node.textContent.includes('fixture-read-denied')).length,1);
     w.Modal.hide();FAKE_FS[P+'/read-only.md']={type:'file',content:'# 文档\n[链接](https://needle.example)'};bridge.readFile=async p=>({content:FAKE_FS[p].content,encoding:'utf8',version:(await bridge.fileVersion(p)).version});await viewer.openFile(P+'/read-only.md');viewer.activeTab.mode='preview';viewer.renderActive();bridge.search=search;
-    w.Search.open();await srQuery(w,'needle');[...w.document.querySelectorAll('.qo-item')].find(el=>el.textContent.includes('read-only.md')).click();await tick();assert(w.document.querySelector('#sr-status').textContent.includes('不可见语法'));assert.equal(viewer.activeTab.mode,'preview');
+    w.Search.open();await srQuery(w,'needle');[...w.document.querySelectorAll('.qo-item')].find(el=>el.textContent.includes('read-only.md')).click();await tick();assert(w.document.querySelector('#toast-wrap').textContent.includes('不可见语法'));assert.equal(viewer.activeTab.mode,'preview');
   });
   await saveCase('搜索B1：两次定位乱序、清空输入及关闭会使旧导航失效',async(d,viewer,bridge)=>{
     const w=d.window;FAKE_FS[P+'/nav.txt']={type:'file',content:'needle needle'};w.Search.open();await srQuery(w,'needle');
@@ -9579,8 +9579,8 @@ assert_(panel, 'CM6 搜索面板出现');
     const search=bridge.search;let option;bridge.search=async request=>{option=request.options.caseSensitive;return search(request);};const checkbox=w.document.querySelector('#sr-case');checkbox.checked=true;checkbox.dispatchEvent(new w.Event('change',{bubbles:true}));assert.equal(w.document.querySelectorAll('#sr-list .qo-item').length,0);await new Promise(r=>setTimeout(r,340));assert(option);assert.equal(w.document.querySelectorAll('#sr-list .qo-item').length,1);
   });
   await saveCase('搜索B1：回复身份/完整性错误拒绝接收，关闭前debounce不会启动后端',async(d,_viewer,bridge)=>{
-    const w=d.window,driver=srDriver(bridge);w.Search.open();await srQuery(w,'identity');driver.jobs[0].wait.resolve({...driver.jobs[0].request,query:'other',results:[],doneReason:'complete',truncated:false});await tick();assert(w.document.querySelector('#sr-status').textContent.includes('身份不一致'));
-    await srQuery(w,'reason');driver.jobs[1].wait.resolve({...driver.jobs[1].request,results:[],doneReason:'complete',truncated:true});await tick();assert(w.document.querySelector('#sr-status').textContent.includes('结束原因'));
+    const w=d.window,driver=srDriver(bridge);w.Search.open();await srQuery(w,'identity');driver.jobs[0].wait.resolve({...driver.jobs[0].request,query:'other',results:[],doneReason:'complete',truncated:false});await tick();assert(w.document.querySelector('#toast-wrap').textContent.includes('身份不一致'));
+    await srQuery(w,'reason');driver.jobs[1].wait.resolve({...driver.jobs[1].request,results:[],doneReason:'complete',truncated:true});await tick();assert(w.document.querySelector('#toast-wrap').textContent.includes('结束原因'));
     const input=w.document.querySelector('#sr-input');input.value='close-before-start';input.dispatchEvent(new w.Event('input',{bubbles:true}));w.Modal.hide();await new Promise(r=>setTimeout(r,340));assert.equal(driver.jobs.length,2);
   });
   await saveCase('CM保存真实键位只归注册表，自定义后旧CtrlS不抢写且新键沿用队列',async(d,viewer,bridge)=>{
@@ -9643,15 +9643,15 @@ assert_(panel, 'CM6 搜索面板出现');
   await saveCase('命令保存沿用真实Viewer队列，失败保留dirty与原因，新输入不被成功清空',async(d,viewer,bridge)=>{
     const w=d.window,tab=viewer.activeTab,write=bridge.writeFile;viewer.cm.setValue('用户正文');bridge.writeFile=async()=>({error:'fixture EACCES',errorCode:'EACCES'});
     w.CommandPalette.open();qoKey(w,cpQuery(w,'保存当前文件'),'Enter');await tick();await tick();
-    assert(tab.dirty&&tab.content==='用户正文');assert.equal(w.Shortcuts.lastFailure.id,'save');assert.equal(w.Shortcuts.lastFailure.path,tab.path);
-    w.CommandPalette.open();assert(w.document.querySelector('#command-failure-text').textContent.includes('fixture EACCES'));w.document.querySelector('#command-clear').click();assert.equal(w.Shortcuts.lastFailure,null);w.Modal.hide();
+    assert(tab.dirty&&tab.content==='用户正文');assert(w.document.querySelector('#toast-wrap').textContent.includes('fixture EACCES'));
+    w.CommandPalette.open();assert(!w.document.querySelector('#command-failure'));w.Modal.hide();
     const gate=deferred();bridge.writeFile=async(...args)=>{await gate.promise;return write(...args);};
     viewer.cm.setValue('派发正文');const pending=w.Shortcuts.execute('save');await tick();viewer.cm.setValue('保存中新正文');gate.resolve();assert((await pending).ok);assert(tab.dirty&&tab.content==='保存中新正文');assert.equal(FAKE_FS[tab.path].content,'派发正文');
   });
   await saveCase('命令关闭复用原确认，取消和确认期间新输入均保留标签',async(d,viewer)=>{
     const w=d.window,tab=viewer.activeTab;viewer.cm.setValue('未保存');w.CommandPalette.open();qoKey(w,cpQuery(w,'关闭当前标签'),'Enter');
     assert(!w.document.querySelector('#command-box'));assert.equal(w.document.querySelectorAll('.close-tabs-dialog').length,1);assert.equal(w.document.activeElement.className,'tb-btn m-cancel');
-    w.document.querySelector('.m-cancel').click();await tick();assert(viewer.openTabs.includes(tab));assert.equal(w.Shortcuts.lastFailure,null);
+    w.document.querySelector('.m-cancel').click();await tick();assert(viewer.openTabs.includes(tab));assert(!w.document.querySelector('#toast-wrap .err'));
     const pending=w.Shortcuts.execute('close-tab');viewer.cm.setValue('确认中新输入');w.document.querySelector('.close-tabs-discard').click();assert((await pending).cancelled);assert(tab.dirty&&tab.content==='确认中新输入');
   });
   await saveCase('命令焦点返回CM，Tab循环，迟到编辑器focus与背景快捷键被隔离',async(d,viewer)=>{
@@ -9679,10 +9679,10 @@ assert_(panel, 'CM6 搜索面板出现');
   });
   await saveCase('命令同步异常与异步拒绝有单条可回看原因，迟到失败不抢新面板焦点',async(d)=>{
     const w=d.window,gate=deferred();w.Shortcuts.register('fixture-sync',{desc:'同步失败',keys:[],palette:true,run:()=>{throw Error('<script>同步原因</script>');}});
-    assert(!(await w.Shortcuts.execute('fixture-sync')).ok);w.CommandPalette.open();assert(!w.document.querySelector('#command-failure script'));assert(w.document.querySelector('#command-failure-text').textContent.includes('<script>'));
+    assert(!(await w.Shortcuts.execute('fixture-sync')).ok);w.CommandPalette.open();assert(!w.document.querySelector('#toast-wrap script'));assert(w.document.querySelector('#toast-wrap').textContent.includes('<script>'));
     w.Modal.hide();w.Shortcuts.register('fixture-async',{desc:'异步失败',keys:[],palette:true,run:()=>gate.promise});
     const pending=w.Shortcuts.execute('fixture-async');await w.App.setRoot('C:/proj2');w.CommandPalette.open();const input=cpQuery(w,'主题设置');gate.reject(Error('异步原因'));assert(!(await pending).ok);
-    assert(w.document.activeElement===input);assert.equal(input.value,'主题设置');assert.equal(w.Shortcuts.lastFailure.root,P);assert(w.document.querySelector('#command-failure-text').textContent.includes('异步原因'));
+    assert(w.document.activeElement===input);assert.equal(input.value,'主题设置');assert(w.document.querySelector('#toast-wrap').textContent.includes('异步原因'));
   });
   await saveCase('文件历史复用原入口并绑定后台标签，项目外文件禁用',async(d,viewer)=>{
     const w=d.window,tab=viewer.activeTab,seen=[];w.GitLog.showFileHistory=path=>{seen.push(path);};await viewer.openFile(P+'/README.md');
@@ -9755,7 +9755,7 @@ assert_(panel, 'CM6 搜索面板出现');
   });
   await saveCase('快速打开读取失败可重试且上限提示持续可见',async(d,viewer,bridge)=>{
     const w=d.window;let count=0;bridge.listAll=async()=>{if(++count===1)throw new Error('无法读取目录');return {files:[P+'/notes.txt'],truncated:true};};
-    await w.QuickOpen.open();const input=qoQuery(w,'notes');assert(w.document.querySelector('#qo-status').textContent.includes('无法读取目录'));
+    await w.QuickOpen.open();const input=qoQuery(w,'notes');assert(w.document.querySelector('#toast-wrap').textContent.includes('无法读取目录'));
     qoKey(w,input,'Enter');assert(w.document.querySelector('#qo-box'));w.document.querySelector('#qo-retry').click();await tick();await tick();
     assert.equal(w.document.querySelector('#qo-list .qo-name').textContent,'notes.txt');assert(w.document.querySelector('#qo-status').textContent.includes('可能不完整'));
     qoQuery(w,'无结果');assert(w.document.querySelector('#qo-status').textContent.includes('可能不完整'));
@@ -9828,10 +9828,10 @@ assert_(panel, 'CM6 搜索面板出现');
   });
   const openHunk=async d=>{await d.window.GitPanel.refresh();await d.window.GitPanel.openCommit();const row=[...d.window.document.querySelectorAll('#cd-files .git-file')].find(r=>r.textContent.includes('README.md'));click(row);await tick();await tick();return [...d.window.document.querySelectorAll('.hunk-act')];};
   await saveCase('Git状态失败保留列表/选择/草稿，提交回滚搁置暂停，恢复沿用选择',async d=>{
-    const w=d.window,doc=w.document;await w.GitPanel.refresh();await w.GitPanel.openCommit();const checks=[...doc.querySelectorAll('#cd-files .cf-check')];assert(checks.length>1);checks[0].checked=false;checks[0].dispatchEvent(new w.Event('change',{bubbles:true}));const selected=[...doc.querySelectorAll('#cd-files .cf-check:checked')].map(x=>x.closest('.git-file').dataset.file).sort(),rows=[...doc.querySelectorAll('#cd-files .git-file')].map(x=>x.dataset.file).sort();doc.querySelector('#commit-msg').value='保留提交草稿';const api=w.myIDE.git,status=api.status;let writes=0;api.commit=api.discardFiles=api.shelveCreate=async()=>{writes++;return {ok:true};};api.status=async()=>({isRepo:true,root:P,completeness:'error',error:'读取权限被拒绝'});await w.GitPanel.refresh();assert.deepEqual([...doc.querySelectorAll('#cd-files .git-file')].map(x=>x.dataset.file).sort(),rows);assert.equal(doc.querySelector('#commit-msg').value,'保留提交草稿');assert(doc.querySelector('.git-status-warning').textContent.includes('读取权限'));assert(doc.querySelector('#cm-ok').disabled);assert(!doc.querySelector('#cd-files .git-revert'));await w.GitPanel.doCommit(false);assert.equal(writes,0);api.status=status;await w.GitPanel.refresh();assert(!doc.querySelector('.git-status-warning'));assert.deepEqual([...doc.querySelectorAll('#cd-files .cf-check:checked')].map(x=>x.closest('.git-file').dataset.file).sort(),selected);assert.equal(doc.querySelector('#commit-msg').value,'保留提交草稿');
+    const w=d.window,doc=w.document;await w.GitPanel.refresh();await w.GitPanel.openCommit();const checks=[...doc.querySelectorAll('#cd-files .cf-check')];assert(checks.length>1);checks[0].checked=false;checks[0].dispatchEvent(new w.Event('change',{bubbles:true}));const selected=[...doc.querySelectorAll('#cd-files .cf-check:checked')].map(x=>x.closest('.git-file').dataset.file).sort(),rows=[...doc.querySelectorAll('#cd-files .git-file')].map(x=>x.dataset.file).sort();doc.querySelector('#commit-msg').value='保留提交草稿';const api=w.myIDE.git,status=api.status;let writes=0;api.commit=api.discardFiles=api.shelveCreate=async()=>{writes++;return {ok:true};};api.status=async()=>({isRepo:true,root:P,completeness:'error',error:'读取权限被拒绝'});await w.GitPanel.refresh();assert.deepEqual([...doc.querySelectorAll('#cd-files .git-file')].map(x=>x.dataset.file).sort(),rows);assert.equal(doc.querySelector('#commit-msg').value,'保留提交草稿');assert(!doc.querySelector('.git-status-warning').textContent.includes('读取权限'));assert(doc.querySelector('#toast-wrap').textContent.includes('读取权限'));assert(doc.querySelector('#cm-ok').disabled);assert(!doc.querySelector('#cd-files .git-revert'));await w.GitPanel.doCommit(false);assert.equal(writes,0);api.status=status;await w.GitPanel.refresh();assert(!doc.querySelector('.git-status-warning'));assert.deepEqual([...doc.querySelectorAll('#cd-files .cf-check:checked')].map(x=>x.closest('.git-file').dataset.file).sort(),selected);assert.equal(doc.querySelector('#commit-msg').value,'保留提交草稿');
   });
   await saveCase('Git首次异常不显示clean/初始化，切项目不带旧列表，手动刷新传force',async d=>{
-    const w=d.window,doc=w.document,api=w.myIDE.git,status=api.status;w.GitPanel.rootDir='C:/unknown';api.status=async()=>{throw Error('状态通道失联');};await w.GitPanel.refresh();await w.GitPanel.openCommit();assert(doc.querySelector('.git-status-warning').textContent.includes('通道失联'));assert(!doc.querySelector('#cd-files').textContent.includes('没有未提交'));assert(!doc.querySelector('#cd-files').textContent.includes('初始化仓库'));assert.equal(doc.querySelectorAll('#cd-files .git-file').length,0);let options;api.status=async(root,opts)=>{options=opts;return status(root);};w.GitPanel.rootDir=P;await w.GitPanel.refresh();await w.App.refreshAll();assert.equal(options.force,true);
+    const w=d.window,doc=w.document,api=w.myIDE.git,status=api.status;w.GitPanel.rootDir='C:/unknown';api.status=async()=>{throw Error('状态通道失联');};await w.GitPanel.refresh();await w.GitPanel.openCommit();assert(!doc.querySelector('.git-status-warning').textContent.includes('通道失联'));assert(doc.querySelector('#toast-wrap').textContent.includes('通道失联'));assert(!doc.querySelector('#cd-files').textContent.includes('没有未提交'));assert(!doc.querySelector('#cd-files').textContent.includes('初始化仓库'));assert.equal(doc.querySelectorAll('#cd-files .git-file').length,0);let options;api.status=async(root,opts)=>{options=opts;return status(root);};w.GitPanel.rootDir=P;await w.GitPanel.refresh();await w.App.refreshAll();assert.equal(options.force,true);
   });
   await saveCase('Git补充冲突请求迟到后不覆盖新项目结果',async d=>{
     const w=d.window,gate=deferred(),api=w.myIDE.git;w.GitPanel.rootDir=P;api.status=async root=>({isRepo:true,root,completeness:'complete',branch:root===P?'OLD':'NEW',tracked:['only.txt'],changed:[{file:root===P?'old.txt':'new.txt',status:'modified',label:'已修改'}]});let entered=false;api.opState=async root=>{if(root===P){entered=true;await gate.promise;}return {state:'NORMAL'};};const pending=w.GitPanel.refresh();for(let i=0;i<20&&!entered;i++)await tick();assert(entered);w.GitPanel.rootDir='C:/newproject';await w.GitPanel.refresh();gate.resolve();await pending;await w.GitPanel.openCommit();const text=w.document.querySelector('#cd-files').textContent;assert(text.includes('new.txt')&&!text.includes('old.txt'));

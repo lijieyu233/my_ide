@@ -49,20 +49,18 @@
 .ql-empty strong { font-weight: 500; color: var(--text); }
 .ql-drop { outline: 2px solid var(--accent); outline-offset: 2px; }
 #ql-status { margin: 0; padding: .75em 1.5em; border-top: 1px solid var(--btn-border); font-size: .9em; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 7em; overflow: auto; }
-#ql-status.error, .ql-dialog-error { color: var(--del-text, #e06c75); }
 .ql-dialog { position: fixed; inset: 0; margin: auto; box-sizing: border-box; height: fit-content; width: min(33em, calc(100vw - 3em)); max-height: calc(100vh - 3em); overflow: auto; color: var(--text); background: var(--bg-panel); border: 1px solid var(--btn-border); border-radius: .8em; padding: 1.4em; font-size: var(--tool-font, 13px); }
 .ql-dialog::backdrop { background: rgb(0 0 0 / 45%); }
 .ql-dialog h2 { font-size: 1.2em; margin: 0 0 1em; }
 .ql-dialog fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .ql-dialog label { display: flex; flex-direction: column; gap: .4em; margin-bottom: .9em; }
 .ql-dialog input, .ql-dialog select { box-sizing: border-box; width: 100%; padding: .6em; color: var(--text); background: var(--bg-input, var(--bg)); border: 1px solid var(--btn-border); border-radius: .4em; font: inherit; }
-.ql-dialog-hint, .ql-dialog-error { font-size: .9em; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; }
+.ql-dialog-hint { font-size: .9em; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; }
 .ql-dialog-foot { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: .6em; margin-top: 1em; }
 .ql-import-dialog { width: min(48em, calc(100vw - 3em)); }
 .ql-import-dialog form { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; height: min(38em, calc(100vh - 6em)); }
 .ql-import-dialog fieldset { min-height: 0; overflow: auto; }
 .ql-import-dialog h2, .ql-import-dialog .ql-dialog-foot { flex: none; }
-.ql-import-dialog .ql-dialog-error { max-height: 6em; overflow: auto; flex: none; }
 .ql-import-list { max-height: 23em; overflow: auto; margin: .8em 0; border-block: 1px solid var(--btn-border); }
 .ql-import-dialog .ql-import-list { max-height: none; overflow: visible; }
 .ql-dialog .ql-import-row { display: flex; flex-direction: row; align-items: flex-start; gap: .8em; padding: .8em 0; margin: 0; border-bottom: 1px solid var(--btn-border); }
@@ -72,7 +70,6 @@
 .ql-import-row input:disabled + span { opacity: .7; }
 .ql-entry-dialog form { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; height: min(40em, calc(100vh - 6em)); }
 .ql-entry-dialog fieldset { min-height: 0; overflow: auto; padding: .15em; }
-.ql-entry-dialog .ql-dialog-error { max-height: 6em; overflow: auto; }
 .ql-arg-row { display: flex; gap: .5em; margin-bottom: .5em; }
 .ql-arg-row input { flex: 1; min-width: 0; }
 .ql-arg-row button { flex: none; }

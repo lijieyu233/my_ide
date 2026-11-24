@@ -38,8 +38,9 @@ window.DrawioEditor = (() => {
     function showError(message, canRetry) {
       resetFrame();
       notice.hidden = false;
-      status.textContent = message;
+      status.textContent = '图表未载入';
       retry.hidden = !canRetry;
+      MI.toast(message, 'err');
     }
     function waitForEditor() {
       clearTimeout(timer);

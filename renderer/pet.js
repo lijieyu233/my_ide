@@ -168,7 +168,7 @@ const Pet = (() => {
     const orig = MI.toast;
     MI.toast = function (msg, type) {
       const r = orig.call(MI, msg, type);
-      try { speak(); } catch {}
+      if (r) { try { speak(); } catch {} }
       return r;
     };
   }

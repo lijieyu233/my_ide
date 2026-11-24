@@ -53,8 +53,6 @@ const CommandPalette = (() => {
       row.onclick = () => accept(state, command.id); state.list.appendChild(row);
     });
     if (!state.results.length) { const empty = document.createElement('div'); empty.className = 'cp-empty'; empty.textContent = '没有匹配的命令'; state.list.appendChild(empty); }
-    const failure = Shortcuts.lastFailure; state.failure.hidden = !failure;
-    state.failureText.textContent = failure ? failure.label + '失败：' + failure.message + (failure.path || failure.root ? '\n执行位置：' + (failure.path || failure.root) : '') : '';
     select(state, reset ? 0 : Math.max(0, state.results.findIndex(command => command.id === selected)));
   }
   function restoreFocus(state) {
@@ -98,12 +96,12 @@ const CommandPalette = (() => {
     const box = document.createElement('div'); box.id = 'command-box'; box.dataset.selfEsc = '1';
     box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true'); box.setAttribute('aria-labelledby', 'command-title');
     box.innerHTML = `<div class="cp-head"><span id="command-title">查找命令</span><button id="command-close" class="tb-btn">关闭</button></div>
-      <div id="command-context"></div><div id="command-failure" hidden><div id="command-failure-text"></div><button id="command-clear" class="tb-btn">清除提示</button></div>
+      <div id="command-context"></div>
       <input id="command-input" placeholder="输入命令名称或别名…" aria-label="查找命令" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="command-list" aria-describedby="command-context command-status" autocomplete="off" spellcheck="false">
       <div id="command-list" role="listbox" aria-label="命令结果"></div><div id="command-status" role="status"></div><div class="cp-foot">↑↓ 选择 · Enter 执行 · Esc 关闭</div>`;
     const state = { box, context: { ...Shortcuts.context(), source: 'palette' }, mask: document.getElementById('modal-mask'),
       input: box.querySelector('#command-input'), list: box.querySelector('#command-list'), status: box.querySelector('#command-status'),
-      failure: box.querySelector('#command-failure'), failureText: box.querySelector('#command-failure-text'), results: [], selected: -1, composing: false, restore: true };
+      results: [], selected: -1, composing: false, restore: true };
     panel = state;
     const location = box.querySelector('#command-context'); location.textContent = state.context.path || state.context.root || '未打开项目'; location.title = location.textContent;
     state.inert = [...document.body.children, ...Modal.stack].filter(element => element.id !== 'modal-mask' && element.id !== 'message-overlay').map(element => [element, element.hasAttribute('inert')]);
@@ -115,7 +113,7 @@ const CommandPalette = (() => {
       if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); close(state); }
       else if (event.key === 'Tab') {
         event.preventDefault(); event.stopImmediatePropagation();
-        const controls = [box.querySelector('#command-close'), ...(state.failure.hidden ? [] : [box.querySelector('#command-clear')]), state.input];
+        const controls = [box.querySelector('#command-close'), state.input];
         controls[(controls.indexOf(document.activeElement) + (event.shiftKey ? -1 : 1) + controls.length) % controls.length].focus();
       } else if (event.target === state.input && ['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key)) {
         event.preventDefault(); event.stopImmediatePropagation();
@@ -125,7 +123,7 @@ const CommandPalette = (() => {
     state.onFocus = event => { if (current(state) && top(state) && !box.contains(event.target)) state.input.focus(); };
     state.onMask = event => { if (event.target === state.mask) close(state); };
     document.addEventListener('keydown', state.onKey, true); document.addEventListener('focusin', state.onFocus, true); state.mask.addEventListener('click', state.onMask);
-    box.querySelector('#command-close').onclick = () => close(state); box.querySelector('#command-clear').onclick = () => Shortcuts.clearFailure();
+    box.querySelector('#command-close').onclick = () => close(state);
     state.input.addEventListener('input', () => render(state, true));
     state.input.addEventListener('compositionstart', () => { state.composing = true; }); state.input.addEventListener('compositionend', () => { state.composing = false; });
     state.unsubscribe = Shortcuts.onChanged(() => render(state)); render(state); state.input.focus();

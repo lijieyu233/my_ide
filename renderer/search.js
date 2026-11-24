@@ -1,6 +1,7 @@
 // 查询模型不属于弹窗DOM；移到侧栏只换视图，保留真实批次、选择和结束原因。
 const Search = (() => {
   let generation=0,model=null,panel=null,dock=null,dockVisible=false;
+  const reportedFailures = new WeakMap();
   const currentModel=m=>m===model&&m.valid();
   const live=view=>view?.box.isConnected&&currentModel(view.model);
   const usable=view=>live(view)&&(view.kind==='modal'?Modal.stack.at(-1)===view.box:dockVisible&&!Modal.stack.length);
@@ -18,13 +19,20 @@ const Search = (() => {
     const s=view.model.state,count=s.results.length,files=new Set(s.results.map(hit=>DocumentPaths.key(hit.path))).size;
     const phases={empty:'输入关键字开始搜索…',waiting:'等待搜索…',searching:'搜索中，已找到 '+count+' 处',cancelling:'正在停止，已找到 '+count+' 处',
       complete:count?'搜索完成：'+count+' 处，'+files+' 个文件':'搜索完成，没有匹配内容',resultLimit:'达到结果上限：'+count+' 处，未完整搜索',
-      timeLimit:'搜索超时：已找到 '+count+' 处，未完整搜索',cancelled:'搜索已取消：已找到 '+count+' 处',error:'搜索失败：'+s.error};
+      timeLimit:'搜索超时：已找到 '+count+' 处，未完整搜索',cancelled:'搜索已取消：已找到 '+count+' 处',error:count?'保留 '+count+' 处结果':''};
     const skipped=s.stats?.skipped,excluded=skipped?Object.entries(skipped).filter(([,n])=>n).map(([reason,n])=>
       ({hidden:'隐藏项',links:'链接',special:'特殊文件',large:'大文件',empty:'空文件',binary:'二进制'}[reason]||reason)+' '+n).join('、'):'';
-    view.status.textContent=(phases[s.phase]||'搜索状态不可用')+(excluded?'；略过 '+excluded:'')+(s.error&&s.phase!=='error'?'；'+s.error:'')+(s.navigationError?'；定位失败：'+s.navigationError:'');
+    if (s.error) {
+      const notice = reportedFailures.get(view.model);
+      if (notice?.request !== s.request || notice?.error !== s.error) {
+        reportedFailures.set(view.model, { request: s.request, error: s.error });
+        MI.toast('搜索失败：' + s.error, 'err');
+      }
+    } else reportedFailures.delete(view.model);
+    view.status.textContent=([phases[s.phase], excluded && '略过 '+excluded].filter(Boolean)).join('；');
     // 状态行与列表顶部的统计行说的是同一件事：没有查询时两者都该让位给空态，
     // 否则一打开面板就是「输入关键字开始搜索…」+「0 条结果 · 0 个文件」两句重复的废话。
-    view.status.hidden=s.phase==='empty';
+    view.status.hidden=s.phase==='empty'||!view.status.textContent;
     view.stop.disabled=!['waiting','searching'].includes(s.phase);view.retry.hidden=!s.navigationError&&!['error','timeLimit','resultLimit','cancelled'].includes(s.phase);
     view.source.hidden=s.navigationCode!=='UNSUPPORTED_VIEW';
     // 只有侧栏有分组，才谈得上「全展开/全收起」。按钮图标随状态翻转：
@@ -145,7 +153,7 @@ const Search = (() => {
       if(!result?.ok)throw Object.assign(Error(result?.error||'目标位置没有成功打开'),{code:result?.errorCode});
       if(view.kind==='modal'){close(view,false);if(!Modal.stack.length&&DocumentPaths.key(App.root)===DocumentPaths.key(s.root))result.focus?.();}
       else{view.input.focus({preventScroll:true});m.navigation('');}
-    }catch(error){if(valid()){m.navigation(String(error?.message||error),error.code||'');view.input.focus();}}
+    }catch(error){if(valid()){const message=String(error?.message||error);m.navigation(message,error.code||'');MI.toast('定位失败：'+message,'err');view.input.focus();}}
     finally{if(view.navigating===token)view.navigating=null;}
   }
   function build(box,kind){

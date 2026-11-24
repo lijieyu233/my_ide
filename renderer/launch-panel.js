@@ -70,7 +70,12 @@ const LaunchPanel = (() => {
     q('lm-edit').before(more); more.append(q('lm-edit'), q('lm-del'));
     for (const [id, label] of [['lm-start', '启动'], ['lm-stop', '停止'], ['lm-restart', '重启'], ['lm-open', '打开']]) q(id).textContent = label;
     q('lm-operation-retry').onclick = () => { const e = byId(selectedId), value = e && outcomes.get(e.id); if (e && value && !value.ok) value.kind === 'delete' ? removeEntry(e.id) : act(e, value.kind); };
-    q('launch-status-retry').onclick = () => configError ? load() : pollOnce();
+    q('launch-status-retry').onclick = async () => {
+      if (configError) { await load(); return; }
+      const previous = statusError;
+      await pollOnce();
+      if (statusError && statusError === previous) toast('读取启动状态失败：' + statusError, 'err');
+    };
     q('launch-batch-retry').onclick = () => { if (batchReport) runBatch(batchReport.kind, batchReport.items.filter(item => !item.ok)); };
     const ready = document.createElement('div'); ready.id = 'launch-readiness-fields';
     ready.innerHTML = '<div class="field"><label for="launch-ready-mode">就绪条件</label><select id="launch-ready-mode" name="readyMode"><option value="none">无需验证</option><option value="port">终端端口响应</option><option value="output">指定输出出现</option></select></div>'
@@ -97,7 +102,7 @@ const LaunchPanel = (() => {
       q('lm-del').disabled = !!pending || blockedConfig();
       q('lm-open').disabled = !resolvedOpenUrl(e);
       const s = stOf(e.id), value = outcomes.get(e.id);
-      const details = [failureText(e.id), statusError && '状态读取失败：' + statusError,
+      const details = [failureText(e.id), statusError && '状态暂不可用',
         s.evidenceError, s.readiness && (s.readiness.reason || (s.readiness.state === 'timed-out' ? '在' + s.readiness.timeoutSeconds + '秒内未确认就绪；可继续查看日志，或手动停止/重启。' : '')), value && value.ok && value.message].filter(Boolean);
       setText('lm-operation-text', details.join('；')); q('lm-operation').hidden = !details.length;
       q('lm-operation-retry').hidden = !(value && !value.ok); q('lm-operation-retry').disabled = !!pending || blockedConfig();
@@ -105,7 +110,7 @@ const LaunchPanel = (() => {
     for (const id of ['launch-start-all', 'launch-stop-all']) if (q(id)) q(id).disabled = !!batch || blockedConfig() || !!operations.size || !!statusError;
     for (const id of ['launch-add', 'launch-import', 'launch-dialog-ok']) if (q(id)) q(id).disabled = blockedConfig() || !!operations.size;
     document.querySelectorAll('.lp-keep').forEach(k => { k.disabled = blockedConfig(); });
-    const parts = [configLoading && '正在读取配置，请等待', configError && '配置读取失败，保留上次列表：' + configError, statusError && '状态读取失败，保留上次状态：' + statusError];
+    const parts = [configLoading && '正在读取配置，请等待', configError && '配置暂不可用', statusError && '状态暂不可用'];
     if (batch) parts.push('全部' + labels[batch.kind] + '：' + batch.done + '/' + batch.items.length + '，请等待');
     else if (batchReport) parts.push('全部' + labels[batchReport.kind] + '：目标 ' + batchReport.items.length + '，已确认 ' + batchReport.items.filter(item => item.ok).length + '，失败 ' + batchReport.items.filter(item => !item.ok && item.executed).length + '，未执行 ' + batchReport.items.filter(item => !item.executed).length);
     setText('launch-summary-text', parts.filter(Boolean).join('；')); q('launch-operation-summary').hidden = !parts.some(Boolean);
@@ -463,7 +468,7 @@ const LaunchPanel = (() => {
       + (url ? '<button class="vt-btn lp-btn act-open" data-act="open" title="打开页面 ' + esc(url) + '">' + ICO_OPEN + '</button>' : '')
       + '</span></div><div class="launch-card-meta"><span class="launch-state" data-tone="' + summary.tone + '" title="' + esc(summary.full) + '">' + esc(summary.text) + '</span>'
       + (e.port ? '<span class="launch-port" title="端口 ' + Number(e.port) + '">:' + Number(e.port) + '</span>' : '')
-      + '</div><div class="launch-entry-error"' + (failureText(e.id) ? '' : ' hidden') + '>' + esc(failureText(e.id)) + '</div></div>';
+      + '</div></div>';
   }
 
   // 轮询只更新状态点与主区（不全量重建，保住选中与滚动位置）
@@ -482,7 +487,6 @@ const LaunchPanel = (() => {
       if (bStop) { bStop.classList.toggle('hide', !s.alive && !caps.stop); bStop.disabled = busy || !caps.stop; }
       const summary = cardStatus(e), state = el.querySelector('.launch-state');
       state.textContent = summary.text; state.title = summary.full; state.dataset.tone = summary.tone;
-      const error = el.querySelector('.launch-entry-error'); error.textContent = failureText(id); error.hidden = !error.textContent;
     }
     refreshOperationUI();
   }
@@ -529,7 +533,9 @@ const LaunchPanel = (() => {
     if (!L() || operations.has(e.id) || blockedConfig()) return;
     const caps = capabilities(e);
     if (!(kind === 'start' ? caps.start : caps.stop)) {
-      outcomes.set(e.id, { ok: false, kind, error: '当前状态或进程归属未确认，请先重试读取状态' }); refreshDots(); return;
+      const error = '当前状态或进程归属未确认，请先重试读取状态';
+      outcomes.set(e.id, { ok: false, kind, error });
+      toast(error, 'err'); refreshDots(); return;
     }
     const ticket = { kind }; operations.set(e.id, ticket); statusSerial++; refreshDots();
     return execute(e, kind, ticket);
@@ -606,7 +612,12 @@ const LaunchPanel = (() => {
       if (serial !== statusSerial || version !== revision) return;
       if (!Array.isArray(st) || st.length !== entries.length || st.some(s => !s || typeof s.alive !== 'boolean' || !entries.some(e => e.id === s.id)) || new Set(st.map(s => s.id)).size !== st.length) throw Error('状态返回格式不完整');
       status = Object.fromEntries(st.map(s => [s.id, s])); statusError = ''; checkedAt = Date.now();
-    } catch (error) { if (serial !== statusSerial || version !== revision) return; statusError = reason(error); }
+    } catch (error) {
+      if (serial !== statusSerial || version !== revision) return;
+      const message = reason(error);
+      if (isOpen() && !statusError) toast('读取启动状态失败：' + message, 'err');
+      statusError = message;
+    }
     refreshDots(); renderMain();
     const cnt = q('launch-count');
     if (cnt) { cnt.textContent = statusError ? '状态不可用' : cfg.entries.filter(e => stOf(e.id).processAlive || stOf(e.id).alive && stOf(e.id).by !== 'port' && stOf(e.id).by !== 'state').length + '/' + cfg.entries.length; cnt.title = '确认运行的进程 / 配置总数（端口响应与桥接登记不计入）'; }
@@ -624,7 +635,11 @@ const LaunchPanel = (() => {
       syncKeep(cfg.keepOnExit === true);
       logReader.prune(cfg.entries.map(entry => entry.id));
       if (selectedId && !byId(selectedId)) selectedId = null;
-    } catch (error) { if (serial !== configSerial) return; configError = reason(error); }
+    } catch (error) {
+      if (serial !== configSerial) return;
+      configError = reason(error);
+      if (isOpen()) toast('读取启动配置失败：' + configError, 'err');
+    }
     finally { if (serial === configSerial) configLoading = false; }
     if (serial !== configSerial) return;
     renderList(); if (isOpen()) await pollOnce(); if (!cfg.entries.length) renderMain();

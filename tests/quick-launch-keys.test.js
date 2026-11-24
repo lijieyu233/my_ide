@@ -75,13 +75,13 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
       const f = await fixture(); f.w.Shortcuts.setBinding('tool-quick-launch', 'ctrl+alt+q'); const before = f.w.localStorage.getItem('myide-keys'), proto = Object.getPrototypeOf(f.w.localStorage), original = proto.setItem;
       proto.setItem = () => { throw Error('quota'); };
       try { assert.throws(() => f.w.Shortcuts.setBinding('tool-quick-launch', 'ctrl+alt+j'), /quota/); assert(f.binding('tool-quick-launch').effectiveCombos.includes('ctrl+alt+q')); assert.equal(f.w.localStorage.getItem('myide-keys'), before);
-        f.w.Settings.open('keys'); f.row('tool-quick-launch').querySelector('.set-combo').click(); f.key('j', { ctrlKey: true, altKey: true }); await wait(() => f.w.document.getElementById('set-hint').textContent.includes('quota'));
+        f.w.Settings.open('keys'); f.row('tool-quick-launch').querySelector('.set-combo').click(); f.key('j', { ctrlKey: true, altKey: true }); await wait(() => f.toasts.some(([message,type])=>type==='err'&&message.includes('quota')));
       } finally { proto.setItem = original; }
       assert.throws(() => f.w.Shortcuts.setBinding('quick-launch-entry-entry', 'a')); assert.throws(() => f.w.Shortcuts.setBinding('quick-launch-entry-entry', 'escape'));
     });
     await test('改名/删除后动作同步且稳定ID保留键位；外部配置变化拒绝旧快捷键启动，重载才打开新目标', async () => {
       const f = await fixture({ 'quick-launch-entry-entry': 'ctrl+alt+j' }), r = await f.service.load(); r.config.entries[0].name = '改名'; r.config.entries[0].target = 'https://example.com/changed'; assert((await f.service.save(r.config, r.version)).ok);
-      f.key('j', { ctrlKey: true, altKey: true }); await wait(() => f.w.document.getElementById('ql-status').textContent.includes('重新加载')); assert.equal(f.calls.length, 0);
+      f.key('j', { ctrlKey: true, altKey: true }); await wait(() => f.toasts.some(([message,type])=>type==='err'&&message.includes('重新加载'))); assert.equal(f.calls.length, 0);
       assert(!f.w.Shortcuts.availability('quick-launch-entry-entry').enabled); await f.w.QuickLaunch.reload(); assert(f.binding('quick-launch-entry-entry').desc.includes('改名')); assert(f.binding('quick-launch-entry-entry').effectiveCombos.includes('ctrl+alt+j'));
       f.key('j', { ctrlKey: true, altKey: true }); await wait(() => f.calls.length === 1); assert.equal(f.calls[0], 'https://example.com/changed');
       const next = await f.service.load(); next.config.entries = []; assert((await f.service.save(next.config, next.version)).ok); await f.w.QuickLaunch.reload(); assert(!f.binding('quick-launch-entry-entry'));

@@ -819,7 +819,7 @@ MI.registerRenderer(['html', 'htm'], ({ path, content,htmlDiskPreview }) => {
     lease=result.id;
     if(disposed){window.myIDE.htmlPreview.close(lease);return;}
     frame.src=result.url;
-  }).catch(error=>{if(!disposed){MI.toast(error.message,'err');const message=document.createElement('div');message.className='viewer-msg';message.textContent='HTML 预览加载失败：'+error.message;frame.replaceWith(message);}return {ok:false,error:error.message};});
+  }).catch(error=>{if(!disposed){MI.toast(error.message,'err');const message=document.createElement('div');message.className='viewer-msg';message.textContent='预览未载入';frame.replaceWith(message);}return {ok:false,error:error.message};});
   return frame;
 });
 
@@ -1039,13 +1039,31 @@ MI.loadPlugins = async function () {
 // ---------- 工具 ----------
 MI.toast = function (msg, type) {
   const wrap = document.getElementById('toast-wrap');
+  const text = String(msg ?? '').trim();
+  if (!wrap || !text) return;
+  const isError = type === 'err';
+  if (isError && Array.from(wrap.children).some(item => item.classList.contains('err') && item.textContent === text)) return;
   const t = document.createElement('div');
   t.className = 'toast' + (type ? ' ' + type : '');
-  t.textContent = msg;
+  t.setAttribute('role', isError ? 'alert' : 'status');
+  t.textContent = text;
+  // 原生对话框位于顶层，浮层通知也要进顶层才能保持同一位置。
+  if (wrap.showPopover && document.querySelector('dialog[open]') && !wrap.matches(':popover-open')) {
+    wrap.setAttribute('popover', 'manual');
+    try { wrap.showPopover(); } catch { wrap.removeAttribute('popover'); }
+  }
   wrap.appendChild(t);
-  while (wrap.childElementCount > 5) wrap.firstChild.remove(); // 上限 5 条
-  setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .3s'; }, 2200);
-  setTimeout(() => t.remove(), 2600);
+  while (wrap.childElementCount > 5) wrap.firstChild.remove();
+  const duration = isError ? 4800 : 2200;
+  setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .3s'; }, duration);
+  setTimeout(() => {
+    t.remove();
+    if (!wrap.childElementCount && wrap.hasAttribute('popover')) {
+      wrap.hidePopover();
+      wrap.removeAttribute('popover');
+    }
+  }, duration + 400);
+  return t;
 };
 
 MI.copyText = function (text) {

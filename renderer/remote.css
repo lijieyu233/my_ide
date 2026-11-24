@@ -39,7 +39,6 @@
    没变化，以为点了没反应。现在有文字就占位，`:empty` 时收起，不白占空间。 */
 #remote-notice { display:block; flex:1; min-width:0; text-overflow:ellipsis; overflow:hidden; white-space:nowrap; color:var(--text-dim); font-size:.85em; }
 #remote-notice:empty { display:none; }
-#remote-notice.error { color:var(--red); }
 .remote-form-error { color:var(--del-text); overflow-wrap:anywhere; }
 .remote-workspace-bar { display:flex; align-items:center; justify-content:space-between; gap:1em; flex-wrap:wrap; min-height:3.08em; padding:0 1.23em; border-bottom:1px solid color-mix(in srgb,var(--border) 55%,transparent); background:var(--bg-panel); }
 .remote-tabs { display:flex; align-self:stretch; gap:1.4em; }#remote-main .remote-tabs button { border:0; border-bottom:2px solid transparent; border-radius:0; background:transparent; color:var(--text-dim); min-height:3em; padding:.4em .15em; font-size:1em; }#remote-main .remote-tabs button.active { color:var(--text-bright); border-bottom-color:var(--accent); }
@@ -102,7 +101,7 @@
 .remote-transfer-dest { margin-top:.35em; color:var(--text-dim); font:.75em var(--font-mono); overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
 .remote-form { width:min(38em,90vw); font-size:var(--tool-font,13px); }.remote-form .m-head { padding:1.15em 1.4em; font-size:1.15em; font-weight:600; }.remote-form .m-body { padding:1.3em 1.6em; }.remote-form label { display:block; margin-bottom:1em; color:var(--text-dim); font-size:.95em; }.remote-form label>input:not([type=checkbox]),.remote-form label>select { display:block; width:100%; margin-top:.5em; box-sizing:border-box; min-height:2.7em; }.remote-form-row { display:flex; gap:1em; }.remote-form-row label { flex:1; min-width:0; }.remote-form-row label:last-child:not(:first-child) { flex:0 1 7em; }.remote-form-row input { flex:1; width:0; }.remote-form .remote-check { display:flex; align-items:center; gap:.6em; line-height:1.6; font-size:.88em; }.remote-form input[type=checkbox] { accent-color:var(--accent); }.remote-form .m-foot { display:flex; gap:.6em; flex-wrap:wrap; margin-top:1.2em; padding:1em 0 0; border-top:1px solid color-mix(in srgb,var(--text) 8%,transparent); }.remote-form [hidden] { display:none; }
 /* 按工作区实际宽度切换，右侧 AI 或加宽侧栏同样可能挤小文件区。 */
-@container (max-width:42em) { #remote-files { grid-template-columns:minmax(0,1fr); }.remote-workspace-bar { gap:.3em; }.remote-session-picker { width:100%; padding-bottom:.5em; }#remote-sessions { flex:1; max-width:none; }.remote-toolbar { padding:.7em 1em; }#remote-files { padding-inline:1em; }#remote-transfers { max-height:7em; }#remote-notice.error { flex-basis:calc(100% - 12em); } }
+@container (max-width:42em) { #remote-files { grid-template-columns:minmax(0,1fr); }.remote-workspace-bar { gap:.3em; }.remote-session-picker { width:100%; padding-bottom:.5em; }#remote-sessions { flex:1; max-width:none; }.remote-toolbar { padding:.7em 1em; }#remote-files { padding-inline:1em; }#remote-transfers { max-height:7em; } }
 @container (max-width:30em) { .remote-terminal-footer span:last-child { display:none; }.remote-session-picker>span { display:none; }#remote-transfers summary { gap:.4em; }#remote-transfer-summary { flex-basis:6em; }#remote-clear-transfers { margin-left:auto; } }
 
 /* 虚拟文件行保持现有 2.6em 行高，随工具字号变化；滚动占位不参与子行布局。 */
@@ -235,8 +234,7 @@
   background: var(--bg); color: var(--text);
   font-family: var(--mono-font, ui-monospace, monospace); font-size: .92em; line-height: 1.6;
 }
-.re-loading, .re-error { padding: 1.2em; color: var(--text-dim); font-size: .9em; }
-.re-error { color: var(--red); }
+.re-loading { padding: 1.2em; color: var(--text-dim); font-size: .9em; }
 .re-box .m-foot {
   flex: 0 0 auto; display: flex; align-items: center; gap: .6em;
   padding: .7em 1em; border-top: 1px solid var(--border-pane);

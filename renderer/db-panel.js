@@ -194,7 +194,7 @@ window.DbPanel = (() => {
     const el = document.getElementById('db-tables');
     el.innerHTML = '<div class="db-hint">加载表…</div>';
     const list = await call('tables', connId);
-    if (!list) { el.innerHTML = '<div class="db-hint db-err">表列表加载失败</div>'; return; }
+    if (!list) { el.replaceChildren(); return; }
     el.innerHTML = '';
     if (!list.length) { el.innerHTML = '<div class="db-hint">数据库中没有表</div>'; return; }
     list.forEach((t) => {
@@ -222,7 +222,7 @@ window.DbPanel = (() => {
     const el = document.getElementById('db-data');
     el.innerHTML = '<div class="db-hint">加载中…</div>';
     const r = await call('select', connId, curTable, page, pageSize);
-    if (!r) { el.innerHTML = '<div class="db-hint db-err">数据加载失败</div>'; return; }
+    if (!r) { el.replaceChildren(); return; }
     curCols = (r.columns || []).filter((c) => c !== '__rid').map((c) => ({ name: c }));
     curPk = r.pk || [];
     total = Number(r.total) || 0;
@@ -541,7 +541,7 @@ window.DbPanel = (() => {
     const out = document.getElementById('db-sql-result');
     out.innerHTML = '<div class="db-hint">分析中…</div>';
     const r = await call('explain', connId, sql);
-    if (!r) { out.innerHTML = '<div class="db-hint db-err">EXPLAIN 执行失败</div>'; return; }
+    if (!r) { out.replaceChildren(); return; }
     const bar = document.createElement('div');
     bar.className = 'db-hint';
     bar.style.padding = '4px 10px';
@@ -642,7 +642,7 @@ window.DbPanel = (() => {
     out.innerHTML = '<div class="db-hint">执行中…</div>';
     const r = await call('query', connId, sql, []);
     saveHistoryEntry(sql, !!r);
-    if (!r) { out.innerHTML = '<div class="db-hint db-err">执行失败</div>'; return; }
+    if (!r) { out.replaceChildren(); return; }
     if (r.ok === 'write') {
       out.innerHTML = '<div class="db-hint">✅ 执行成功' + (r.affected != null ? '（影响 ' + r.affected + ' 行' + (r.insertId ? '，ID=' + r.insertId : '') + '）' : '') + '</div>';
       return;
@@ -663,7 +663,7 @@ window.DbPanel = (() => {
       call('columns', connId, curTable),
       call('ddl', connId, curTable),
     ]);
-    if (!cols) { el.innerHTML = '<div class="db-hint db-err">结构加载失败</div>'; return; }
+    if (!cols) { el.replaceChildren(); return; }
     el.innerHTML = '';
     const head = document.createElement('div');
     head.className = 'db-grid-bar';
@@ -780,7 +780,7 @@ window.DbPanel = (() => {
     if (!connId) { el.innerHTML = '<div class="db-hint">先连接数据库，再查看 ER 图</div>'; return; }
     el.innerHTML = '<div class="db-hint">加载 schema 中…</div>';
     call('er', connId).then((d) => {
-      if (!d) { el.innerHTML = '<div class="db-hint db-err">schema 加载失败</div>'; return; }
+      if (!d) { el.replaceChildren(); return; }
       ER.data = d;
       const saved = erLoadPos();
       if (!d.tables.length || d.tables.some((t) => !saved[t.name])) erAutoLayout(); // 首次/表结构变化 → 自动布局

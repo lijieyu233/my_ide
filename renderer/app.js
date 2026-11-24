@@ -714,7 +714,7 @@ const App = (() => {
     action('打开项目…', async () => { closeProjMenuNow(); if (await openFolder()) onOpened?.(); });
     if (root) {
       const currentPath = root;
-      action('复制项目路径', async () => { try { await navigator.clipboard.writeText(currentPath); if (projectMenuCurrent(state)) status.textContent = '路径已复制'; } catch { if (projectMenuCurrent(state)) status.textContent = '复制失败；完整路径：' + currentPath; } });
+      action('复制项目路径', async () => { try { await navigator.clipboard.writeText(currentPath); if (projectMenuCurrent(state)) status.textContent = '路径已复制'; } catch { if (projectMenuCurrent(state)) MI.toast('复制项目路径失败：' + currentPath, 'err'); } });
       action('在资源管理器中显示', () => window.myIDE.shell.showInFolder(currentPath));
     }
     function markSelection() {
@@ -734,9 +734,20 @@ const App = (() => {
           if (onOpened) onOpened();
           else document.querySelector('#project-bar .proj-btn.active')?.focus();
         }
-        else status.textContent = '未切换项目，原项目和标签已保留；检查项目位置或保存后可重试。';
-      } catch (error) { if (projectMenuCurrent(state)) status.textContent = '打开失败：' + (error.message || error) + '；可重试。'; }
-      finally { state.busy = false; if (projectMenuCurrent(state)) { if (input.value !== query) render(); else list.querySelectorAll('button').forEach(button => { button.removeAttribute('aria-disabled'); button.disabled = false; }); } }
+      } catch { /* 项目队列已经汇报错误。 */ }
+      finally {
+        state.busy = false;
+        if (projectMenuCurrent(state)) {
+          if (input.value !== query) render();
+          else {
+            status.textContent = projectResultCount(query, state.paths.length);
+            list.querySelectorAll('button').forEach(button => { button.removeAttribute('aria-disabled'); button.disabled = false; });
+          }
+        }
+      }
+    }
+    function projectResultCount(query, count) {
+      return query.trim() ? count + ' 个匹配项目' : count + ' 个项目 · 按名称或路径搜索';
     }
     function render() {
       if (state.busy) return;
@@ -745,7 +756,7 @@ const App = (() => {
       const matched = all.filter(p => !needle || p.toLocaleLowerCase().replace(/\\/g, '/').includes(needle));
       state.paths = [...opened.filter(p => matched.includes(p)), ...matched.filter(p => !opened.includes(p))];
       if (!state.paths.includes(state.selected)) state.selected = state.paths[0] || null;
-      status.textContent = needle ? matched.length + ' 个匹配项目' : matched.length + ' 个项目 · 按名称或路径搜索';
+      status.textContent = projectResultCount(needle, matched.length);
       const section = (label, paths) => {
         if (!paths.length) return;
         const title = document.createElement('div'); title.className = 'ctx-item ctx-title'; title.textContent = label;
@@ -1008,8 +1019,8 @@ const App = (() => {
     return false;
   }
   function saveProjectState() {
-    const browserSaved=window.BrowserPanel?.saveTabs?.();
-    if(browserSaved?.ok===false){MI.toast(browserSaved.error || '浏览器标签未保存，请重试后再切换项目','err');return false;}
+    const browserSaved=window.BrowserPanel?.saveTabs?.(true);
+    if(browserSaved?.ok===false)return false;
     const result=Session.saveNow();
     if(result?.ok===false){MI.toast('项目状态未保存，已保留当前标签和页面；请重试后再切换','err');return false;}
     return true;

@@ -51,6 +51,9 @@ const GitPanel = (() => {
     if (seq !== refreshSeq||root!==operationRoot) return; // 期间又发起了新刷新：本响应已过期
     st=st||{error:'状态服务未返回结果',completeness:'error'};
     const incomplete=st.completeness&& !['complete','not-repo'].includes(st.completeness)||st.error&&st.isRepo!==false;
+    if (incomplete && (options.force || state?.error !== st.error) && window.App?.getTool?.() === 'git') {
+      MI.toast('读取 Git 状态失败：' + (st.error || '返回结果不完整'), 'err');
+    }
     if(incomplete){state={...(state||{}),...st,isRepo:true,branch:st.branch||state?.branch||'Git',changed:st.changed||state?.changed||[],tracked:st.tracked||state?.tracked,error:st.error||'Git状态未完成',completeness:st.completeness||'error'};}
     else state={...st,...(!st.isRepo?{isRepo:false}:{}),completeness:st.completeness||'complete'};
     // M4：进行中的 Git 操作 + 冲突清单（并行取；失败/不支持就当没有 —— 软依赖，不阻塞主流程）
@@ -733,6 +736,7 @@ const GitPanel = (() => {
       return;
     }
     App.showTool('git');
+    if (state.error) MI.toast('读取 Git 状态失败：' + state.error, 'err');
     render();
   }
 
@@ -779,7 +783,7 @@ const GitPanel = (() => {
       br.title = '当前分支 ' + state.branch + ' —— 点击切换分支 / 检出标签';
     }
 
-    if(!statusComplete()){const warning=document.createElement('div');warning.className='git-empty git-status-warning';warning.setAttribute('role','status');warning.style.cssText='text-align:left;color:var(--warn,#c98c3f)';warning.textContent='Git状态未完成，请刷新重试。'+(state.tracked?'上次可信结果仍保留。':'')+' '+state.error;filesEl.appendChild(warning);}
+    if(!statusComplete()){const warning=document.createElement('div');warning.className='git-empty git-status-warning';warning.setAttribute('role','status');warning.style.cssText='text-align:left;color:var(--warn,#c98c3f)';warning.textContent='Git状态未完成，请刷新重试。'+(state.tracked?'上次结果已保留。':'');filesEl.appendChild(warning);}
 
     // M4：「操作进行中」条（有 merge/rebase/cherry-pick/revert 未完成时才出现）——放在最上面，
     // 它是当前最该处理的事，比工具行更优先
@@ -1066,7 +1070,7 @@ const GitPanel = (() => {
       box.querySelector('#cf-file-head').textContent = cur;
       const sides = await gitSafe('conflictSides', root, cur);
       const el = box.querySelector('#cf-sides');
-      if (!sides || !sides.ok) { el.innerHTML = '<div class="cf-loading">读取三方内容失败</div>'; return; }
+      if (!sides || !sides.ok) { el.replaceChildren(); MI.toast(sides?.error || '读取三方内容失败', 'err'); return; }
       // ⚠ rebase 时 git 的 ours/theirs 含义是**反的**（ours = 新基底，theirs = 正在重放的提交）。
       //   文案必须跟着状态变，一律写"你的修改"会把用户坑掉。
       const o = curOp() || { state: 'MERGING' };

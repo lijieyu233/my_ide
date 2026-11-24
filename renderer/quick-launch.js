@@ -37,8 +37,8 @@ const QuickLaunch = (() => {
   }
   function message(text, error = false) {
     const state = q('ql-status');
-    state.textContent = text;
-    state.classList.toggle('error', error);
+    state.textContent = error ? '' : text;
+    if (error) MI.toast(text, 'err');
   }
   function focus(key) {
     const target = [...q('quick-launch-main').querySelectorAll('[data-focus]')].find(el => el.dataset.focus === key);
@@ -157,7 +157,6 @@ const QuickLaunch = (() => {
     } catch (err) {
       message('保存失败：' + err.message + (loadError ? '；取消编辑并重新加载后再修改。' : '；原配置与草稿已保留。'), true);
       if (dialog) {
-        dialog.querySelector('.ql-dialog-error').textContent = err.message;
         const locate = dialog.querySelector('[data-locate]');
         if (locate) { locate.hidden = !err.existingId; locate.dataset.locate = err.existingId || ''; }
       }
@@ -177,7 +176,12 @@ const QuickLaunch = (() => {
       if (!r?.ok) throw Error(r?.error || '系统未确认打开请求');
       message('已交给系统打开：' + (config?.entries.find(e => e.id === id)?.name || '入口'));
       return r;
-    } catch (err) { message('打开失败：' + err.message + '；可重试或在管理中编辑目标。', true); return { ok: false, error: err.message }; }
+    } catch (err) {
+      const error = err.message + '；可重试或在管理中编辑目标。';
+      if (ctx) message('');
+      else message('打开失败：' + error, true);
+      return { ok: false, error };
+    }
     finally { opening.delete(id); render(); }
   }
   function closeDialog() {
@@ -195,7 +199,7 @@ const QuickLaunch = (() => {
     dialog = document.createElement('dialog'); dialog.className = 'ql-dialog';
     dialog.setAttribute('aria-label', title);
     dialog.__restore = restore;
-    dialog.innerHTML = '<form><h2>' + title + '</h2><fieldset>' + content + '</fieldset><p class="ql-dialog-error" role="status"></p><div class="ql-dialog-foot"><button type="button" data-locate hidden>定位已有入口</button><button type="button" data-cancel>取消</button><button type="submit" class="ql-primary">保存</button></div></form>';
+    dialog.innerHTML = '<form><h2>' + title + '</h2><fieldset>' + content + '</fieldset><div class="ql-dialog-foot"><button type="button" data-locate hidden>定位已有入口</button><button type="button" data-cancel>取消</button><button type="submit" class="ql-primary">保存</button></div></form>';
     document.body.append(dialog);
     dialog.querySelector('[data-cancel]').onclick = closeDialog;
     dialog.addEventListener('cancel', ev => { ev.preventDefault(); closeDialog(); });
@@ -237,7 +241,6 @@ const QuickLaunch = (() => {
           + '<div class="ql-import-list">' + r.entries.map(e => '<label class="ql-import-row"><input type="checkbox" data-import-entry value="' + esc(e.id) + '"' + (e.status === 'ready' ? ' checked' : ' disabled') + '><span><strong>' + esc(e.name) + '</strong><span>' + esc(typeNames[e.type] + ' · ' + e.groupName) + '</span><span class="ql-import-target">' + esc(describe(e)) + '</span><span>' + esc(e.error || '可导入') + '</span></span></label>').join('') + '</div>'
           + '<p data-import-summary class="ql-dialog-hint"></p><button type="button" data-import-reset>重新选择</button>';
         current.querySelector('[type="submit"]').textContent = '确认导入';
-        current.querySelector('.ql-dialog-error').textContent = '';
         const summary = () => {
           const count = current.querySelectorAll('[data-import-entry]:checked').length;
           current.querySelector('[data-import-summary]').textContent = '将添加 ' + count + ' 个入口；未勾选、重复和不可用的入口不会导入。';
@@ -253,9 +256,9 @@ const QuickLaunch = (() => {
           current.__submitDisabled = null; current.classList.remove('ql-import-dialog');
           current.querySelector('fieldset').innerHTML = initial; prepare();
           current.querySelector('[type="submit"]').textContent = '选择并预览'; current.querySelector('[type="submit"]').disabled = !!loadError;
-          current.querySelector('.ql-dialog-error').textContent = ''; current.querySelector('select').focus();
+          current.querySelector('select').focus();
         };
-      } catch (err) { current.querySelector('.ql-dialog-error').textContent = err.message; }
+      } catch (err) { if (dialog === current) message(err.message, true); }
       finally { saving = false; render(); }
       return false;
     });
@@ -325,13 +328,13 @@ const QuickLaunch = (() => {
       try {
         const kind = form.elements.type.value, r = await api().pick(kind);
         if (dialog !== current || kind !== form.elements.type.value) return;
-        if (r?.error) current.querySelector('.ql-dialog-error').textContent = r.error;
+        if (r?.error) message(r.error, true);
         if (r?.target) {
           form.elements.target.value = r.target;
           if (!form.elements.name.value.trim()) form.elements.name.value = [...r.name].slice(0, 100).join('');
           syncType();
         }
-      } catch (err) { if (dialog === current) current.querySelector('.ql-dialog-error').textContent = err.message; }
+      } catch (err) { if (dialog === current) message(err.message, true); }
       finally { if (dialog === current) pick.disabled = false; }
     };
     current.querySelector('[data-cwd-pick]').onclick = async ev => {
@@ -339,9 +342,9 @@ const QuickLaunch = (() => {
       try {
         const r = await api().pick('folder');
         if (dialog !== current || !supportsOptions(form.elements.type.value, form.elements.target.value)) return;
-        if (r?.error) current.querySelector('.ql-dialog-error').textContent = r.error;
+        if (r?.error) message(r.error, true);
         if (r?.target) { form.elements.cwd.value = r.target; syncType(); }
-      } catch (err) { if (dialog === current) current.querySelector('.ql-dialog-error').textContent = err.message; }
+      } catch (err) { if (dialog === current) message(err.message, true); }
       finally { if (dialog === current) button.disabled = false; }
     };
     current.querySelector('[data-locate]').onclick = () => {

@@ -8,7 +8,12 @@ window.RemotePanel = (() => {
   let fitFrame = 0, appearanceDirty = false;
   // sizes：路径 → 字节。由「算大小」按钮填充（2026-10-29），刷新目录不丢。
   const panes = { local: { path: '', entries: [], selected: new Set(), serial: 0, sizes: new Map(), anchor: null }, remote: { path: '', entries: [], selected: new Set(), serial: 0, sizes: new Map(), anchor: null } };
-  const notify = (text, error = false) => { q('remote-notice').textContent = text; q('remote-notice').title = text; q('remote-notice').classList.toggle('error', error); };
+  const notify = (text, error = false) => {
+    const status = q('remote-notice');
+    status.textContent = error ? '' : text;
+    status.title = status.textContent;
+    if (error) MI.toast(text, 'err');
+  };
   async function call(op, ...args) { const result = await api()[op](...args); if (!result?.ok) throw Error(result?.error || '远程操作未确认'); return result.data; }
   const attempt = fn => async event => { try { await fn(event); } catch (error) { notify(error.message, true); } };
   const closeModal = box => { if (Modal.stack.at(-1) === box) Modal.hide(); };
@@ -64,7 +69,7 @@ window.RemotePanel = (() => {
       const values = Object.fromEntries(new FormData(f)); values.id = p.id; values.remember = f.elements.remember.checked;
       box.querySelectorAll('button').forEach(b => { b.disabled = true; });
       try { const saved = await call('save', values, version); profiles = saved.profiles; version = saved.version; selected = saved.profiles.find(s => s.id === p.id)?.id || saved.profiles.at(-1)?.id; closeModal(box); renderSessions(); notify('服务器配置已保存。'); }
-      catch (error) { box.querySelector('.remote-form-error').textContent = error.message; }
+      catch (error) { if (box.isConnected) notify(error.message, true); }
       finally { busy = false; box.querySelectorAll('button').forEach(b => { b.disabled = false; }); }
     };
     f.elements.name.focus();
@@ -496,8 +501,9 @@ window.RemotePanel = (() => {
       setState('已加载 ' + text.length + ' 字符');
     } catch (error) {
       if (!remoteEditorBox) return;
-      host.innerHTML = '<div class="re-error">读取失败：' + esc((error && error.message) || error) + '</div>';
-      setState('读取失败');
+      host.replaceChildren();
+      setState('文件未载入');
+      notify('读取远程文件失败：' + (error?.message || error), true);
     }
 
     box.__cleanup = () => { host.innerHTML = ''; };
@@ -1984,8 +1990,8 @@ window.RemotePanel = (() => {
       renderOverview(result);
     } catch (error) {
       if (serial !== overviewSerial) return;
-      // 采集失败要留下可见原因：不能默默显示上一次的数字（那会让人以为服务器还活着）。
-      if (host) host.innerHTML = '<div class="remote-empty">概览采集失败：' + esc(error.message) + '</div>';
+      if (host) host.innerHTML = '<div class="remote-empty">概览未载入</div>';
+      if (!silent) notify('概览采集失败：' + error.message, true);
     }
   }
 
@@ -2097,7 +2103,7 @@ window.RemotePanel = (() => {
       const result = side === 'local' ? await call('localList', target) : await call('list', requestedSession, target);
       if (serial !== pane.serial || side === 'remote' && requestedSession !== sid) return;
       pane.path = result.path; pane.entries = result.entries; pane.selected.clear(); pane.anchor = null; renderPane(side);
-    } catch (error) { if (serial !== pane.serial) return; root.querySelector('.remote-file-status').textContent = '读取失败：' + error.message; throw error; }
+    } catch (error) { if (serial !== pane.serial) return; root.querySelector('.remote-file-status').textContent = ''; throw error; }
   }
   const parent = (side, target) => { if (side === 'remote') return target.replace(/\/+$/, '').replace(/\/[^/]*$/, '') || '/'; const value = target.replace(/[\\/]+$/, '').replace(/[\\/][^\\/]*$/, ''); return /^[A-Za-z]:$/.test(value) ? value + '\\' : value || target; };
   const joined = (side, dir, name) => dir.replace(/[\\/]+$/, '') + (side === 'remote' ? '/' : '\\') + name;

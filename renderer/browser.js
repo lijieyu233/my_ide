@@ -251,17 +251,23 @@ const BrowserPanel = (() => {
   const IC_PAGE = IC('<rect x="3" y="2" width="10" height="12" rx="1.5"/><path d="M5.5 6h5M5.5 9h5"/>');
   const IC_CLOSE = IC('<path d="M4.5 4.5l7 7m0-7l-7 7"/>');
   const IC_OPEN = IC('<path d="M9 2h5v5m0-5L7 9M6 3H3v10h10v-3"/>');
-  function storageStatus() {
+  let lastStorageError = '';
+  function storageStatus(announce = false) {
     const el = document.getElementById('bw-save-status'); if (!el || !tabStore) return;
     el.hidden = !tabStore.error; el.replaceChildren();
+    if (tabStore.error && (announce || lastStorageError !== tabStore.error)) MI.toast(tabStore.error, 'err');
+    lastStorageError = tabStore.error;
     if (tabStore.error) {
-      const text = document.createElement('span'); text.textContent = tabStore.error;
       const retry = document.createElement('button'); retry.className = 'tb-btn'; retry.textContent = '重试保存';
-      retry.onclick = () => { const r = tabStore.save(); storageStatus(); if (!r.ok) MI.toast(r.error, 'err'); };
-      el.append(text, retry);
+      retry.onclick = () => saveTabs(true);
+      el.append(retry);
     }
   }
-  function saveTabs() { const result = tabStore?.save() || { ok: true }; storageStatus(); return result; }
+  function saveTabs(announce = false) {
+    const result = tabStore?.save() || { ok: true };
+    storageStatus(announce);
+    return result;
+  }
   /**
    * 项目切换钩子。**现在什么都不做**（2026-11-02 用户要求）。
    *
@@ -429,7 +435,7 @@ const BrowserPanel = (() => {
     setProg(runtime.loading ? '35%' : '0');
     if (!hasPage) { B()?.viewHide(); renderEmpty(); }
     else if (visible && !overlayOpen()) mountView(mountedTabs.has(tab.id) ? null : tab.url);
-    if (runtime.err) document.getElementById('bw-err-msg').textContent = '加载失败：' + runtime.err;
+    if (runtime.err) document.getElementById('bw-err-msg').textContent = '页面未载入';
   }
   function activateTab(tabId) {
     if (!tabStore.activate(tabId)) return;
@@ -803,7 +809,7 @@ const BrowserPanel = (() => {
     tabSignature();
     let groups;
     try { groups = tabStore.groups(); } catch (error) {
-      const note = document.createElement('p'); note.className = 'bw-sb-none'; note.textContent = error.message; list.append(note); return;
+      MI.toast(error.message, 'err'); return;
     }
     const state = tabStore.state;
     const groupById = new Map(groups.map(g => [g.id, g]));
@@ -1172,7 +1178,7 @@ const BrowserPanel = (() => {
   const setProg = (w) => { progEl().style.width = w; };
 
   function showError(msg) {
-    document.getElementById('bw-err-msg').textContent = '加载失败：' + msg;
+    document.getElementById('bw-err-msg').textContent = '页面未载入';
     document.getElementById('browser-empty').classList.add('hidden');
     viewEl.classList.remove('hidden');
     document.getElementById('browser-error').classList.remove('hidden');
