@@ -186,6 +186,14 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
    document.getElementById('ai-stop').classList.contains('hidden')&&
    document.getElementById('ai-codex-activity')?.textContent==='Codex 正在运行'&&
    !document.querySelector('[data-hist-refresh]').disabled));
+ await js(()=>document.querySelector('[data-codex-project="desktop-b"] [data-hist-toggle][aria-expanded="true"]').click());
+ check('A collapsed project shows the running marker only for its own active sessions',await js(()=>{
+   const active=document.querySelector('[data-codex-project="desktop-b"] [data-hist-toggle]');
+   return active.getAttribute('aria-expanded')==='false'&&active.getAttribute('aria-label')==='桌面工程 B，有会话正在运行'&&
+     active.querySelector('.ai-hist-run')?.checkVisibility()&&!document.querySelector('[data-codex-project="desktop-empty"] [data-hist-toggle] .ai-hist-run');
+ }));
+ await capture('codex-running-project-collapsed');
+ await js(()=>document.querySelector('[data-codex-project="desktop-b"] [data-hist-toggle][aria-expanded="false"]').click());
  const beforeDesktopTurn=fixture.requests.filter(r=>r.method==='turn/start').length;
  await js(()=>{
    const input=document.getElementById('ai-input');
@@ -323,6 +331,10 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  original.desktopRunning=false;
  await until(()=>js(()=>!document.getElementById('ai-send').disabled&&!document.querySelector('.ai-hist-row.cur.running')&&
    document.getElementById('ai-msgs').textContent.includes('CODEX_DESKTOP_FINAL')),'desktop turn finished');
+ check('The project running marker disappears after its last active session ends',await js(()=>{
+   const project=document.querySelector('[data-codex-project="desktop-b"] [data-hist-toggle]');
+   return project&&!project.querySelector('.ai-hist-run')&&!project.hasAttribute('aria-label');
+ }));
  check('Codex desktop completion syncs exactly once without another turn',
    fixture.requests.filter(r=>r.method==='turn/start').length===beforeDesktopTurn && await js(()=>
      [...document.querySelectorAll('#ai-msgs .ai-msg')].filter(node=>node.textContent.includes('CODEX_DESKTOP_FINAL')).length===1));

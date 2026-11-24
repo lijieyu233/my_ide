@@ -3660,7 +3660,7 @@ const AiPanel = (() => {
     status.textContent = (dsh || codex) && histError ? '目录更新失败：' + histError : '';
     status.classList.toggle('error', (dsh || codex) && !!histError);
 
-    const groups = new Map();
+    const groups = new Map(), runningGroups = new Set();
     const root = pathKey(window.App?.root);
     const flat = dsh && historyPrefs.group === 'flat', tree = dsh && historyPrefs.group === 'tree';
     const query = historySearch.toLowerCase();
@@ -3670,7 +3670,6 @@ const AiPanel = (() => {
       ? new Map((currentCodexCatalog()?.projects || []).map(project => [codexProjectKey(project.id), project]))
       : catalogUsable() ? dshCatalog.workspaces : new Map();
     for (const session of all) {
-      if (query && !String(session.title || '').toLowerCase().includes(query)) continue;
       let key = flat ? flatHistoryKey : session.unknownRoot ? null : pathKey(session.rootDir);
       if (codex) {
         const projectKey = codexProjectKey(session.codexProjectId);
@@ -3682,6 +3681,8 @@ const AiPanel = (() => {
           if (matches.length === 1) key = matches[0][0];
         }
       }
+      if (running.has(session.id)) runningGroups.add(key);
+      if (query && !String(session.title || '').toLowerCase().includes(query)) continue;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(session);
     }
@@ -3726,16 +3727,19 @@ const AiPanel = (() => {
       const groupName = recent ? '最近' : unassigned ? '未分组' : workspace?.title || sessionRootLabel(groupRoot);
       const childId = 'ai-hist-items-' + index;
       const groupId = 'ai-hist-workspace-' + index;
+      const groupRunning = runningGroups.has(key);
       let groupHtml = '<section id="' + groupId + '" class="ai-hist-group" data-root="' + esc(groupRoot || '') + '"' +
         (flat ? ' data-flat-history' : unassigned ? ' data-unassigned' : '') +
         (recent ? ' data-codex-recent' : codex ? ' data-codex-project="' + esc(workspace.id) + '"' : '') +
         (depth ? ' style="padding-inline-start:' + depth * 14 + 'px"' : '') +
         (collapsed || isOther && !showOther ? ' hidden' : '') + '>' +
-        (flat ? '' : '<div class="ai-hist-group-head"><button type="button" class="ai-hist-group-title" data-hist-toggle aria-expanded="' + expanded + '" aria-controls="' + childId + '"' + (current ? ' aria-current="location"' : '') + (items.length || hasChildren ? '' : ' disabled') + ' title="' + esc(
+        (flat ? '' : '<div class="ai-hist-group-head"><button type="button" class="ai-hist-group-title" data-hist-toggle aria-expanded="' + expanded + '" aria-controls="' + childId + '"' + (current ? ' aria-current="location"' : '') +
+          (groupRunning ? ' aria-label="' + esc(groupName + '，有会话正在运行') + '"' : '') + (items.length || hasChildren ? '' : ' disabled') + ' title="' + esc(
           workspace?.createdAt ? groupRoot + '\n创建于 ' + new Date(workspace.createdAt).toLocaleString() :
           groupRoot || (unassigned ? 'DSH 未提供可用的工作区目录' : groupName)) + '">' +
         '<span class="ai-hist-workspace-icon">' + historyIcon(historyGroupIcon(expanded, recent)) + '</span>' +
         '<span class="ai-hist-workspace-name">' + esc(groupName) + '</span>' +
+        (groupRunning ? '<span class="ai-hist-run" title="有会话正在运行" aria-hidden="true"></span>' : '') +
         (recent ? '' : '<span class="ai-hist-workspace-count">' + items.length + '</span>') + '</button>' +
         (groupRoot && !current ? '<button type="button" class="ai-hist-b" data-hist-jump="' + esc(groupRoot) + '" title="打开工程" aria-label="打开工程：' + esc(groupName) + '">' + historyIcon('M6 3H3v10h10v-3M8 3h5v5m0-5L7 9') + '</button>' : '') +
         '</div>') + '<div class="ai-hist-items" id="' + childId + '"' + (expanded ? '' : ' hidden') + '>';
@@ -3756,7 +3760,7 @@ const AiPanel = (() => {
       if (isOther) {
         otherHtml += groupHtml;
         otherIds.push(groupId);
-        if (items.some(session => running.has(session.id))) otherRunning = true;
+        if (groupRunning) otherRunning = true;
       } else {
         html += groupHtml;
       }
