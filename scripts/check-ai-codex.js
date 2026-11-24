@@ -31,22 +31,28 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
    fixture.requests.filter(r=>r.method==='turn/steer').length===1&&fixture.requests.filter(r=>r.method==='turn/start').length===3);
  await js(()=>{document.getElementById('ai-send').click();return true;});await until(()=>fixture.requests.some(r=>r.method==='turn/interrupt')&&js(()=>AiPanel.__testParked().currentRun!=='active'),'interrupt');check('stop targets only the owned thread and no DSH queue is advertised',fixture.requests.find(r=>r.method==='turn/interrupt').params.threadId===firstThread&&await js(()=>document.getElementById('ai-input-queue').classList.contains('hidden')&&document.getElementById('ai-running-input-actions').classList.contains('hidden')));
  const externalId='019caa00-0000-7000-8000-000000000003';
+ const recentId='019caa00-0000-7000-8000-000000000005';
+ const implicitId='019caa00-0000-7000-8000-00000000000f';
+ const primaryRoot=roots[0]+'-worktree', emptyRoot=path.join(temp,'empty-desktop-project');
  fs.mkdirSync(process.env.CODEX_HOME,{recursive:true});
  fs.writeFileSync(path.join(process.env.CODEX_HOME,'.codex-global-state.json'),JSON.stringify({
-   'app-server-project-id-by-legacy-project-id-by-host':{machine:{'desktop-legacy-b':'desktop-b'}},
+   'local-projects':{'desktop-legacy-b':{id:'desktop-legacy-b'}},
+   'app-server-project-id-by-legacy-project-id-by-host':{['local:'+process.env.CODEX_HOME]:{'desktop-legacy-b':'desktop-b'}},
+   'projectless-thread-ids':[recentId],
    'thread-project-assignments':{[externalId]:{projectKind:'local',projectId:'desktop-legacy-b'}},
    'thread-project-membership-host-ids':{[externalId]:'local'},
  }));
- const recentId='019caa00-0000-7000-8000-000000000005', emptyRoot=path.join(temp,'empty-desktop-project');
  fs.mkdirSync(emptyRoot);
- fixture.projects.push({id:'desktop-empty',name:'桌面空项目',roots:[{path:emptyRoot}]},
-   {id:'desktop-b',name:'桌面工程 B',roots:[{path:roots[0]+'-worktree'},{path:roots[1]}]});
- fixture.threads.set(recentId,{id:recentId,projectId:null,cwd:roots[1],model:'offline-codex',historyMode:'paginated',name:'同目录的未分组会话',updatedAt:1710000001,running:false,items:[]});
+ fs.mkdirSync(primaryRoot);
+ fixture.projects.push({id:'desktop-empty',name:'桌面空项目',roots:[{path:emptyRoot},{path:roots[1]}]},
+   {id:'desktop-b',name:'桌面工程 B',roots:[{path:primaryRoot},{path:roots[1]}]});
+ fixture.threads.set(recentId,{id:recentId,projectId:'desktop-b',cwd:primaryRoot,model:'offline-codex',historyMode:'paginated',name:'主动移出项目的会话',updatedAt:1710000001,running:false,items:[]});
+ fixture.threads.set(implicitId,{id:implicitId,projectId:null,cwd:primaryRoot,model:'offline-codex',historyMode:'paginated',name:'项目主目录里的旧会话',updatedAt:1709999999,running:false,items:[]});
  const picture=path.join(roots[1],'native-preview.png');
   const pixels=Buffer.alloc(240*320*4);
  for(let i=0;i<pixels.length;i+=4){pixels[i]=80;pixels[i+1]=160;pixels[i+2]=55;pixels[i+3]=255;}
  fs.writeFileSync(picture,nativeImage.createFromBitmap(pixels,{width:240,height:320}).toPNG());
- fixture.threads.set(externalId,{id:externalId,projectId:null,cwd:roots[1],model:'offline-codex',historyMode:'paginated',name:'桌面 Codex 外部会话',updatedAt:1710000000,running:false,queueListUnavailable:true,
+ fixture.threads.set(externalId,{id:externalId,projectId:'desktop-empty',cwd:roots[1],model:'offline-codex',historyMode:'paginated',name:'桌面 Codex 外部会话',updatedAt:1710000000,running:false,queueListUnavailable:true,
   items:[{type:'userMessage',content:[{type:'text',text:'CODEX_PREVIOUS_QUESTION'}]},{type:'agentMessage',text:'CODEX_PREVIOUS_ANSWER'},{type:'userMessage',content:[{type:'text',text:'带图片的历史消息'},{type:'localImage',path:picture}]}]});
  const earlierTurns=fixture.requests.filter(r=>r.method==='turn/start').length;
  await js(()=>App.showTool('sessions'));
@@ -54,12 +60,13 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  const firstProject=fixture.projects.find(project=>project.roots.some(root=>root.path===roots[0]));
  check('First send registers an unlisted project and gives the native thread its project ID',
    firstProject?.name===path.basename(roots[0])&&fixture.requests.find(r=>r.method==='thread/start').params.projectId===firstProject.id);
- check('Codex sidebar follows native project names, order and membership, keeping unassigned threads in Recent',await js(firstProjectName=>{
+ check('Codex sidebar follows Desktop moves, primary roots, and explicit removal from a project',await js(firstProjectName=>{
    const groups=[...document.querySelectorAll('.ai-hist-rows > .ai-hist-group')];
    const project=document.querySelector('[data-codex-project="desktop-b"]'), recent=document.querySelector('[data-codex-recent]');
    return JSON.stringify(groups.map(group=>group.querySelector('.ai-hist-workspace-name').textContent))===JSON.stringify([firstProjectName,'桌面空项目','桌面工程 B','最近'])&&
-     project.querySelector('.ai-hist-nm')?.textContent==='桌面 Codex 外部会话'&&
-     [...recent.querySelectorAll('.ai-hist-nm')].some(node=>node.textContent==='同目录的未分组会话')&&
+     [...project.querySelectorAll('.ai-hist-nm')].map(row=>row.textContent).join('|')==='桌面 Codex 外部会话|项目主目录里的旧会话'&&
+     !document.querySelector('[data-codex-project="desktop-empty"] .ai-hist-nm')&&
+     [...recent.querySelectorAll('.ai-hist-nm')].some(node=>node.textContent==='主动移出项目的会话')&&
      !recent.querySelector('[data-hist-jump]');
  },firstProject.name));
  await js(()=>{

@@ -268,8 +268,21 @@ function createService(options={}){
       history.listProjects(request), desktopState.readDesktopState(home),
     ]);
     const archivedIds = new Set(archived.map(item => item.threadId));
-    const items = [...active.filter(item => !archivedIds.has(item.threadId)), ...archived];
     const assignments = desktopState.projectAssignments(projects, desktop);
+    const registeredIds = desktopState.registeredProjectIds(desktop);
+    const projectless = new Set(Array.isArray(desktop['projectless-thread-ids']) ? desktop['projectless-thread-ids'] : []);
+    const primaryProjects = new Map();
+    for (const project of projects) {
+      if (!registeredIds.has(project.id) || !project.roots[0]) continue;
+      const root = norm(project.roots[0]);
+      primaryProjects.set(root, primaryProjects.has(root) ? null : project.id);
+    }
+    // Desktop moves can leave the app-server row stamped with the previous project.
+    const items = [...active.filter(item => !archivedIds.has(item.threadId)), ...archived].map(item => ({
+      ...item,
+      projectId: projectless.has(item.threadId) ? null
+        : assignments.get(item.threadId) || item.projectId || primaryProjects.get(norm(item.rootDir)) || null,
+    }));
     const detachedRoot = norm(await canonical(workspace()));
     const projectBindings = new Map();
     for (const [key, record] of saved) {
@@ -280,8 +293,7 @@ function createService(options={}){
     const locallyRunning = new Set([...sessions.values()].filter(session => session.run).map(session => session.id));
     const visible = items.map(item => ({ ...item, localId: 'codex:' + item.threadId, external: true, ...projectBindings.get(item.threadId) }))
       .filter(item => norm(item.rootDir) !== detachedRoot);
-    const registeredIds = desktopState.registeredProjectIds(desktop);
-    const occupiedProjects = new Set(items.map(item => item.projectId || assignments.get(item.threadId)));
+    const occupiedProjects = new Set(items.map(item => item.projectId));
     const registeredRoots = new Set(projects.filter(p => registeredIds.has(p.id) && p.roots.length === 1)
       .map(p => norm(p.roots[0])));
     const shownProjects = projects.filter(p => !p.provisional || registeredIds.has(p.id) ||
@@ -290,7 +302,7 @@ function createService(options={}){
       const desktop = item.archived || locallyRunning.has(item.threadId)
         ? { running: false } : await observeDesktop(home, item);
       const { rolloutPath, ...summary } = item;
-      return { ...summary, projectId: summary.projectId || assignments.get(summary.threadId) || null, ...desktop };
+      return { ...summary, ...desktop };
     })) };
   }
 
