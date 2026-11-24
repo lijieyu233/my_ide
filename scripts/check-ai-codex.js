@@ -74,6 +74,12 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  const firstProject=fixture.projects.find(project=>project.roots.some(root=>root.path===roots[0]));
  check('First send registers an unlisted project and gives the native thread its project ID',
    firstProject?.name===path.basename(roots[0])&&fixture.requests.find(r=>r.method==='thread/start').params.projectId===firstProject.id);
+ await until(()=>js(id=>{
+   const toggle=[...document.querySelectorAll('[data-codex-project]')].find(group=>group.dataset.codexProject===id)?.querySelector('[data-hist-toggle]');
+   return toggle?.getAttribute('aria-current')==='location'&&toggle.getAttribute('aria-expanded')==='true';
+ },firstProject.id),'bound Codex project expanded');
+ check('the selected MyIDE workspace expands its bound Codex project',true);
+ await capture('codex-project-binding');
  check('Codex sidebar follows Desktop moves, primary roots, and explicit removal from a project',await js(firstProjectName=>{
    const groups=[...document.querySelectorAll('.ai-hist-rows > .ai-hist-group')];
    const project=document.querySelector('[data-codex-project="desktop-b"]'), recent=document.querySelector('[data-codex-recent]');

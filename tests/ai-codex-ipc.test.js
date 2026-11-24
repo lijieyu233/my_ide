@@ -4,12 +4,15 @@ const source=fs.readFileSync(path.join(__dirname,'../main.js'),'utf8');
 const handlers=new Map(),sent=[],calls=[],aborts=[],pending=new Map();
 const page={id:'project',projectContext:true},root=path.resolve('fixture-project');
 const state={rootId:root,page,sessionId:'shared-local',engine:'codex'};
-const sender={id:31,mainFrame:{processId:3,routingId:1},isDestroyed:()=>false,send:(channel,value)=>sent.push({channel,value}),executeJavaScript:async expression=>expression==='App.getPageContext()'?state.page:expression==='AiPanel.getConfig().engine'?state.engine:{...state}};
+const sender={id:31,mainFrame:{processId:3,routingId:1},isDestroyed:()=>false,send:(channel,value)=>sent.push({channel,value}),executeJavaScript:async expression=>expression==='App.root || ""'?root:expression==='App.getPageContext()'?state.page:expression==='AiPanel.getConfig().engine'?state.engine:{...state}};
 const event={sender,senderFrame:{...sender.mainFrame}};
 const result=(kind,context,id,value)=>{calls.push({kind,context,id,value});const run=pending.get(context.requestId);return {ok:!!run&&context.page?.id===run.context.page?.id&&context.page?.projectContext===run.context.page?.projectContext};};
 const codex={abort:id=>aborts.push(id),status:async launcher=>({ok:true,launcher}),hasRun:()=>false,
   inspect:async(cfg,context,tools,apply)=>{calls.push({kind:'inspect',cfg,context,tools,apply});return {ok:true,configOptions:[]};},
-  listHistory:async()=>({items:[{threadId:'fixture-thread',projectId:'fixture-project'}],projects:[{id:'fixture-project',title:'Fixture'}]}),
+  listHistory:async(_cfg,rootDir)=>{
+    assert.equal(rootDir,root);
+    return {items:[{threadId:'fixture-thread',projectId:'fixture-project'}],projects:[{id:'fixture-project',title:'Fixture'}]};
+  },
   openHistory:async(_cfg, threadId, archived)=>({threadId,archived,messages:[]}),
   setHistoryArchived:async (_cfg,threadId,archived)=>calls.push({kind:'archive',threadId,archived}),
   forkHistory:async(_cfg, threadId)=>({threadId:'fork-'+threadId,messages:[]}),
@@ -38,7 +41,8 @@ const settled=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
     assert.equal((await handlers.get('ai:codex-status')(fake,'fixture.cmd')).ok,false);
     assert.equal((await handlers.get('ai:codex-history')(fake,cfg,'fixture-thread')).ok,false);
     assert.equal((await handlers.get('ai:codex-fork')(fake,cfg,'fixture-thread')).ok,false);
-    const directory=await invoke('ai:codex-sessions',cfg);
+    const directory=await invoke('ai:codex-sessions',{...cfg,rootDir:'forged'});
+    assert.equal(directory.workspaceRoot,root);
     assert.equal(directory.items[0].threadId,'fixture-thread');
     assert.equal(directory.projects[0].id,directory.items[0].projectId);
     assert.equal((await invoke('ai:codex-history',cfg,'fixture-thread',true)).archived,true);

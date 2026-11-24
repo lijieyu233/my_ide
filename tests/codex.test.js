@@ -18,7 +18,7 @@ function fixture(config={}){
   notify(c,'item/agentMessage/delta',{threadId,turnId,itemId:'message-'+turnId,delta:text});
   notify(c,'turn/completed',{threadId,turn:{id:turnId,status}});
  };
- service=createService({homeDir:()=>home,sharedLauncher:()=>config.sharedLauncher,requiresSharedRuntime:()=>config.managedOnly===true,desktopOwnsProjectThreads:()=>config.desktopInstalled===true,...(map?{mappingFile:()=>map}:{}),turnTimeoutMs:config.turnTimeoutMs||10000,idleWarningMs:config.idleWarningMs,requestTimeoutMs:1000,resolveRuntime:async()=>({executable:'fixture-codex.exe',args:[],env:{},launcher:'fixture-codex.exe'}),spawn:(exe,args,opts)=>{
+ service=createService({homeDir:()=>home,registerDesktopProject:config.registerDesktopProject,sharedLauncher:()=>config.sharedLauncher,requiresSharedRuntime:()=>config.managedOnly===true,desktopOwnsProjectThreads:()=>config.desktopInstalled===true,...(map?{mappingFile:()=>map}:{}),turnTimeoutMs:config.turnTimeoutMs||10000,idleWarningMs:config.idleWarningMs,requestTimeoutMs:1000,resolveRuntime:async()=>({executable:'fixture-codex.exe',args:[],env:{},launcher:'fixture-codex.exe'}),spawn:(exe,args,opts)=>{
   const c=child();children.push(c);invocation={exe,args,opts};
   c.stdin.on('data',data=>{for(const line of data.toString().trim().split('\n')){
    const r=JSON.parse(line);requests.push(r);const p=r.params||{};
@@ -162,12 +162,76 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
   try{
    assert.equal(await f.service.getHistoryProjectRoot({},desktopId),root);
    await assert.rejects(f.service.getHistoryProjectRoot({},'missing'),/找不到 Codex 项目目录/);
-   assert.deepEqual((await f.service.listHistory({})).projects.map(p=>p.id),[desktopId,used]);
+   const directory=await f.service.listHistory({},root);
+   assert.deepEqual(directory.projects.map(p=>p.id),[desktopId]);
+   assert.deepEqual(directory.activeBinding,{rootDir:root,projectId:desktopId});
+   assert(directory.items.some(item=>item.projectId===used&&item.archived));
    const result=await f.service.chat({},user('开始'),[],context(1,{rootId:root}));
    assert(result.ok,result.error);
    const start=f.requests.find(r=>r.method==='thread/start');
    assert.equal(start.params.projectId,desktopId);
    assert(!f.requests.some(r=>r.method==='project/create'));
+  }finally{await f.service.dispose();}
+ });
+ await test('按主目录绑定并落盘，重启后用原 ID，改名或调整主目录也不会串项目',async()=>{
+  const root=path.join(temp,'binding-root'), other=path.join(temp,'binding-other');
+  fs.mkdirSync(root);fs.mkdirSync(other);
+  const map=path.join(temp,'binding-sessions.json');
+  const first={id:'project-first',name:'原项目',roots:[{path:root}]};
+  const second={id:'project-second',name:'另一个项目',roots:[{path:other},{path:root}]};
+  const f=fixture({map,projects:[second,first],history:[]});
+  try{
+   const catalogue=await f.service.listHistory({},root);
+   assert.deepEqual(catalogue.activeBinding,{rootDir:root,projectId:first.id});
+   assert(!f.requests.some(request=>request.method==='project/create'));
+  }finally{await f.service.dispose();}
+  const renamed={...first,name:'新名字',roots:[{path:other},{path:root}]};
+  const newer={id:'project-new',name:'另一个候选',roots:[{path:root}]};
+  const restarted=fixture({map,projects:[newer,second,renamed],history:[]});
+  try{
+   assert.equal((await restarted.service.listHistory({},root)).activeBinding.projectId,first.id);
+   assert.equal((await restarted.service.listHistory({},other)).activeBinding.projectId,second.id);
+   const result=await restarted.service.chat({},user('测试'),[],context(1,{rootId:root}));
+   assert(result.ok,result.error);
+   assert.equal(restarted.requests.find(request=>request.method==='thread/start').params.projectId,first.id);
+   assert(!restarted.requests.some(request=>request.method==='project/create'));
+  }finally{await restarted.service.dispose();}
+ });
+ await test('首次发消息优先由桌面端登记，复用返回的主目录项目',async()=>{
+  const root=path.join(temp,'native-registration');fs.mkdirSync(root);
+  const projects=[];
+  let registrations=0;
+  const f=fixture({projects,history:[],registerDesktopProject:async folder=>{
+   assert.equal(folder,root);
+   projects.push({id:'desktop-created',name:'新工程',roots:[{path:root}]});
+   registrations++;
+   return true;
+  }});
+  try{
+   assert.equal((await f.service.listHistory({},root)).activeBinding,undefined);
+   assert.equal(registrations,0);
+   const result=await f.service.chat({},user('测试'),[],context(1,{rootId:root}));
+   assert(result.ok,result.error);
+   assert.equal(registrations,1);
+   assert.equal(f.requests.find(request=>request.method==='thread/start').params.projectId,'desktop-created');
+   assert(!f.requests.some(request=>request.method==='project/create'));
+  }finally{await f.service.dispose();}
+ });
+ await test('仅作为其他项目的次目录时创建独立项目，首发之后仍用同一 ID',async()=>{
+  const root=path.join(temp,'secondary-new'), other=path.join(temp,'secondary-primary');
+  fs.mkdirSync(root);fs.mkdirSync(other);
+  const f=fixture({
+   projects:[{id:'other-project',name:'共享目录的项目',roots:[{path:other},{path:root}]}],
+   history:[],registerDesktopProject:async()=>{throw Error('桌面端会跳到已有项目');}
+  });
+  try{
+   assert.equal((await f.service.listHistory({},root)).activeBinding,undefined);
+   const result=await f.service.chat({},user('测试'),[],context(1,{rootId:root}));
+   assert(result.ok,result.error);
+   assert.equal(f.requests.filter(request=>request.method==='project/create').length,1);
+   const bound=(await f.service.listHistory({},root)).activeBinding;
+   assert.equal(bound.projectId,f.requests.find(request=>request.method==='thread/start').params.projectId);
+   assert.notEqual(bound.projectId,'other-project');
   }finally{await f.service.dispose();}
  });
  await test('项目删除后重新登记，旧版缺少项目接口时仍可发送',async()=>{

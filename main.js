@@ -40,6 +40,11 @@ const CODEX=require('./src/main/codex/ai-codex').createService({
   sharedLauncher: () => UI_CHECK ? undefined : process.env.MYIDE_CODEX_SHARED_LAUNCHER,
   sharedRuntime: () => manualCodexLifecycle() ? sharedCodexHost.runtime() : null,
   requiresSharedRuntime: manualCodexLifecycle,
+  registerDesktopProject: async rootDir => {
+    if (!manualCodexLifecycle() || !(await sharedCodexHost.status()).desktopAvailable) return false;
+    await openCodexDesktopProject(rootDir);
+    return true;
+  },
   desktopOwnsProjectThreads: () => process.platform === 'win32' && !!app.getApplicationNameForProtocol('codex://threads/'),
 });
 const aiRuns = require('./src/main/ai/ai-runs').createRegistry();
@@ -931,19 +936,23 @@ ipcMain.handle('ai:codex-input', async (event, cfg, target, action) => {
 ipcMain.handle('ai:codex-sessions',async (event, cfg) => {
   try {
     await codexHistoryConfig(event, cfg);
-    return { ok: true, ...await CODEX.listHistory(cfg) };
+    const rootDir = await event.sender.executeJavaScript('App.root || ""');
+    return { ok: true, workspaceRoot: rootDir, ...await CODEX.listHistory(cfg, rootDir) };
   } catch (error) { return { ok: false, error: error.message }; }
 });
 ipcMain.handle('ai:codex-desktop-project', async (event, cfg, projectId) => {
   try {
     await codexHistoryConfig(event, cfg);
     const root = await CODEX.getHistoryProjectRoot(cfg, projectId);
-    const url = new URL('codex://new');
-    url.searchParams.set('path', root);
-    await openCodexDesktop(url.href);
+    await openCodexDesktopProject(root);
     return { ok: true };
   } catch (error) { return { ok: false, error: error.message }; }
 });
+function openCodexDesktopProject(rootDir) {
+  const url = new URL('codex://new');
+  url.searchParams.set('path', rootDir);
+  return openCodexDesktop(url.href);
+}
 async function openCodexDesktop(url) {
   if (manualCodexLifecycle() && (await sharedCodexHost.open(url)).opened) return;
   await shell.openExternal(url);

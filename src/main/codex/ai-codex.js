@@ -51,6 +51,7 @@ function createService(options={}){
   const desktopTransfers = new Set();
   let connection=null,starting=null,loaded=false,loading=null,disposed=false,saving=Promise.resolve();
   let stoppingBackend = false;
+  let workspaceBindings;
   const mapping=()=>valueOf(options.mappingFile),explicitHome=()=>valueOf(options.homeDir)||options.home;
   const observeDesktop=desktopState.createDesktopStatusReader();
   const desktopAvailable = () => !connection?.shared && options.desktopOwnsProjectThreads?.() === true;
@@ -278,7 +279,58 @@ function createService(options={}){
     return canonical(project.roots[0]);
   }
 
-  async function listHistory(cfg) {
+  function withWorkspaceBindings(task) {
+    return locked('codex-workspace-bindings', async () => {
+      const file = mapping() ? mapping() + '.projects.json' : null;
+      if (!workspaceBindings) {
+        let data = [];
+        if (file) {
+          try { data = JSON.parse(await fs.readFile(file, 'utf8')); }
+          catch (error) { if (error.code !== 'ENOENT') throw Error('无法读取 Codex 项目绑定'); }
+        }
+        if (!Array.isArray(data) || data.some(entry => typeof entry?.rootDir !== 'string' ||
+            !path.isAbsolute(entry.rootDir) || typeof entry.projectId !== 'string' || !entry.projectId)) {
+          throw Error('Codex 项目绑定格式无效');
+        }
+        workspaceBindings = new Map(data.map(entry => [norm(entry.rootDir), entry]));
+      }
+      const save = async entry => {
+        const key = norm(entry.rootDir);
+        if ([...workspaceBindings].some(([root, binding]) => root !== key && binding.projectId === entry.projectId)) {
+          throw Error('此 Codex 项目已绑定到另一个工作区');
+        }
+        const update = new Map(workspaceBindings).set(key, entry);
+        if (file) {
+          await fs.mkdir(path.dirname(file), { recursive: true });
+          const temp = file + '.tmp';
+          await fs.writeFile(temp, JSON.stringify([...update.values()]), 'utf8');
+          await fs.rename(temp, file);
+        }
+        workspaceBindings = update;
+        return entry.projectId;
+      };
+      return task(workspaceBindings, save);
+    });
+  }
+
+  async function matchWorkspace(rootDir, projects, registeredIds) {
+    return withWorkspaceBindings(async (bindings, save) => {
+      const key = norm(rootDir);
+      const savedId = bindings.get(key)?.projectId;
+      if (projects.some(project => project.id === savedId)) return savedId;
+      const claimed = new Set([...bindings].filter(([owner]) => owner !== key).map(([, entry]) => entry.projectId));
+      const candidates = await Promise.all(projects.map(async project => {
+        if (claimed.has(project.id) || !project.roots[0]) return null;
+        const primary = await canonical(project.roots[0]).catch(() => '');
+        return primary && norm(primary) === key ? project : null;
+      }));
+      const matches = candidates.filter(Boolean);
+      const project = matches.find(item => registeredIds.has(item.id)) || matches.find(item => !item.provisional);
+      return project ? save({ rootDir, projectId: project.id }) : null;
+    });
+  }
+
+  async function listHistory(cfg, rootDir = '') {
     const conn = await connect(cfg);
     const request = historyRequest(conn);
     const home = codexHome();
@@ -289,6 +341,10 @@ function createService(options={}){
     const archivedIds = new Set(archived.map(item => item.threadId));
     const assignments = desktopState.projectAssignments(projects, desktop);
     const registeredIds = desktopState.registeredProjectIds(desktop);
+    const activeRoot = await canonical(rootDir).catch(() => '');
+    if (activeRoot) await matchWorkspace(activeRoot, projects, registeredIds);
+    const projectIds = new Set(projects.map(project => project.id));
+    const bindings = await withWorkspaceBindings(all => [...all.values()].filter(binding => projectIds.has(binding.projectId)));
     const projectless = new Set(Array.isArray(desktop['projectless-thread-ids']) ? desktop['projectless-thread-ids'] : []);
     const primaryProjects = new Map();
     for (const project of projects) {
@@ -312,13 +368,10 @@ function createService(options={}){
     const locallyRunning = new Set([...sessions.values()].filter(session => session.run).map(session => session.id));
     const visible = items.map(item => ({ ...item, localId: 'codex:' + item.threadId, external: true, ...projectBindings.get(item.threadId) }))
       .filter(item => norm(item.rootDir) !== detachedRoot);
-    const occupiedProjects = new Set(items.map(item => item.projectId));
-    const registeredRoots = new Set(projects.filter(p => registeredIds.has(p.id) && p.roots.length === 1)
-      .map(p => norm(p.roots[0])));
-    const shownProjects = projects.filter(p => !p.provisional || registeredIds.has(p.id) ||
-      occupiedProjects.has(p.id) || p.roots.length !== 1 || !registeredRoots.has(norm(p.roots[0])));
+    const boundIds = new Set(bindings.map(binding => binding.projectId));
+    const shownProjects = projects.filter(project => !project.provisional || registeredIds.has(project.id) || boundIds.has(project.id));
     const desktopOwned = desktopAvailable();
-    return { projects: shownProjects, items: await Promise.all(visible.map(async item => {
+    return { projects: shownProjects, bindings, activeBinding: bindings.find(binding => activeRoot && norm(binding.rootDir) === norm(activeRoot)), items: await Promise.all(visible.map(async item => {
       const desktop = item.archived || locallyRunning.has(item.threadId)
         ? { running: false } : conn.shared ? { running: item.running } : await observeDesktop(home, item);
       const { rolloutPath, ...summary } = item;
@@ -467,19 +520,29 @@ function createService(options={}){
     const rootKey = norm(info.root);
     return locked('codex-project:' + rootKey, async () => {
       const request = historyRequest(conn);
-      const projects = await history.listProjects(request);
-      const roots = await Promise.all(projects.map(async project => {
-        const paths = await Promise.all(project.roots.map(root => canonical(root).catch(() => '')));
-        return paths.some(root => root && norm(root) === rootKey) ? project.id : null;
-      }));
-      const matches = roots.filter(Boolean);
+      const [projects, desktop] = await Promise.all([history.listProjects(request), desktopState.readDesktopState(codexHome())]);
+      const registered = desktopState.registeredProjectIds(desktop);
       const threadSource = 'user';
-      if (matches.length === 1) return { threadSource, projectId: matches[0] };
-      if (matches.length > 1) {
-        const desktop = await desktopState.readDesktopState(codexHome());
-        const registeredIds = desktopState.registeredProjectIds(desktop);
-        const preferred = matches.filter(id => registeredIds.has(id));
-        return preferred.length === 1 ? { threadSource, projectId: preferred[0] } : { threadSource };
+      const existing = await matchWorkspace(info.root, projects, registered);
+      if (existing) return { threadSource, projectId: existing };
+      live(run);
+
+      // A desktop link registers the folder in the desktop sidebar as well as in the app-server.
+      // For a secondary folder the desktop would select its existing project, so keep the MyIDE project separate.
+      const secondaryRoots = projects.filter(project => registered.has(project.id) || !project.provisional)
+        .flatMap(project => project.roots.slice(1));
+      const isSecondaryRoot = options.registerDesktopProject && (await Promise.all(secondaryRoots.map(folder => canonical(folder).catch(() => ''))))
+        .some(folder => folder && norm(folder) === rootKey);
+      if (!isSecondaryRoot && await options.registerDesktopProject?.(info.root)) {
+        const deadline = Date.now() + (options.projectRegistrationTimeoutMs || 8000);
+        do {
+          live(run);
+          const updated = await history.listProjects(request);
+          const projectId = await matchWorkspace(info.root, updated, registered);
+          if (projectId) return { threadSource, projectId };
+          await delay(250);
+        } while (Date.now() < deadline);
+        throw Error('请在 Codex 中完成项目登记后重试');
       }
       live(run);
       const params = {
@@ -499,6 +562,7 @@ function createService(options={}){
       }
       const projectId = result?.project?.id;
       if (typeof projectId !== 'string' || !projectId) throw Error('Codex 未确认项目登记');
+      await withWorkspaceBindings((_bindings, save) => save({ rootDir: info.root, projectId }));
       return { threadSource, projectId };
     });
   }

@@ -3022,6 +3022,7 @@ const AiPanel = (() => {
   }
   let histSidebar = null, histSidebarVisible = false;
   const historyWorkspaces = new Map();
+  let expandedCodexBinding = null;
   let otherWorkspacesExpanded;
   function refreshHistInPlace() {
     if (!histSidebarVisible || !histSidebar?.isConnected) return false;
@@ -3209,9 +3210,10 @@ const AiPanel = (() => {
   function refreshCodexCatalog({ background = false } = {}) {
     if (!codexProjectHistory()) return;
     const config = getConfig(), codexPath = config.codexPath || '';
-    if (codexCatalogRequest?.launcher === codexPath) return codexCatalogRequest.promise;
+    const workspaceRoot = pathKey(window.App?.root);
+    if (codexCatalogRequest?.launcher === codexPath && codexCatalogRequest.workspaceRoot === workspaceRoot) return codexCatalogRequest.promise;
 
-    const request = { launcher: codexPath, background };
+    const request = { launcher: codexPath, workspaceRoot, background };
     codexCatalogRequest = request;
     if (!background) { codexCatalogError = null; refreshHistInPlace(); }
     request.promise = (async () => {
@@ -3221,7 +3223,8 @@ const AiPanel = (() => {
         if (!result?.ok) throw Error(result?.error || '无法读取 Codex 会话');
         const previous = codexSelectedHistoryItem();
         codexCatalogError = null;
-        codexCatalog = { launcher: codexPath, items: result.items, projects: result.projects || [] };
+        codexCatalog = { launcher: codexPath, items: result.items, projects: result.projects || [],
+          bindings: result.bindings || [], activeBinding: result.activeBinding, workspaceRoot: pathKey(result.workspaceRoot) };
         const selected = codexSelectedHistoryItem();
         if (codexLiveView && selected?.running && !previous?.running) codexLiveView.activity = '';
         if (previous?.running !== selected?.running || previous?.archived !== selected?.archived || previous?.desktopOwned !== selected?.desktopOwned) setBusyUI(busy);
@@ -3688,8 +3691,15 @@ const AiPanel = (() => {
     const query = historySearch.toLowerCase();
     const narrow = !!query || (dsh && historyPrefs.archive === 'archived') || (codex && codexArchiveOnly);
     const opened = dsh ? openWorkspaceRoots() : new Map();
+    const catalog = currentCodexCatalog();
+    const bindings = new Map((catalog?.bindings || []).map(entry => [pathKey(entry.rootDir), entry]));
+    const currentBinding = (catalog?.workspaceRoot === root ? catalog.activeBinding : null) || bindings.get(root);
+    const currentProject = currentBinding ? codexProjectKey(currentBinding.projectId) : null;
+    const expandCurrent = currentProject && expandedCodexBinding !== currentProject;
+    expandedCodexBinding = currentProject;
+    const boundRoots = new Map([...bindings.values()].map(entry => [entry.projectId, entry.rootDir]));
     const registered = codex
-      ? new Map((currentCodexCatalog()?.projects || []).map(project => [codexProjectKey(project.id), project]))
+      ? new Map((catalog?.projects || []).map(project => [codexProjectKey(project.id), project]))
       : catalogUsable() ? dshCatalog.workspaces : new Map();
     for (const session of all) {
       let key = flat ? flatHistoryKey : session.unknownRoot ? null : pathKey(session.rootDir);
@@ -3698,9 +3708,10 @@ const AiPanel = (() => {
         key = registered.has(projectKey) ? projectKey : codexRecentKey;
         // A local draft has a workspace before it has a native thread or persisted project assignment.
         if (key === codexRecentKey && !session.codexThreadId && session.rootDir) {
-          const root = pathKey(session.rootDir);
-          const matches = [...registered].filter(([, project]) => project.roots.some(folder => pathKey(folder) === root));
-          if (matches.length === 1) key = matches[0][0];
+          const sessionRoot = pathKey(session.rootDir);
+          const binding = sessionRoot === root ? currentBinding : bindings.get(sessionRoot);
+          const draftProject = binding && codexProjectKey(binding.projectId);
+          if (registered.has(draftProject)) key = draftProject;
         }
       }
       if (running.has(session.id)) runningGroups.add(key);
@@ -3731,15 +3742,15 @@ const AiPanel = (() => {
       const unassigned = key === null;
       const workspace = registered.get(key);
       const recent = key === codexRecentKey;
-      const roots = workspace?.roots || [];
       const groupRoot = codex
-        ? roots.find(directory => pathKey(directory) === root) || roots[0] || ''
+        ? boundRoots.get(workspace?.id) || workspace?.roots[0] || ''
         : unassigned ? '' : items[0]?.rootDir || opened.get(key) || workspace?.rootDir || '';
-      const current = codex ? !!groupRoot && pathKey(groupRoot) === root : !unassigned && key === root;
+      const current = codex ? key === currentProject : !unassigned && key === root;
       if (!historyWorkspaces.has(key)) historyWorkspaces.set(key, {
         index: historyWorkspaces.size,
         expanded: defaultHistoryExpanded(key, items, current ? key : root, running),
       });
+      if (current && expandCurrent) historyWorkspaces.get(key).expanded = true;
       const { index, expanded: wasExpanded } = historyWorkspaces.get(key);
       const expanded = (items.length > 0 || hasChildren) && (flat || narrow || wasExpanded);
       const sessionOrder = flat ? flatOrder : workspace?.sessionIds || [];
@@ -4858,6 +4869,7 @@ const AiPanel = (() => {
       if(!restored){if(saved){msgs=saved.msgs||[];replayMsgs();}else showWelcome();renderUsage();}
       refreshDshOptions();
     }
+    if (codex && visibleHistoryRefresh()) void refreshCodexCatalog({ background: true });
   }
 
   // ---------- 项目规则文件 ----------
