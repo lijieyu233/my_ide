@@ -3810,6 +3810,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ai-hist-row { position: relative; }
 .ai-hist-open { padding-inline: calc(var(--sidebar-tree-gutter) + var(--sidebar-tree-indent)) 8px; }
 .ai-hist-row.cur { background: var(--sidebar-tree-selected); color: var(--text-bright); }
+.ai-hist-row[data-batch-selected] { background: color-mix(in srgb, var(--accent) 19%, transparent); color: var(--text-bright); }
 .ai-hist-open:disabled { color: var(--text-dim); cursor: default; }
 .ai-hist-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-hist-hint { display: inline-flex; color: var(--text-dim); }

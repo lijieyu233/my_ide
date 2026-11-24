@@ -28,7 +28,7 @@ const until=async(fn,name)=>{const deadline=Date.now()+20000;while(Date.now()<de
 const check=(name,ok,data)=>{checks.push({name,ok,data});console.log((ok?'PASS ':'FAIL ')+name+(data?' '+JSON.stringify(data):''));assert(ok,name);};
 async function capture(name){await js(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true)))));let timer;const image=await Promise.race([win.capturePage(undefined,{stayHidden:true,stayAwake:true}),new Promise(resolve=>timer=setTimeout(()=>resolve(null),2500))]);clearTimeout(timer);if(image&&!image.isEmpty())fs.writeFileSync(path.join(out,name+'.png'),image.toPNG());}
 async function finish(code,error){if(done)return;done=true;clearTimeout(watchdog);await service?.dispose();fs.writeFileSync(path.join(out,'report.json'),JSON.stringify({code,error,checks,network,requests:fixture.requests.map(r=>({method:r.method,...r.method==='turn/start'?{threadId:r.params.threadId}:r.method==='thread/start'?{cwd:r.params.cwd,sandbox:r.params.sandbox}:{} })),receipts:fixture.receipts,temp},null,2));console.log('CODEX_UI_REPORT '+path.join(out,'report.json'));app.exit(code);}
-const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
+const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
 (async()=>{await app.whenReady();await until(()=>{win=BrowserWindow.getAllWindows().find(w=>!w.webContents.isLoading()&&w.webContents.getURL().includes('renderer/index.html'));return win;},'window');await until(()=>js(()=>!!window.App&&!!window.AiPanel&&!!document.getElementById('btn-open').onclick),'app init');win.setContentSize(1440,900);
  await js(async root=>{Object.defineProperty(document,'hidden',{value:false,configurable:true});await App.setRoot(root);App.showAi();await AiPanel.setConfig({engine:'codex',autoIdeContext:false,injectMyideRules:false});return true;},roots[0]);await until(()=>js(()=>AiPanel.aiState().dshState==='ready'),'Codex options');check('Codex connects in existing mode selector and shows native model',await js(()=>document.getElementById('ai-engine').value==='codex'&&document.getElementById('ai-model').textContent.includes('Codex offline fixture')));check('inspect never creates a thread or starts a turn',!fixture.requests.some(r=>['thread/start','turn/start'].includes(r.method)));
  check('empty chat hides the jump controls',await js(()=>['ai-message-nav','ai-message-latest'].every(id=>getComputedStyle(document.getElementById(id)).display==='none')));
@@ -916,5 +916,43 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  check('Codex process menu dispatches all four operations independently',
    !lifecycle.backendRunning&&!lifecycle.desktopRunning&&
    lifecycleCalls.join(',')==='start-backend,start-desktop,stop-desktop,stop-backend');
+ const batchIds=['101','102','103'].map(suffix=>'019caa00-0000-7000-8000-000000000'+suffix);
+ for(const [index,id] of batchIds.entries())fixture.threads.set(id,{
+   id,projectId:'desktop-b',cwd:primaryRoot,model:'offline-codex',historyMode:'paginated',
+   name:'多选测试 '+(index+1),updatedAt:Date.now()/1000-index,running:false,items:[],
+ });
+ await js(()=>{App.showTool('sessions');document.querySelector('[data-hist-refresh]').click();});
+ await until(()=>js(id=>!!document.querySelector('[data-id="codex:'+id+'"]'),batchIds[0]),'batch rows');
+ const expandBatchProject=()=>js(()=>{
+   const toggle=document.querySelector('[data-codex-project="desktop-b"] [data-hist-toggle]');
+   if(toggle.getAttribute('aria-expanded')==='false')toggle.click();
+ });
+ const batchClick=(id,options)=>js(({id,options})=>document.querySelector('[data-id="codex:'+id+'"] .ai-hist-open')
+   .dispatchEvent(new MouseEvent('click',{...options,bubbles:true})),{id,options});
+ const pickedBatch=()=>js(ids=>[...document.querySelectorAll('.ai-hist-row[data-batch-selected]')]
+   .map(row=>row.dataset.id.slice(6)).filter(id=>ids.includes(id)),batchIds);
+ await expandBatchProject();
+ const beforeSelection=await js(()=>AiPanel.aiState().current);
+ await batchClick(batchIds[0],{ctrlKey:true});
+ await batchClick(batchIds[2],{shiftKey:true});
+ check('Control and Shift select sessions without replacing the open chat',
+   JSON.stringify(await pickedBatch())===JSON.stringify(batchIds)&&await js(()=>AiPanel.aiState().current)===beforeSelection);
+ await chooseHistoryAction('复制会话 ID',batchIds[0]);
+ await until(()=>clipboardWrites.includes(batchIds.join('\n')),'copied selected thread IDs in sidebar order');
+ await capture('codex-history-multiselect');
+ await chooseHistoryAction('归档',batchIds[0]);
+ await until(()=>batchIds.every(id=>fixture.threads.get(id).archived),'archive all selected threads');
+ await until(()=>js(id=>!document.querySelector('[data-id="codex:'+id+'"]'),batchIds[0]),'batch archive refresh');
+ await chooseHistoryAction('查看已归档');
+ await until(()=>js(id=>!!document.querySelector('[data-id="codex:'+id+'"]'),batchIds[0]),'batch archive history');
+ await expandBatchProject();
+ await js(id=>document.querySelector('[data-id="codex:'+id+'"] .ai-hist-open')
+   .dispatchEvent(new KeyboardEvent('keydown',{key:'a',ctrlKey:true,bubbles:true})),batchIds[0]);
+ check('Control+A selects the visible archived sessions',JSON.stringify(await pickedBatch())===JSON.stringify(batchIds));
+ await chooseHistoryAction('取消归档',batchIds[0]);
+ await until(()=>batchIds.every(id=>!fixture.threads.get(id).archived),'restore all selected threads');
+ check('batch archive and restore write exactly once to each original Codex thread',
+   batchIds.every(id=>['thread/archive','thread/unarchive'].every(method=>
+     fixture.requests.filter(request=>request.method===method&&request.params.threadId===id).length===1)));
  const gap=await js(()=>Math.max(...window.__codexGaps));check('renderer stays responsive in native tool flow',gap<250,{maxHeartbeatMs:gap});check('isolated fixture remained hidden and offline',!network.length&&BrowserWindow.getAllWindows().every(w=>!w.isVisible()));await finish(0);
 })().catch(async error=>{console.error(error.stack);if(win&&!win.isDestroyed())try{console.error('CODEX_UI_STATE '+JSON.stringify(await js(()=>({state:AiPanel.aiState(),info:document.getElementById('ai-dsh-info')?.title,fixtureText:document.getElementById('ai-msgs')?.textContent.slice(-700)}))));}catch{}await finish(1,error.message);});

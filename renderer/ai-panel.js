@@ -3861,6 +3861,48 @@ const AiPanel = (() => {
     }
   } catch {}
   let historySearch = '';
+  const selectedHistoryRows = new Set();
+  let historySelectionAnchor = null, historySelectionScope = '', historyBatchBusy = false;
+
+  const historyRowKey = (id, root) => JSON.stringify([id, pathKey(root)]);
+  const selectionScopeFor = config => JSON.stringify([config.engine, config.codexPath, config.dshPath, dshScope()]);
+  function syncHistorySelection(config) {
+    const scope = selectionScopeFor(config);
+    if (scope === historySelectionScope) return;
+    selectedHistoryRows.clear();
+    historySelectionAnchor = null;
+    historySelectionScope = scope;
+  }
+  function visibleHistoryRows() {
+    return [...histSidebar.querySelectorAll('.ai-hist-row')].filter(row =>
+      !row.closest('[hidden], .hidden') && !row.querySelector('.ai-hist-open').disabled);
+  }
+  function rowSelectionKey(row) { return historyRowKey(row.dataset.id, row.dataset.root); }
+  function selectHistoryRow(row, event) {
+    const key = rowSelectionKey(row), extend = event.ctrlKey || event.metaKey;
+    const rows = visibleHistoryRows();
+    if (event.shiftKey) {
+      const visible = rows.map(rowSelectionKey);
+      const current = visible.indexOf(key);
+      const active = rows.find(item => item.hasAttribute('aria-current'));
+      const anchor = visible.indexOf(historySelectionAnchor || (active && rowSelectionKey(active)));
+      const from = anchor < 0 ? current : anchor;
+      if (!extend) selectedHistoryRows.clear();
+      for (const item of visible.slice(Math.min(from, current), Math.max(from, current) + 1)) selectedHistoryRows.add(item);
+      historySelectionAnchor = visible[from];
+    } else {
+      if (!extend || !selectedHistoryRows.size) {
+        if (extend) {
+          const active = rows.find(item => item.hasAttribute('aria-current'));
+          if (active) selectedHistoryRows.add(rowSelectionKey(active));
+        } else selectedHistoryRows.clear();
+      }
+      if (extend && selectedHistoryRows.has(key)) selectedHistoryRows.delete(key);
+      else selectedHistoryRows.add(key);
+      historySelectionAnchor = key;
+    }
+    refreshHistInPlace();
+  }
 
   function isHistorySessionSelected(session) {
     if (session.codexThreadId) return session.id === curSessionId && pathKey(session.rootDir) === pathKey(sessionRoot());
@@ -4099,6 +4141,7 @@ const AiPanel = (() => {
   function renderHistRows(sidebar, all, running) {
     const rows = sidebar.querySelector('.ai-hist-rows');
     const config = getConfig(), dsh = config.engine === 'dsh', codex = codexProjectHistory();
+    syncHistorySelection(config);
     const title = sidebar.querySelector('[data-hist-title]');
     const panelTitle = codex && codexArchiveOnly ? '已归档' : '会话';
     if (title && title.textContent !== panelTitle) title.textContent = panelTitle;
@@ -4208,13 +4251,15 @@ const AiPanel = (() => {
         '</div>') + '<div class="ai-hist-items" id="' + childId + '"' + (expanded ? '' : ' hidden') + '>';
       for (const session of orderedItems) {
         const selected = isHistorySessionSelected(session), isRunning = running.has(session.id);
+        const picked = selectedHistoryRows.has(historyRowKey(session.id, session.rootDir));
         const state = selected ? '运行中' : '后台运行中';
         const time = session.ts ? relTime(session.ts) : '';
         const hint = session.unknownRoot ? '工作区未经确认' : session.localOnly && dsh ? 'MyIDE 本地记录' : '';
         groupHtml += '<div class="ai-hist-row' + (selected ? ' cur' : '') + (isRunning ? ' running' : '') + '" data-id="' + esc(session.id) + '" data-root="' + esc(session.rootDir || '') + '"' +
-          (selected ? ' aria-current="true"' : '') + (pinRanks.has(session.hostId) ? ' data-pinned' : '') +
+          (selected ? ' aria-current="true"' : '') + (picked ? ' data-batch-selected' : '') + (pinRanks.has(session.hostId) ? ' data-pinned' : '') +
           (codex && !narrow ? codexSortAttributes(codexSessionScope, codexSessionId(session)) : '') +
-          '><button type="button" class="ai-hist-open"' + (session.unknownRoot ? ' disabled' : ' aria-haspopup="menu"') + '>' +
+          '><button type="button" class="ai-hist-open"' + (session.unknownRoot ? ' disabled' : ' aria-haspopup="menu"') +
+          (picked ? ' aria-pressed="true"' : '') + '>' +
           '<span class="ai-hist-session-icon">' + historyIcon('M2 3h12v8H7l-3 3v-3H2zM5 6h6M5 8.5h4') + '</span>' +
           '<span class="ai-hist-nm" title="' + esc(session.title) + '">' + esc(session.title) + '</span>' +
           (hint ? '<span class="ai-hist-hint" title="' + hint + '" aria-label="' + hint + '">' + historyIcon('M8 7v4M8 5h.01M14 8a6 6 0 1 1-12 0 6 6 0 0 1 12 0Z') + '</span>' : '') +
@@ -4327,6 +4372,16 @@ const AiPanel = (() => {
     });
     sidebar.addEventListener('keydown', event => {
       if (event.isComposing || event.keyCode === 229) return;
+      const row = event.target.closest('.ai-hist-row');
+      if (row && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+        event.preventDefault();
+        event.stopPropagation();
+        selectedHistoryRows.clear();
+        for (const item of visibleHistoryRows()) selectedHistoryRows.add(rowSelectionKey(item));
+        historySelectionAnchor = rowSelectionKey(row);
+        refreshHistInPlace();
+        return;
+      }
       if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
         const rect = event.target.getBoundingClientRect();
         if (showHistoryRowMenu(event.target, rect.left, rect.bottom)) {
@@ -4340,6 +4395,12 @@ const AiPanel = (() => {
       if (menu && !menu.classList.contains('hidden')) return;
       event.preventDefault();
       event.stopPropagation();
+      if (selectedHistoryRows.size) {
+        selectedHistoryRows.clear();
+        historySelectionAnchor = null;
+        refreshHistInPlace();
+        return;
+      }
       if (endHistorySearch(true)) return;
       App.hideSideTool('sessions');
       document.getElementById('tool-sessions')?.focus();
@@ -4400,7 +4461,15 @@ const AiPanel = (() => {
       }
       const row = sender.closest('.ai-hist-row');
       const target = row && findHistorySession(row);
-      if (target) await actOnHistorySession(target);
+      if (!target || target.unknownRoot) return;
+      if (event.ctrlKey || event.metaKey || event.shiftKey) {
+        selectHistoryRow(row, event);
+        return;
+      }
+      selectedHistoryRows.clear();
+      historySelectionAnchor = rowSelectionKey(row);
+      refreshHistInPlace();
+      await actOnHistorySession(target);
     });
   }
 
@@ -4408,12 +4477,116 @@ const AiPanel = (() => {
     return sessionsForHist().all.find(item => item.id === row.dataset.id && pathKey(item.rootDir) === pathKey(row.dataset.root));
   }
 
+  function batchHistoryActions(targets, anchor) {
+    const config = getConfig(), scope = sessKey(), selectionScope = historySelectionScope;
+    const current = () => scope === sessKey() && selectionScope === selectionScopeFor(getConfig());
+    const nativeDsh = item => config.engine === 'dsh' && item.hostId && !item.localOnly;
+    const dsh = (item, operation, extra) => window.myIDE.ai.dshWorkspace(config, operation, { id: item.hostId, rootDir: item.rootDir, ...extra });
+    const actions = [];
+    const action = (key, label, items, task, prepare) => {
+      if (!items.length) return;
+      actions.push({ key, label: items.length === targets.length ? label : `${label}（${items.length}）`, run: async () => {
+        if (historyBatchBusy || !current()) return;
+        historyBatchBusy = true;
+        try {
+          const input = prepare ? await prepare(items) : true;
+          if (!input || !current()) return;
+          let done = 0, failed = 0, firstError = '';
+          for (const [index, item] of items.entries()) {
+            if (!current()) break;
+            try {
+              const result = await task(item, input, index);
+              if (result?.ok === false) throw Error(result.error || '操作未完成');
+              done++;
+            } catch (error) { failed++; firstError ||= error.message || String(error); }
+          }
+          if (current()) {
+            if (config.engine === 'codex') await refreshCodexCatalog({ background: true });
+            if (config.engine === 'dsh') await refreshDshCatalog();
+            refreshHistInPlace();
+            MI.toast(failed ? `已完成 ${done} 项，失败 ${failed} 项。${firstError}` : `已完成 ${done} 项`, failed ? 'err' : 'ok');
+          }
+        } finally { historyBatchBusy = false; }
+      } });
+    };
+    actions.push({ key: 'copy-ids', label: '复制会话 ID', run: () => MI.copyText(targets.map(item => item.codexThreadId || item.hostId || item.id).join('\n')) });
+    const archive = (item, archived) => item.codexThreadId
+      ? manageCodexArchive(item, archived, false)
+      : dsh(item, archived ? 'archive' : 'unarchive');
+    const catalogued = targets.filter(item => item.codexThreadId || nativeDsh(item));
+    action('archive', '归档', catalogued.filter(item => !item.archived), item => archive(item, true));
+    action('unarchive', '取消归档', catalogued.filter(item => item.archived), item => archive(item, false));
+    action('fork', '分叉', catalogued.filter(item => !item.codexThreadId || !item.archived), item => item.codexThreadId
+      ? window.myIDE.ai.codexFork(config, item.codexThreadId) : dsh(item, 'fork'));
+    action('rename', '批量重命名', targets.filter(item => !item.virtual || item.codexThreadId || nativeDsh(item)),
+      (item, prefix, index) => actOnHistorySession(item, 'ren', anchor, (prefix.slice(0, 110) + ' ' + (index + 1))),
+      async () => (await editHistoryName(anchor, '名称前缀（自动编号）', ''))?.trim());
+    const savedIds = new Set(loadSessions().map(item => item.id));
+    const local = targets.filter(item => !item.foreign && !item.virtual && !item.running && savedIds.has(item.id));
+    if (local.length) actions.push({ key: 'del', label: `删除本地记录（${local.length}）`, run: async () => {
+      if (await Modal.confirm('删除本地记录', `删除选中的 ${local.length} 条本地记录？`) && current()) {
+        deleteHistoryRecords(new Set(local.map(item => item.id)));
+      }
+    } });
+    if (config.engine === 'dsh' && catalogUsable()) {
+      const active = catalogued.filter(item => nativeDsh(item) && !item.archived);
+      action('pin', '置顶', active.filter(item => !dshCatalog.pinnedIds.has(item.hostId)), item => dsh(item, 'pin'));
+      action('unpin', '取消置顶', active.filter(item => dshCatalog.pinnedIds.has(item.hostId)), item => dsh(item, 'unpin'));
+      const workspaces = [...new Map(catalogued.filter(nativeDsh).map(item => [pathKey(item.rootDir), item])).values()];
+      action('reveal', '在资源管理器中显示所属项目', workspaces, item => window.myIDE.shell.showInFolder(item.rootDir));
+      action('editor', '在 VS Code 中打开所属项目', workspaces, item => dsh(item, 'editor'));
+      if (historyPrefs.sort === 'manual' && !historySearch) {
+        for (const step of [-1, 1]) {
+          const moves = [];
+          for (const workspace of workspaces) {
+            const order = (dshCatalog.workspaces.get(pathKey(workspace.rootDir))?.sessionIds || [])
+              .filter(id => !dshCatalog.pinnedIds.has(id) && !dshCatalog.archivedIds.has(id));
+            const picked = new Map(active.filter(item => pathKey(item.rootDir) === pathKey(workspace.rootDir)).map(item => [item.hostId, item]));
+            for (let index = step < 0 ? 1 : order.length - 2; index >= 0 && index < order.length; index -= step) {
+              const next = index + step, item = picked.get(order[index]);
+              if (next < 0 || next >= order.length || !item || picked.has(order[next])) continue;
+              [order[index], order[next]] = [order[next], order[index]];
+              moves.push({ item, before: order[next + 1] });
+            }
+          }
+          action(step < 0 ? 'move-up' : 'move-down', step < 0 ? '上移' : '下移', moves,
+            move => dsh(move.item, 'moveSession', { before: move.before }));
+        }
+      }
+    }
+    return actions;
+  }
+
   function showHistorySessionMenu(row, x, y) {
-    const anchor = row.querySelector('.ai-hist-open');
+    let anchor = row.querySelector('.ai-hist-open');
     if (!histSidebarVisible || anchor.disabled || anchor.closest('[hidden], .hidden')) return false;
     const target = findHistorySession(row);
     if (!target || target.unknownRoot) return false;
     const scope = sessKey(), engine = getConfig().engine;
+    const selected = selectedHistoryRows.has(rowSelectionKey(row));
+    if (!selected && selectedHistoryRows.size) {
+      selectedHistoryRows.clear();
+      historySelectionAnchor = rowSelectionKey(row);
+      refreshHistInPlace();
+      anchor = visibleHistoryRows().find(item => rowSelectionKey(item) === historySelectionAnchor)?.querySelector('.ai-hist-open');
+      if (!anchor) return false;
+    }
+    const selectedRows = selected ? visibleHistoryRows().filter(item => selectedHistoryRows.has(rowSelectionKey(item))) : [];
+    if (selectedRows.length > 1) {
+      const byKey = new Map(sessionsForHist().all.map(item => [historyRowKey(item.id, item.rootDir), item]));
+      const targets = selectedRows.map(item => byKey.get(rowSelectionKey(item))).filter(Boolean);
+      if (targets.length > 1) {
+        const keys = targets.map(item => historyRowKey(item.id, item.rootDir));
+        showAiContextMenu(anchor, x, y, { kind: 'session', label: `已选 ${targets.length} 个会话`,
+          actions: batchHistoryActions(targets, anchor),
+          isCurrent: () => {
+            if (!histSidebarVisible || !anchor.isConnected || scope !== sessKey() || engine !== getConfig().engine) return false;
+            const visible = new Set(visibleHistoryRows().map(rowSelectionKey));
+            return keys.every(key => visible.has(key) && selectedHistoryRows.has(key));
+          } });
+        return true;
+      }
+    }
     const action = (key, label) => ({ key, label, run: () => actOnHistorySession(target, key, anchor) });
     const runningInMyide = [currentRun, parkedRecordOf(target.id)?.record.run].some(run =>
       run?.engine === 'codex' && run.identity.sessionId === target.id &&
@@ -4459,7 +4632,14 @@ const AiPanel = (() => {
     return true;
   }
 
-  async function actOnHistorySession(target, act, anchor) {
+  function deleteHistoryRecords(ids) {
+    saveSessions(loadSessions().filter(item => !ids.has(item.id)));
+    if (ids.has(curSessionId)) { resetDshWatch();stopRun(true);clearSessionPermissions();curSessionId = null;localStorage.removeItem(sessKey()+':active'); }
+    refreshHistInPlace();
+    MI.toast('已删除本地记录', 'ok');
+  }
+
+  async function actOnHistorySession(target, act, anchor, batchTitle) {
     const { id } = target;
     if (target.unknownRoot) { MI.toast('宿主未提供可验证的会话工作区，不能借用当前工程打开', 'err'); return; }
     if (!act || act === 'open') {
@@ -4473,32 +4653,29 @@ const AiPanel = (() => {
     const se = target.foreign ? null : all2.find(item => item.id === id);
     if (act === 'del') {
       if (!se) { MI.toast('该会话只在 DSH 中，MyIDE 没有本地副本可删', 'err'); return; }
-      saveSessions(all2.filter((x) => x.id !== id));
-      if (id === curSessionId) { resetDshWatch();stopRun(true);clearSessionPermissions();curSessionId = null;localStorage.removeItem(sessKey()+':active'); }
-      refreshHistInPlace();
-      MI.toast('已删除该会话', 'ok');
+      deleteHistoryRecords(new Set([id]));
       return;
     }
     if (act === 'ren') {
-      const nm = await editHistoryName(anchor, '会话名称', target.title || '');
+      const nm = batchTitle ?? await editHistoryName(anchor, '会话名称', target.title || '');
       if (scope !== sessKey() || engine !== getConfig().engine) return;
       if (nm == null) return;
       const title = String(nm).trim().slice(0, 120);
       if (!title || title === target.title) return;
-      if (target.codexThreadId) return manageCodexRename(target, title);
+      if (target.codexThreadId) return manageCodexRename(target, title, !batchTitle);
       // 用户要求「这里的名称修改和 DSH 同步」：写成以宿主为准。
       // 先写 DSH，再写本地副本（本地那份只用于离线回放，不参与显示优先级）。
-      if (getConfig().engine === 'dsh') {
+      if (engine === 'dsh' && (!batchTitle || !target.localOnly)) {
         const result = await window.myIDE.ai.dshRename(getConfig(), target.hostId || id, title).catch(error => ({ ok: false, error: error.message }));
         if (scope !== sessKey() || engine !== getConfig().engine) return;
-        if (!result?.ok) { MI.toast('DSH 改名失败：' + (result?.error || '未返回成功'), 'err'); return; }
+        if (!result?.ok) { if (batchTitle) throw Error(result?.error || '重命名失败'); MI.toast('DSH 改名失败：' + (result?.error || '未返回成功'), 'err'); return; }
         if (dshSessionAccess?.foreign && dshSessionAccess.hostId === target.hostId) dshSessionAccess.title = title;
-        await refreshDshCatalog();
+        if (!batchTitle) await refreshDshCatalog();
       }
       if (scope !== sessKey() || engine !== getConfig().engine) return;
       if (se) { const latest=loadSessions();const item=latest.find(x=>x.id===id);if(item){item.title=title;item.renamed=true;saveSessions(latest);} }
       refreshHistInPlace();renderCurrentSessionTitle();
-      MI.toast('已重命名为 ' + title + (getConfig().engine === 'dsh' ? '（已同步到 DSH）' : ''), 'ok');
+      if (!batchTitle) MI.toast('已重命名为 ' + title + (getConfig().engine === 'dsh' ? '（已同步到 DSH）' : ''), 'ok');
       return;
     }
   }
@@ -4546,7 +4723,7 @@ const AiPanel = (() => {
     else { blockDshSession(dshSessionAccess.error); MI.toast(dshSessionAccess.error, 'err'); }
     return ready;
   }
-  async function manageCodexRename(target, title) {
+  async function manageCodexRename(target, title, refresh = true) {
     const config = getConfig(), threadId = target.codexThreadId;
     const result = await window.myIDE.ai.codexRename(config, threadId, title, target.archived === true);
     if (!result?.ok) throw Error(result?.error || '重命名失败');
@@ -4567,13 +4744,18 @@ const AiPanel = (() => {
     if (codexCatalogRequest?.launcher === (config.codexPath || '')) codexCatalogRequest = null;
     refreshHistInPlace();
     renderCurrentSessionTitle();
-    MI.toast('已重命名', 'ok');
-    await refreshCodexCatalog({ background: true });
+    if (refresh) {
+      MI.toast('已重命名', 'ok');
+      await refreshCodexCatalog({ background: true });
+    }
   }
 
-  async function manageCodexArchive(target, archived) {
+  async function manageCodexArchive(target, archived, refresh = true) {
     const id = target.codexThreadId, config = getConfig();
-    if (codexArchiveRequests.has(id)) return;
+    if (codexArchiveRequests.has(id)) {
+      if (!refresh) throw Error('此会话正在处理归档');
+      return;
+    }
     codexArchiveRequests.add(id);
     try {
       const result = await window.myIDE.ai.codexArchive(config, id, archived);
@@ -4586,7 +4768,7 @@ const AiPanel = (() => {
       if (codexCatalogRequest?.launcher === catalog.launcher) codexCatalogRequest = null;
       setBusyUI(busy);
       refreshHistInPlace();
-      await refreshCodexCatalog({ background: true });
+      if (refresh) await refreshCodexCatalog({ background: true });
     } finally {
       codexArchiveRequests.delete(id);
     }
