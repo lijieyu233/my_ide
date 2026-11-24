@@ -3758,6 +3758,10 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .ai-hist-group-title { padding: 0 0 0 var(--sidebar-tree-gutter); }
 .ai-hist-group-title:disabled { cursor: default; }
+.ai-hist-group-head[draggable="true"] .ai-hist-group-title:disabled { pointer-events: none; }
+.ai-hist-dragging { opacity: .45; }
+.ai-hist-rows [data-codex-drop="before"] { box-shadow: inset 0 2px var(--accent); }
+.ai-hist-rows [data-codex-drop="after"] { box-shadow: inset 0 -2px var(--accent); }
 .ai-hist-workspace-icon, .ai-hist-session-icon {
   display: inline-flex; align-items: center; justify-content: center; flex: none;
   width: var(--sidebar-tree-icon-width); color: var(--text-dim);

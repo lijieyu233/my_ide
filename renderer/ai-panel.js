@@ -3240,6 +3240,8 @@ const AiPanel = (() => {
   let otherWorkspacesExpanded;
   function refreshHistInPlace() {
     if (!histSidebarVisible || !histSidebar?.isConnected) return false;
+    // Catalog updates may arrive while a session is running. Keep the drag source attached until drop or cancel.
+    if (codexHistoryDrag) return true;
     const { all, running } = sessionsForHist();
     renderHistRows(histSidebar, all, running);
     if (aiContextMenu?.kind === 'session' && !aiContextMenu.anchor.isConnected) aiContextMenu.close();
@@ -3664,6 +3666,103 @@ const AiPanel = (() => {
   const historyRowsMarkup = new WeakMap();
   const otherWorkspacesKey = Symbol(), flatHistoryKey = Symbol(), codexRecentKey = Symbol();
   const codexProjectKey = id => 'codex-project:' + id;
+  const codexOrderKey = 'myide-codex-sidebar-order';
+  const codexSortType = 'application/x-myide-codex-sidebar';
+  const codexOrderTarget = '[data-codex-order-scope]';
+  const codexOrders = new Map();
+  let codexHistoryDrag = null;
+  try {
+    const saved = JSON.parse(localStorage.getItem(codexOrderKey));
+    for (const [scope, ids] of Object.entries(saved || {})) {
+      if (Array.isArray(ids)) codexOrders.set(scope, ids.filter(id => typeof id === 'string'));
+    }
+  } catch {}
+
+  function applyCodexOrder(items, scope, idOf) {
+    const order = codexOrders.get(scope);
+    if (!order?.length) return items;
+    const ranks = new Map(order.map((id, index) => [id, index]));
+    const ranked = items.filter(item => ranks.has(idOf(item))).sort((a, b) => ranks.get(idOf(a)) - ranks.get(idOf(b)));
+    let index = 0;
+    // Keep new entries in their normal positions, while honoring the relative order of known entries.
+    return items.map(item => ranks.has(idOf(item)) ? ranked[index++] : item);
+  }
+
+  function clearCodexDragTarget() {
+    codexHistoryDrag?.target?.removeAttribute('data-codex-drop');
+    if (codexHistoryDrag) codexHistoryDrag.target = null;
+  }
+
+  function finishCodexHistoryDrag() {
+    if (!codexHistoryDrag) return;
+    clearCodexDragTarget();
+    codexHistoryDrag.node.classList.remove('ai-hist-dragging');
+    codexHistoryDrag = null;
+    refreshHistInPlace();
+  }
+
+  function bindCodexHistoryDrag(sidebar) {
+    const rows = sidebar.querySelector('.ai-hist-rows');
+    const anchorOf = event => event.target.closest(codexOrderTarget);
+    const canSort = () => histSidebarVisible && codexProjectHistory() && !historySearch && !codexArchiveOnly;
+    function dropTarget(event) {
+      if (!codexHistoryDrag || !canSort() || !event.dataTransfer?.types.includes(codexSortType)) return null;
+      const anchor = anchorOf(event);
+      return anchor !== codexHistoryDrag.node && anchor?.dataset.codexOrderScope === codexHistoryDrag.node.dataset.codexOrderScope
+        ? anchor : null;
+    }
+    const placement = (anchor, event) => {
+      const bounds = anchor.getBoundingClientRect();
+      return event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after';
+    };
+    rows.addEventListener('dragstart', event => {
+      const node = anchorOf(event);
+      if (!canSort() || !node || !event.dataTransfer) return;
+      if (aiContextMenu?.kind === 'session') aiContextMenu.close();
+      event.dataTransfer.setData(codexSortType, node.dataset.codexOrderId);
+      event.dataTransfer.effectAllowed = 'move';
+      codexHistoryDrag = { node, target: null };
+      node.classList.add('ai-hist-dragging');
+    });
+    rows.addEventListener('dragover', event => {
+      const anchor = dropTarget(event);
+      if (anchor !== codexHistoryDrag?.target) clearCodexDragTarget();
+      if (!anchor) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      codexHistoryDrag.target = anchor;
+      anchor.dataset.codexDrop = placement(anchor, event);
+    });
+    rows.addEventListener('dragleave', event => {
+      const anchor = codexHistoryDrag?.target;
+      if (anchor?.contains(event.target) && (!event.relatedTarget || !anchor.contains(event.relatedTarget))) clearCodexDragTarget();
+    });
+    rows.addEventListener('drop', event => {
+      if (!codexHistoryDrag) return;
+      const anchor = dropTarget(event);
+      if (anchor) {
+        event.preventDefault();
+        const { codexOrderScope: scope, codexOrderId: moved } = codexHistoryDrag.node.dataset;
+        const ids = [...rows.querySelectorAll(codexOrderTarget)]
+          .filter(node => node.dataset.codexOrderScope === scope).map(node => node.dataset.codexOrderId);
+        const reordered = ids.filter(id => id !== moved);
+        const index = reordered.indexOf(anchor.dataset.codexOrderId);
+        reordered.splice(index + Number(placement(anchor, event) === 'after'), 0, moved);
+        if (reordered.some((id, at) => id !== ids[at])) {
+          try {
+            const next = new Map(codexOrders).set(scope, reordered);
+            localStorage.setItem(codexOrderKey, JSON.stringify(Object.fromEntries(next)));
+            codexOrders.set(scope, reordered);
+          } catch { MI.toast('保存会话排序失败', 'err'); }
+        }
+      }
+      finishCodexHistoryDrag();
+    });
+    rows.addEventListener('dragend', finishCodexHistoryDrag);
+  }
+  function codexSortAttributes(scope, id) {
+    return ' draggable="true" data-codex-order-scope="' + esc(scope) + '" data-codex-order-id="' + esc(id) + '"';
+  }
   const historyGroupIcon = (expanded, recent) => recent
     ? (expanded ? 'M4 6l4 4 4-4' : 'M6 4l4 4-4 4')
     : historyFolderPath(expanded);
@@ -3977,8 +4076,9 @@ const AiPanel = (() => {
     const pinRanks = new Map((catalogUsable() ? [...dshCatalog.pinnedIds] : []).map((id, index) => [id, index]));
     const order = key => historyWorkspaces.get(key)?.index ?? historyWorkspaces.size;
     const rank = (ranks, key) => ranks.get(key) ?? ranks.size;
-    const ordered = [...groups].sort(([a], [b]) => (manual || codex ? rank(workspaceRanks, a) - rank(workspaceRanks, b) : 0)
+    const defaultOrder = [...groups].sort(([a], [b]) => (manual || codex ? rank(workspaceRanks, a) - rank(workspaceRanks, b) : 0)
       || order(a) - order(b) || Number(b === root) - Number(a === root));
+    const ordered = codex ? applyCodexOrder(defaultOrder, 'projects', ([key]) => key) : defaultOrder;
     const isOtherWorkspace = key => dsh && !flat && !tree && key !== root && !opened.has(key) && !registered.has(key);
     const showOther = narrow || (otherWorkspacesExpanded ?? ordered.every(([key]) => isOtherWorkspace(key)));
     const entries = tree ? historyTree(ordered, root, running) : ordered;
@@ -4004,6 +4104,9 @@ const AiPanel = (() => {
       const sessionRanks = new Map(sessionOrder.map((id, index) => [id, index]));
       items.sort((a, b) => rank(pinRanks, a.hostId) - rank(pinRanks, b.hostId) ||
         (manual ? rank(sessionRanks, a.hostId) - rank(sessionRanks, b.hostId) : 0));
+      const codexSessionScope = recent ? 'recent' : key;
+      const codexSessionId = session => session.codexThreadId || session.id;
+      const orderedItems = codex ? applyCodexOrder(items, codexSessionScope, codexSessionId) : items;
       const groupName = recent ? '最近' : unassigned ? '未分组' : workspace?.title || sessionRootLabel(groupRoot);
       const childId = 'ai-hist-items-' + index;
       const groupId = 'ai-hist-workspace-' + index;
@@ -4013,7 +4116,7 @@ const AiPanel = (() => {
         (recent ? ' data-codex-recent' : codex ? ' data-codex-project="' + esc(workspace.id) + '"' : '') +
         (depth ? ' style="padding-inline-start:' + depth * 14 + 'px"' : '') +
         (collapsed || isOther && !showOther ? ' hidden' : '') + '>' +
-        (flat ? '' : '<div class="ai-hist-group-head"><button type="button" class="ai-hist-group-title" data-hist-toggle aria-expanded="' + expanded + '" aria-controls="' + childId + '"' + (current ? ' aria-current="location"' : '') +
+        (flat ? '' : '<div class="ai-hist-group-head"' + (codex && !recent && !narrow ? codexSortAttributes('projects', key) : '') + '><button type="button" class="ai-hist-group-title" data-hist-toggle aria-expanded="' + expanded + '" aria-controls="' + childId + '"' + (current ? ' aria-current="location"' : '') +
           (groupRunning ? ' aria-label="' + esc(groupName + '，有会话正在运行') + '"' : '') + (items.length || hasChildren ? '' : ' disabled') + ' title="' + esc(
           workspace?.createdAt ? groupRoot + '\n创建于 ' + new Date(workspace.createdAt).toLocaleString() :
           groupRoot || (unassigned ? 'DSH 未提供可用的工作区目录' : groupName)) + '">' +
@@ -4023,13 +4126,14 @@ const AiPanel = (() => {
         (recent ? '' : '<span class="ai-hist-workspace-count">' + items.length + '</span>') + '</button>' +
         (groupRoot && !current ? '<button type="button" class="ai-hist-b" data-hist-jump="' + esc(groupRoot) + '" title="打开工程" aria-label="打开工程：' + esc(groupName) + '">' + historyIcon('M6 3H3v10h10v-3M8 3h5v5m0-5L7 9') + '</button>' : '') +
         '</div>') + '<div class="ai-hist-items" id="' + childId + '"' + (expanded ? '' : ' hidden') + '>';
-      for (const session of items) {
+      for (const session of orderedItems) {
         const selected = isHistorySessionSelected(session), isRunning = running.has(session.id);
         const state = selected ? '运行中' : '后台运行中';
         const time = session.ts ? relTime(session.ts) : '';
         const hint = session.unknownRoot ? '工作区未经确认' : session.localOnly && dsh ? 'MyIDE 本地记录' : '';
         groupHtml += '<div class="ai-hist-row' + (selected ? ' cur' : '') + (isRunning ? ' running' : '') + '" data-id="' + esc(session.id) + '" data-root="' + esc(session.rootDir || '') + '"' +
           (selected ? ' aria-current="true"' : '') + (pinRanks.has(session.hostId) ? ' data-pinned' : '') +
+          (codex && !narrow ? codexSortAttributes(codexSessionScope, codexSessionId(session)) : '') +
           '><button type="button" class="ai-hist-open"' + (session.unknownRoot ? ' disabled' : ' aria-haspopup="menu"') + '>' +
           '<span class="ai-hist-session-icon">' + historyIcon('M2 3h12v8H7l-3 3v-3H2zM5 6h6M5 8.5h4') + '</span>' +
           '<span class="ai-hist-nm" title="' + esc(session.title) + '">' + esc(session.title) + '</span>' +
@@ -4112,6 +4216,7 @@ const AiPanel = (() => {
     if (visible === histSidebarVisible) return;
     histSidebarVisible = visible;
     if (!visible) {
+      finishCodexHistoryDrag();
       if (aiContextMenu?.kind === 'session') aiContextMenu.close();
       endHistorySearch();
     } else {
@@ -4132,6 +4237,7 @@ const AiPanel = (() => {
       '<button type="button" class="ai-hist-b" data-hist-close title="收起会话" aria-label="收起会话">' + historyIcon('m4 4 8 8m0-8-8 8') + '</button></span></div>' +
       '<div class="ai-hist-rows"></div>';
     document.getElementById('panel-sessions').replaceChildren(sidebar);
+    bindCodexHistoryDrag(sidebar);
 
     sidebar.addEventListener('contextmenu', event => {
       if (showHistoryRowMenu(event.target, event.clientX, event.clientY)) {

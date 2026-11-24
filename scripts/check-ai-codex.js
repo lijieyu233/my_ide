@@ -178,6 +178,88 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
      [...recent.querySelectorAll('.ai-hist-nm')].some(node=>node.textContent==='主动移出项目的会话')&&
      !recent.querySelector('[data-hist-jump]');
  },firstProject.name));
+
+ if (process.argv.includes('--codex-order-only')) {
+   const project = id => '[data-codex-project="' + id + '"]';
+   const group = (id = '') => '#panel-sessions ' + project(id);
+   const row = (id, threadId) => group(id) + ' .ai-hist-row[data-codex-order-id="' + threadId + '"]';
+   const head = id => group(id) + ' .ai-hist-group-head';
+   const order = async () => js(() => {
+     const rows = document.querySelector('#panel-sessions .ai-hist-rows');
+     return {
+       projects: [...rows.querySelectorAll(':scope > [data-codex-project]')].map(node => node.dataset.codexProject),
+       sessions: [...rows.querySelectorAll('[data-codex-project="desktop-b"] .ai-hist-row')].map(node => node.dataset.codexOrderId),
+       recentLast: rows.lastElementChild.hasAttribute('data-codex-recent'),
+       root: App.root,
+       active: rows.querySelector('.ai-hist-row.cur')?.dataset.id || '',
+     };
+   });
+   const fireDrag = (from, to, action, after = false) => js((from, to, action, after) => {
+     const source = document.querySelector(from), target = document.querySelector(to);
+     if (!source?.draggable || !target?.draggable) throw Error('Missing draggable history row');
+     if (!window.__codexHistoryTransfer) window.__codexHistoryTransfer = new DataTransfer();
+     const dataTransfer = window.__codexHistoryTransfer;
+     const fire = (node, type) => {
+       const bounds = node.getBoundingClientRect();
+       return node.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer,
+         clientY: bounds.top + bounds.height * (after ? .75 : .25) }));
+     };
+     if (action === 'hover' || action === 'move') fire(source, 'dragstart');
+     const targetAccepted = !fire(target, 'dragover');
+     if (action === 'move' || action === 'drop') fire(target, 'drop');
+     if (action !== 'hover') {
+       fire(source, 'dragend');
+       window.__codexHistoryTransfer = null;
+     }
+     return targetAccepted;
+   }, from, to, action, after);
+   await js(() => {
+     const title = document.querySelector('[data-codex-project="desktop-b"] [data-hist-toggle]');
+     if (title.getAttribute('aria-expanded') === 'false') title.click();
+   });
+   const initial = await order();
+   const nativeWrites = () => fixture.requests.filter(request => /^(turn\/start|project\/|thread\/(?:start|settings\/update))/.test(request.method) &&
+     !request.method.endsWith('/list')).length;
+   const before = nativeWrites();
+   await fireDrag(head('desktop-b'), head('desktop-empty'), 'hover');
+   check('drag preview marks the exact insertion side', await js(selector =>
+     document.querySelector(selector).dataset.codexDrop === 'before', head('desktop-empty')));
+   await capture('codex-project-reorder');
+   await fireDrag(head('desktop-b'), head('desktop-empty'), 'drop');
+   await fireDrag(row('desktop-b', externalId), row('desktop-b', implicitId), 'move', true);
+   const sorted = await order();
+   check('projects and sessions reorder independently', JSON.stringify(sorted.projects) === JSON.stringify([firstProject.id, 'desktop-b', 'desktop-empty']) &&
+     JSON.stringify(sorted.sessions) === JSON.stringify([implicitId, externalId]) && sorted.recentLast);
+   const firstSession = await js(id => '#panel-sessions [data-codex-project="' + id +
+     '"] [data-codex-order-id="' + document.querySelector('[data-codex-project="' + id + '"] .ai-hist-row').dataset.codexOrderId + '"]', firstProject.id);
+   const invalid = await fireDrag(row('desktop-b', externalId), firstSession, 'move');
+   await fireDrag(head('desktop-b'), head('desktop-empty'), 'hover', true);
+   await fireDrag(head('desktop-b'), head('desktop-empty'), 'cancel', true);
+   check('cancelled and cross-project drags keep the order and selected workspace', !invalid &&
+     JSON.stringify(await order()) === JSON.stringify(sorted) && sorted.root === initial.root && sorted.active === initial.active &&
+     await js(() => !document.querySelector('[data-codex-drop], .ai-hist-dragging')) && nativeWrites() === before);
+   await js(() => document.querySelector('#panel-sessions [data-hist-refresh]').click());
+   await until(() => js(() => !document.querySelector('#panel-sessions [data-hist-refresh]').disabled), 'refresh finishes');
+   check('directory refresh retains custom order', JSON.stringify(await order()) === JSON.stringify(sorted));
+
+   const reloaded = new Promise(resolve => win.webContents.once('did-finish-load', resolve));
+   win.webContents.reload();
+   await reloaded;
+   await until(() => js(() => !!window.App && !!window.AiPanel && !!document.getElementById('btn-open').onclick), 'reloaded app init');
+   await js(async root => {
+     Object.defineProperty(document,'hidden',{value:false,configurable:true});
+     await App.setRoot(root);
+     App.showAi();
+     await AiPanel.setConfig({ engine:'codex', autoIdeContext:false, injectMyideRules:false });
+     App.showTool('sessions');
+   }, roots[0]);
+   await until(() => js(() => !!document.querySelector('#panel-sessions [data-codex-project="desktop-b"] .ai-hist-row')), 'reloaded catalog');
+   const restored = await order();
+   check('custom order survives reloading the renderer', JSON.stringify(restored.projects) === JSON.stringify(sorted.projects) &&
+     JSON.stringify(restored.sessions) === JSON.stringify(sorted.sessions) && restored.recentLast);
+   await finish(0);
+   return;
+ }
  const stateFile=path.join(process.env.CODEX_HOME,'.codex-global-state.json');
  const desktopState=JSON.parse(fs.readFileSync(stateFile,'utf8'));
  fs.writeFileSync(stateFile,JSON.stringify({...desktopState,'app-server-pending-project-deletions-by-host':{
