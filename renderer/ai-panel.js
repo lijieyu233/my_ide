@@ -1341,7 +1341,7 @@ const AiPanel = (() => {
   let codexEffortRequest = null;
   function codexEffortEditable() {
     return dshOptionsState === 'ready' && !codexDesktopOwnsCurrentSession() && codexEffortRequest !== inputViewKey() &&
-      (!busy || !!nativeInputTarget());
+      (busy ? !!nativeInputTarget() : !codexSelectedHistoryItem()?.sharedControl || !codexObservedRunning() || !!codexSharedTurn());
   }
 
   async function changeNativeEffort(effort) {
@@ -2214,7 +2214,7 @@ const AiPanel = (() => {
     const item = codexSelectedHistoryItem();
     const draftConflict = codexConflictForCurrentDraft();
     const conflict = draftConflict?.turnId ? null : draftConflict;
-    return !!item && !item.archived && !conflict?.needsOriginalSettings && (item.running || !!conflict);
+    return !!item && !item.archived && !conflict?.needsOriginalSettings && (item.running && !item.sharedControl || !!conflict);
   }
   function nativeInputTarget(){
     if (getConfig().engine === 'codex') {
@@ -2223,7 +2223,7 @@ const AiPanel = (() => {
           currentRun.pageId === currentPage().id ? { kind: 'codex', sessionId: curSessionId, run: currentRun.stream.context } : null;
       }
       const item = codexSelectedHistoryItem();
-      return item && !item.archived ? { kind: 'codex', sessionId: curSessionId, threadId: item.threadId } : null;
+      return item && !item.archived ? { kind: 'codex', sessionId: curSessionId, threadId: item.threadId, turnId: codexSharedTurn() } : null;
     }
     if(getConfig().engine!=='dsh'||dshScopeMismatch()||!dshCanSend()||historyReplayJob)return null;
     if(dshOwnRun())return runIsLive(currentRun)&&currentRun.stream&&currentPage().id===currentRun.pageId?{kind:'run',context:{...currentRun.stream.context},page:{...currentPage()}}:null;
@@ -2276,7 +2276,7 @@ const AiPanel = (() => {
     const target = nativeInputTarget(), queue = nativeQueueSource();
     const draftConflict = codexConflictForCurrentDraft();
     const offerOriginalSettings = codex && !b && !draftConflict?.turnId && !!draftConflict?.needsOriginalSettings;
-    const desktopSteer = codex && !b && running && !!target?.threadId;
+    const desktopSteer = codex && !b && running && !!target?.threadId && !codexSelectedHistoryItem()?.sharedControl;
     const showActions = offerOriginalSettings || (desktopSteer ? !!inputEl.value.trim() : !codexPrimaryQueues() && running);
     const actions=document.getElementById('ai-running-input-actions');
     actions?.classList.toggle('hidden', !showActions);
@@ -2292,11 +2292,11 @@ const AiPanel = (() => {
         : codex ? '加入原会话的待发队列，沿用原会话权限' : '本轮结束后按顺序处理，不停止当前任务';
     }
     if (steerButton) {
-      steerButton.classList.toggle('hidden', codex && !b && !desktopSteer);
+      steerButton.classList.toggle('hidden', codex && !b && !desktopSteer && !target?.turnId);
       steerButton.textContent = desktopSteer ? '在 Codex 中插入' : '插入';
       steerButton.title = desktopSteer ? '复制草稿文字并打开原会话（Alt+Enter）'
         : '在当前任务下一步安全边界补充要求（Alt+Enter）';
-      steerButton.disabled = codex ? !hasDraft || !target?.run && !desktopSteer : !ready ||
+      steerButton.disabled = codex ? !hasDraft || !target?.run && !target?.turnId && !desktopSteer : !ready ||
         (target.kind === 'run' ? !currentRun.inputActive : !dshWatch?.state?.running);
     }
     const box=document.getElementById('ai-input-queue');if(!box)return;
@@ -2409,7 +2409,8 @@ const AiPanel = (() => {
   async function submitCodexInput(mode) {
     const target = nativeInputTarget(), draft = freezeInputDraft();
     if (!target || !draft) return;
-    if (mode === 'steer' && !target.run) {
+    if (mode === 'steer' && !target.run && !target.turnId) {
+      if (codexSelectedHistoryItem()?.sharedControl) return;
       if (!codexObservedRunning()) return;
       nativeInputPending = true;
       renderNativeInputUI();
@@ -2429,7 +2430,7 @@ const AiPanel = (() => {
       return;
     }
     const requestId = 'myide-input-' + window.crypto.randomUUID();
-    const item = mode === 'steer' ? { requestId, draft, run: currentRun, rendered: false } : null;
+    const item = mode === 'steer' && target.run ? { requestId, draft, run: currentRun, rendered: false } : null;
     if (item) nativeInputRequests.set(requestId, item);
     nativeInputPending = true; renderNativeInputUI();
     let idle = false;
@@ -2756,11 +2757,12 @@ const AiPanel = (() => {
     if (permPop && permPop.dataset.scope !== inputViewKey()) closePermPop();
     syncPermBtn();
     renderSessionOrigin();
-    const external = !b && dshObservedRunning(), stopping = !!dshWatch?.stopping;
+    const external = !b && (dshObservedRunning() || !!codexSharedTurn());
+    const stopping = !!dshWatch?.stopping || !b && !!codexSharedTurn() && nativeInputPending;
     if (b && getConfig().engine === 'codex') codexLiveView = null;
     if (getConfig().engine === 'codex') {
       const model = document.getElementById('ai-model');
-      if (model) model.disabled = b || codexDesktopOwnsCurrentSession() || dshOptionsState !== 'ready';
+      if (model) model.disabled = b || !!codexSharedTurn() || codexDesktopOwnsCurrentSession() || dshOptionsState !== 'ready';
     }
     const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect){reconnect.disabled=b||dshOptionsState==='loading';reconnect.setAttribute('aria-label','重新连接 '+nativeLabel());reconnect.title='重新连接 '+nativeLabel()+'，保留会话，不重发任务';}
     renderCodexObservedActivity();
@@ -2770,7 +2772,9 @@ const AiPanel = (() => {
 
   function renderSendButton(b) {
     if (!sendBtn) return;
-    const external = !b && dshObservedRunning(), stopping = !!dshWatch?.stopping;
+    const sharedTurn = !b && codexSharedTurn();
+    const external = !b && (dshObservedRunning() || !!sharedTurn);
+    const stopping = !!dshWatch?.stopping || !!sharedTurn && nativeInputPending;
     const codexArchived = !b && codexSelectedHistoryItem()?.archived;
     const queueMode = !b && codexPrimaryQueues();
     const continuation = !b && !queueMode && !codexArchived && codexContinuationId();
@@ -2781,7 +2785,7 @@ const AiPanel = (() => {
     sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b || external ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : continuation ? '<path d="M5 3v10l8-5z" fill="currentColor" stroke="none"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b || external ? '⏹' : '➤') + '</span>';
     const continuationTitle = continuation && (codexDesktopOwnsCurrentSession() || codexConflictForCurrentDraft()?.turnId === continuation)
       ? '加入待发，沿用原会话的设置和权限' : '继续上一次中断的任务';
-    sendBtn.title = continuation ? continuationTitle : queueMode ? '发送到原 Codex 会话，沿用原会话权限（Enter）' : codexArchived ? '请先取消归档再发送' : b && currentRun?.engine==='codex' ? '请求中断当前 Codex 轮次，不影响其他会话' : b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : external ? '停止 DSH 当前会话；Enter 排队，Alt+Enter 插入' : codexDesktopOwnsCurrentSession() ? '由 Codex 桌面端发送，沿用原会话设置和权限（Enter）' : '发送（Enter）';
+    sendBtn.title = continuation ? continuationTitle : queueMode ? '发送到原 Codex 会话，沿用原会话权限（Enter）' : codexArchived ? '请先取消归档再发送' : b && currentRun?.engine==='codex' ? '请求中断当前 Codex 轮次，不影响其他会话' : b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : sharedTurn ? '停止 Codex 当前轮次' : external ? '停止 DSH 当前会话；Enter 排队，Alt+Enter 插入' : codexDesktopOwnsCurrentSession() ? '由 Codex 桌面端发送，沿用原会话设置和权限（Enter）' : '发送（Enter）';
     sendBtn.setAttribute('aria-label', codexArchived ? sendBtn.title : b || external ? '停止生成' : continuation ? '继续' : '发送消息');
   }
 
@@ -3015,6 +3019,13 @@ const AiPanel = (() => {
     return codexSelectedHistoryItem()?.running === true;
   }
 
+  function codexSharedTurn() {
+    const selected = codexSelectedHistoryItem(), view = codexLiveView;
+    if (selected?.sharedControl && selected.running && !selected.archived &&
+      view?.threadId === selected.threadId && view.ticket === sessionLoadTicket && view.scope === sessKey()) return view.turnId;
+    return null;
+  }
+
   let codexObservedGroup = null;
   function renderCodexObservedActivity() {
     const selected = codexSelectedHistoryItem();
@@ -3076,6 +3087,11 @@ const AiPanel = (() => {
           pathKey(result.rootDir) !== pathKey(window.App?.root) || !wanted()) return;
       view.activity = result.activity;
       view.activityId = result.activityId;
+      const turnId = result.activeTurnId || null;
+      if (view.turnId !== turnId) {
+        view.turnId = turnId;
+        if (selected.sharedControl) setBusyUI(busy);
+      }
       const next = result.messages;
       const samePrefix = msgs.length <= next.length && msgs.every((message, index) =>
         message.role === next[index].role && message.content === next[index].content && message._codexCommand === next[index]._codexCommand &&
@@ -4242,8 +4258,25 @@ const AiPanel = (() => {
     await syncDshWatch(watch);
     if (dshWatchWanted(watch)) { watch.stopping = false; updateDshWatchStatus(watch); }
   }
+  async function stopObservedCodex() {
+    const target = nativeInputTarget(), key = inputViewKey();
+    if (!target?.turnId || nativeInputPending) return;
+    nativeInputPending = true;
+    setBusyUI(busy);
+    try {
+      const result = await window.myIDE.ai.codexInput(getConfig(), target, { kind: 'interrupt' });
+      if (!result?.ok) throw Error(result?.error || 'Codex 停止未确认');
+      if (key === inputViewKey()) void syncCodexLiveHistory(codexSelectedHistoryItem(), getConfig(), { refresh: true });
+    } catch (error) {
+      if (key === inputViewKey()) MI.toast(error.message, 'err');
+    } finally {
+      nativeInputPending = false;
+      setBusyUI(busy);
+    }
+  }
   function stopVisibleRun() {
     if (dshOwnRun() || currentRun?.status === 'active') stopRun();
+    else if (codexSharedTurn()) return stopObservedCodex();
     else if (dshObservedRunning()) return stopDshHost();
   }
   function renderDshWatchPending(watch) {
@@ -5563,7 +5596,7 @@ const AiPanel = (() => {
     };
     if (sendBtn) {
       sendBtn.onclick = () => {
-        if (busy || dshObservedRunning()) { stopVisibleRun(); return; }
+        if (busy || dshObservedRunning() || codexSharedTurn()) { stopVisibleRun(); return; }
         if (codexPrimaryQueues()) { void submitRunningInput('queue'); return; }
         const turnId = codexContinuationId();
         send(turnId ? { codexContinueTurnId: turnId } : undefined);

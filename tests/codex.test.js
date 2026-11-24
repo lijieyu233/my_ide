@@ -18,7 +18,7 @@ function fixture(config={}){
   notify(c,'item/agentMessage/delta',{threadId,turnId,itemId:'message-'+turnId,delta:text});
   notify(c,'turn/completed',{threadId,turn:{id:turnId,status}});
  };
- service=createService({homeDir:()=>home,...(map?{mappingFile:()=>map}:{}),turnTimeoutMs:config.turnTimeoutMs||10000,idleWarningMs:config.idleWarningMs,requestTimeoutMs:1000,resolveRuntime:async()=>({executable:'fixture-codex.exe',args:[],env:{},launcher:'fixture-codex.exe'}),spawn:(exe,args,opts)=>{
+ service=createService({homeDir:()=>home,sharedLauncher:()=>config.sharedLauncher,desktopOwnsProjectThreads:()=>config.desktopInstalled===true,...(map?{mappingFile:()=>map}:{}),turnTimeoutMs:config.turnTimeoutMs||10000,idleWarningMs:config.idleWarningMs,requestTimeoutMs:1000,resolveRuntime:async()=>({executable:'fixture-codex.exe',args:[],env:{},launcher:'fixture-codex.exe'}),spawn:(exe,args,opts)=>{
   const c=child();children.push(c);invocation={exe,args,opts};
   c.stdin.on('data',data=>{for(const line of data.toString().trim().split('\n')){
    const r=JSON.parse(line);requests.push(r);const p=r.params||{};
@@ -95,6 +95,10 @@ function fixture(config={}){
      notify(c,'item/reasoning/summaryTextDelta',{threadId,turnId:id,itemId:'reason-'+id,delta:'思考片段'});
      complete(c,threadId,id);
     }
+   }else if(r.method==='turn/steer'&&config.sharedLauncher){
+    send(c,{id:r.id,result:{turnId:p.expectedTurnId}});
+   }else if(r.method==='turn/settings/update'&&config.sharedLauncher){
+    send(c,{id:r.id,result:{status:'applied'}});
    }else if(r.method==='turn/interrupt'){
     if(!config.delayedStop)notify(c,'turn/completed',{threadId:p.threadId,turn:{id:p.turnId,status:'interrupted'}});
     send(c,{id:r.id,result:{}});
@@ -220,6 +224,52 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
   fs.utimesSync(file,earlier,earlier);
   assert.equal((await probe(home,item)).running,false);
   assert.deepEqual(await probe(path.join(temp,'other-codex-home'),item),{running:false});
+ });
+ await test('共享 Codex 连接操作桌面端原轮次，旧轮次和跨项目请求不派发',async()=>{
+  const id='019caa00-0000-7000-8000-000000000010';
+  const turnId='desktop-current-turn';
+  const f=fixture({ sharedLauncher:'codex.exe', desktopInstalled:true,
+   history:[{id,cwd:temp,historyMode:'paginated',status:{type:'active'},model:'native-model'}],
+   latestTurn:{id:turnId,status:'inProgress'},
+  });
+  try{
+   const view=await f.service.openHistory({},id);
+   assert.equal(view.activeTurnId,turnId);
+   const catalog=await f.service.listHistory({});
+   assert.equal(catalog.items[0].sharedControl,true);
+   assert.equal(catalog.items[0].desktopOwned,false);
+   assert.equal(catalog.items[0].running,true);
+   const c=context(1,{sessionId:view.localId});
+   const target={threadId:id,turnId,sessionId:view.localId};
+   const requestId='myide-input-019caa00-0000-7000-8000-000000000011';
+   await assert.rejects(f.service.changeInput({},c,{...target,turnId:'old-turn'},{kind:'interrupt'}),/轮次已变化/);
+   await assert.rejects(f.service.changeInput({}, {...c,rootId:f.home},target,{kind:'interrupt'}),/身份已变化/);
+   assert(!f.requests.some(r=>r.method==='turn/interrupt'));
+   assert.deepEqual(await f.service.changeInput({},c,target,{kind:'steer',requestId,message:user('补充当前轮次')[0]}),{ok:true});
+   assert.equal((await f.service.changeInput({},c,target,{kind:'effort',effort:'high'})).applied,true);
+   assert.deepEqual(await f.service.changeInput({},c,target,{kind:'interrupt'}),{ok:true});
+   assert.deepEqual(f.requests.filter(r=>r.method.startsWith('turn/')).map(r=>[
+    r.method,r.params.threadId,r.params.turnId||r.params.expectedTurnId,
+   ]),['turn/steer','turn/settings/update','turn/interrupt'].map(method=>[method,id,turnId]));
+  }finally{await f.service.dispose();}
+ });
+ await test('关闭 MyIDE 视图仅退订共享会话，显式停止仍中断原轮次',async()=>{
+  const f=fixture({sharedLauncher:'codex.exe',hold:true});
+  const c=context(), active=[];
+  try{
+   const run=f.service.chat({},user('共享轮次继续'),[],c,event=>active.push(event));
+   await until(()=>active.some(e=>e.phase==='accepted'&&e.turnId));
+   assert.equal(f.service.detach(c.requestId),true);
+   assert.equal((await run).status,'aborted');
+   assert(f.requests.some(r=>r.method==='thread/unsubscribe'));
+   assert(!f.requests.some(r=>r.method==='turn/interrupt'));
+
+   const next=context(2), second=f.service.chat({},user('显式停止'),[],next,event=>active.push(event));
+   await until(()=>active.some(e=>e.context.requestId===next.requestId&&e.phase==='accepted'&&e.turnId));
+   assert.equal(f.service.abort(next.requestId),true);
+   assert.equal((await second).status,'aborted');
+   assert.equal(f.requests.filter(r=>r.method==='turn/interrupt').length,1);
+  }finally{await f.service.dispose();}
  });
  await test('空闲的原会话仍被占用时，只在授权后把文字和附件提交到原队列',async()=>{
   const id='019caa00-0000-7000-8000-000000000008';

@@ -32,6 +32,7 @@ const DSH=require('./src/main/dsh/ai-dsh').createService({homeDir:()=>UI_CHECK?p
 const CODEX=require('./src/main/codex/ai-codex').createService({
   homeDir:()=>UI_CHECK?path.join(app.getPath('userData'),'codex-home'):undefined,
   mappingFile:()=>path.join(app.getPath('userData'),'codex-sessions.json'),
+  sharedLauncher: () => UI_CHECK ? undefined : process.env.MYIDE_CODEX_SHARED_LAUNCHER,
   desktopOwnsProjectThreads: () => process.platform === 'win32' && !!app.getApplicationNameForProtocol('codex://threads/'),
 });
 const aiRuns = require('./src/main/ai/ai-runs').createRegistry();
@@ -238,7 +239,7 @@ function createWindow() {
   launchExit.bindWindow(mainWindow);
   const aiHost = mainWindow.webContents;
   const aiHostId = aiHost.id;
-  const resetAi = () => { for(const owner of aiOwners.reset(aiHostId)){const context = aiRuns.reset(owner);aiTools.reset(owner);aiPermissionsBridge.reset(owner);if(context){AI.abortChat(context.requestId);DSH.abort(context.requestId);CODEX.abort(context.requestId);cancelAiSearch(context.requestId);}} };
+  const resetAi = () => { for(const owner of aiOwners.reset(aiHostId)){const context = aiRuns.reset(owner);aiTools.reset(owner);aiPermissionsBridge.reset(owner);if(context){AI.abortChat(context.requestId);DSH.abort(context.requestId);CODEX.detach(context.requestId);cancelAiSearch(context.requestId);}} };
   // ── 宿主窗口不许被导航走（2026-10-29）────────────────────────────────
   // 事故：用户点击 AI 回复里的普通 <a href="..."> 链接，整个窗口从
   // file:///.../index.html 导航到外网地址 —— 应用界面全消失，只剩一片空白，

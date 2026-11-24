@@ -52,7 +52,7 @@ function createService(options={}){
   let connection=null,starting=null,loaded=false,loading=null,disposed=false,saving=Promise.resolve();
   const mapping=()=>valueOf(options.mappingFile),explicitHome=()=>valueOf(options.homeDir)||options.home;
   const observeDesktop=desktopState.createDesktopStatusReader();
-  const desktopAvailable = () => options.desktopOwnsProjectThreads?.() === true;
+  const desktopAvailable = () => !connection?.shared && options.desktopOwnsProjectThreads?.() === true;
   const codexHome = () => explicitHome() || process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
   const workspace=()=>path.join(mapping()?path.dirname(mapping()):path.join(os.tmpdir(),'myide-codex'),'myide-codex-detached');
   const emit=(run,event)=>{if(!disposed&&!run.aborted&&!run.expired)run.onEvent({...event,context:run.context});};
@@ -125,6 +125,11 @@ function createService(options={}){
     resolveRun(run,{status:failure?'failed':turn?.status||'failed',...(failure||{})});
   }
   function discardPending(run){
+    if (run.detached) {
+      run.tools.clear();
+      run.permissions.clear();
+      return;
+    }
     for(const item of run.tools.values())reply(run.conn,item.serverId,{contentItems:[{type:'inputText',text:'MyIDE request ended'}],success:false});run.tools.clear();
     for(const item of run.permissions.values())reply(run.conn,item.serverId,item.kind==='question'?{answers:{}}:{decision:'cancel'});run.permissions.clear();
   }
@@ -195,6 +200,8 @@ function createService(options={}){
     // Responses and server requests can arrive in one stdout chunk, before the
     // awaiting turn/start continuation runs. Bind them only after its real id.
     if(run&&!run.aborted&&run.accepting&&run.buffering&&!replaying){enqueue(run,'request',request);return;}
+    // The other subscriber owns requests from its turn, including approvals.
+    if (conn.shared && (!run || run.detached)) return;
     if(!run||run.aborted||run.expired||run.settled||!run.turnId||p.turnId!==run.turnId){conn.rpc.reject(request.id);return;}
     activity(run);
     if(request.method==='item/tool/call'){
@@ -224,11 +231,14 @@ function createService(options={}){
     if(starting){const conn=await starting;if(conn.launcher!==launcher)throw Error('Codex 启动路径已改变');return conn;}
     if(connection&&!connection.rpc.closed){if(connection.launcher!==launcher)throw Error('Codex 启动路径已改变，请重启 MyIDE 后重新连接');return connection;}
     starting=(async()=>{
-      await load();const runtime=await (options.resolveRuntime||resolveRuntime)(launcher||undefined);if(disposed)throw Error('Codex 连接已关闭');
+      await load();
+      const sharedLauncher = valueOf(options.sharedLauncher);
+      const runtime = await (options.resolveRuntime || resolveRuntime)(sharedLauncher || launcher || undefined);
+      if(disposed)throw Error('Codex 连接已关闭');
       const env={...process.env,...runtime.env},home=explicitHome();if(typeof home==='string'&&home){env.CODEX_HOME=home;await fs.mkdir(home,{recursive:true});}
       await fs.mkdir(workspace(),{recursive:true});if(disposed)throw Error('Codex 连接已关闭');
       const child=(options.spawn||spawn)(runtime.executable,[...(runtime.args||[]),'app-server','--stdio','-c','thread_unload_delay_secs=1'],{env,cwd:workspace(),stdio:['pipe','pipe','pipe'],windowsHide:true,shell:false});
-      const conn={child,rpc:new Rpc(child,options.rpcOptions),launcher,runtime};connection=conn;
+      const conn={child,rpc:new Rpc(child,options.rpcOptions),launcher,runtime,shared:!!sharedLauncher};connection=conn;
       conn.rpc.on('notification',message=>notification(conn,message));conn.rpc.on('request',request=>serverRequest(conn,request));
       conn.rpc.on('closed',()=>{if(child.exitCode==null)child.kill();if(connection===conn)connection=null;for(const session of sessions.values())if(session.conn===conn){session.attached=false;session.stopping=null;if(session.run)resolveRun(session.run,{status:'failed'});}});
       try{const initialized=await conn.rpc.request('initialize',{clientInfo:{name:'myide',title:'MyIDE',version:'0.8.5'},capabilities:{experimentalApi:true,requiredHumanApproval:true,explicitGatewayOauth:true}},options.requestTimeoutMs||45000);if(!initialized||typeof initialized.userAgent!=='string')throw Error('本机 Codex 不支持 app-server initialize');conn.rpc.notify('initialized');return conn;}
@@ -304,9 +314,9 @@ function createService(options={}){
     const desktopOwned = desktopAvailable();
     return { projects: shownProjects, items: await Promise.all(visible.map(async item => {
       const desktop = item.archived || locallyRunning.has(item.threadId)
-        ? { running: false } : await observeDesktop(home, item);
+        ? { running: false } : conn.shared ? { running: item.running } : await observeDesktop(home, item);
       const { rolloutPath, ...summary } = item;
-      return { ...summary, ...desktop, desktopOwned };
+      return { ...summary, ...desktop, desktopOwned, ...(conn.shared ? { sharedControl: true } : {}) };
     })) };
   }
 
@@ -319,7 +329,12 @@ function createService(options={}){
   async function openHistory(cfg, threadId, archived = false) {
     const conn = await connect(cfg), request = historyRequest(conn);
     const thread = await history.readProjectThread(request, threadId, archived);
-    return { ...await adoptHistory(request, thread, await projectThreadRoot(thread)), archived };
+    const view = await adoptHistory(request, thread, await projectThreadRoot(thread));
+    if (conn.shared && !archived && thread.status?.type === 'active') {
+      const { turn } = await history.readLatestTurn(request, thread);
+      if (turn?.status === 'inProgress') view.activeTurnId = turn.id;
+    }
+    return { ...view, archived };
   }
 
   async function openInDesktop(cfg, threadId, open) {
@@ -331,6 +346,7 @@ function createService(options={}){
       const native = await history.findProjectThread(request, threadId);
       if (!native) throw Error('当前 Codex 账号的目录中找不到此会话');
       await projectThreadRoot(native);
+      if (conn.shared) return await open(threadId);
 
       const session = [...sessions.values()].find(item => item.id === threadId);
       if (session) {
@@ -555,7 +571,7 @@ function createService(options={}){
     let model=session?.model||record?.model||cfg.codexModel||data.models.find(m=>m.isDefault)?.model||'',effort=session?.effort||record?.effort||cfg.codexReasoning||null;
     if(apply && !desktopOwned){if(session?.run||session?.stopping)throw Error('此 Codex 会话仍在运行');model=cfg.codexModel||model;effort=cfg.codexReasoning||data.models.find(m=>m.model===model)?.defaultReasoningEffort||null;validateChoice(data.models,model,effort);pendingChoices.set(info.key,{model,effort});}
     const pending=pendingChoices.get(info.key);if(pending && !desktopOwned){model=pending.model;effort=pending.effort;}
-    return {ok:true,...data,desktopOwned,sessionId:session?.id||record?.id||null,modelConfirmation:session?.attached?'native-resumed':record?'pending-native-resume':'catalog-only',configOptions:configOptions(data.models,model,effort),transport:'stdio',experimentalTools:true};
+    return {ok:true,...data,desktopOwned,sessionId:session?.id||record?.id||null,modelConfirmation:session?.attached?'native-resumed':record?'pending-native-resume':'catalog-only',configOptions:configOptions(data.models,model,effort),transport:conn.shared?'shared':'stdio',experimentalTools:true};
   }
   async function assertContinuation(request, thread, turnId) {
     const { thread: checkedThread, turn } = await history.readLatestTurn(request, thread);
@@ -710,6 +726,14 @@ function createService(options={}){
     run.conn.rpc.request('turn/interrupt',{threadId:run.session.id,turnId:run.turnId},options.requestTimeoutMs||45000).then(()=>resolveRun(run,{status:'interrupted'}),()=>resolveRun(run,{status:'failed'}));
   }
   function abort(requestId){const run=runs.get(requestId);if(!run)return false;run.aborted=true;discardPending(run);interrupt(run);return true;}
+  function detach(requestId) {
+    const run = runs.get(requestId);
+    if (!run?.conn?.shared) return abort(requestId);
+    run.aborted = true;
+    run.detached = true;
+    resolveRun(run, { status: 'interrupted' });
+    return true;
+  }
   function owned(context){const run=runs.get(context?.requestId);return run&&!run.aborted&&!run.expired&&!run.settled&&same(run.context,context)?run:null;}
   function toolResult(context,id,result){const run=owned(context),pending=run?.tools.get(id);if(!pending)return {ok:false};run.tools.delete(id);activity(run);reply(run.conn,pending.serverId,{contentItems:[{type:'inputText',text:String(result?.text||'无返回内容').slice(0,100000)}],success:result?.ok===true});return {ok:true};}
   function permissionResult(context,id,optionId){const run=owned(context),pending=run?.permissions.get(id);if(pending?.kind!=='approval'||!pending.choices.some(c=>c.optionId===optionId))return {ok:false};run.permissions.delete(id);activity(run);reply(run.conn,pending.serverId,{decision:optionId==='allow_once'?'accept':'decline'});return {ok:true};}
@@ -727,19 +751,20 @@ function createService(options={}){
   }
 
   async function changeInput(cfg, context, target, action) {
-    if (!['list', 'queue', 'remove', 'steer', 'effort', 'openDesktop'].includes(action?.kind)) throw Error('Codex 队列操作无效');
+    if (!['list', 'queue', 'remove', 'steer', 'effort', 'interrupt', 'openDesktop'].includes(action?.kind)) throw Error('Codex 队列操作无效');
     const run = target.run ? owned(target.run) : null;
     let conn, threadId, record, thread, info;
     if (target.run) {
-      if (action.kind === 'openDesktop') throw Error('请等当前轮次结束');
+      if (['openDesktop', 'interrupt'].includes(action.kind)) throw Error('请先在当前视图操作运行中的轮次');
       if (!run?.turnId || run.buffering) throw Error('Codex 当前轮次尚未确认或已经结束');
       ({ conn } = run);
       info = run.session;
       threadId = run.session.id;
     } else {
-      if (action.kind === 'steer') throw Error('桌面端任务请在 Codex 中插入消息');
       info = await identity(context);
       conn = await connect(cfg);
+      if (!conn.shared && action.kind === 'steer') throw Error('桌面端任务请在 Codex 中插入消息');
+      if (!conn.shared && action.kind === 'interrupt') throw Error('请在 Codex 中停止当前轮次');
       record = saved.get(info.key);
       if (info.scope !== 'project' || !record?.id || record.blocked || record.id !== target.threadId ||
           norm(record.cwd) !== norm(info.cwd)) throw Error('Codex 会话身份已变化');
@@ -760,6 +785,18 @@ function createService(options={}){
       }
     }
     const request = historyRequest(conn);
+    let observedTurn;
+    if (!run && conn.shared && ['steer', 'interrupt', 'effort'].includes(action.kind)) {
+      const { turn } = await history.readLatestTurn(request, thread);
+      if (!target.turnId || turn?.id !== target.turnId || turn?.status !== 'inProgress') {
+        throw Error('Codex 当前轮次已变化');
+      }
+      observedTurn = turn;
+    }
+    if (action.kind === 'interrupt') {
+      await request('turn/interrupt', { threadId, turnId: observedTurn.id });
+      return { ok: true };
+    }
     if (action.kind === 'effort') {
       const effort = action.effort;
       if (typeof effort !== 'string' || !effort || effort.length > 80) throw Error('Codex 思考强度无效');
@@ -768,7 +805,7 @@ function createService(options={}){
       const model = run?.session.model || pending?.model || session?.model || record?.model || cfg.codexModel || models.find(item => item.isDefault)?.model;
       validateChoice(models, model, effort);
       if (run && !owned(target.run)) throw Error('Codex 当前轮次已结束');
-      const latest = run ? { id: run.turnId, status: 'inProgress' } : (await history.readLatestTurn(request, thread)).turn;
+      const latest = run ? { id: run.turnId, status: 'inProgress' } : observedTurn || (await history.readLatestTurn(request, thread)).turn;
       let applied = false;
       if (latest?.status === 'inProgress' && typeof latest.id === 'string') {
         try {
@@ -779,7 +816,8 @@ function createService(options={}){
       }
       const nextModel = pendingChoices.get(info.key)?.model || model;
       validateChoice(models, nextModel, effort);
-      pendingChoices.set(info.key, { model: nextModel, effort });
+      if (conn.shared && applied) pendingChoices.delete(info.key);
+      else pendingChoices.set(info.key, { model: nextModel, effort });
       return { ok: true, applied, configOptions: configOptions(models, nextModel, effort) };
     }
     if (action.kind === 'list') {
@@ -800,6 +838,11 @@ function createService(options={}){
     const input = promptContent([action.message], context.page);
     const params = { threadId, input, clientUserMessageId: action.requestId };
     if (action.kind === 'steer') {
+      if (observedTurn) {
+        const reply = await request('turn/steer', { ...params, expectedTurnId: observedTurn.id });
+        if (reply.turnId !== observedTurn.id) throw Error('Codex 未确认接收补充消息');
+        return { ok: true };
+      }
       run.steered ||= new Set();
       if (run.steered.has(action.requestId)) throw Error('请等待上一次插入确认');
       run.steered.add(action.requestId);
@@ -815,9 +858,19 @@ function createService(options={}){
     return { ok: true, itemId: await enqueueInput(request, params) };
   }
 
-  async function status(launcher){try{const runtime=await (options.resolveRuntime||resolveRuntime)(launcher||undefined);return {ok:true,available:true,connected:!!connection&&!connection.rpc.closed,launcher:runtime.launcher||runtime.executable,path:runtime.launcher||runtime.executable,transport:'stdio'};}catch(error){return {ok:false,available:false,connected:false,error:error.message};}}
+  async function status(launcher) {
+    try {
+      const sharedLauncher = valueOf(options.sharedLauncher);
+      const runtime = await (options.resolveRuntime || resolveRuntime)(sharedLauncher || launcher || undefined);
+      const selected = runtime.launcher || runtime.executable;
+      return { ok: true, available: true, connected: !!connection && !connection.rpc.closed,
+        launcher: selected, path: selected, transport: sharedLauncher ? 'shared' : 'stdio' };
+    } catch (error) {
+      return { ok: false, available: false, connected: false, error: error.message };
+    }
+  }
   function hasRun(context){return [...runs.values()].some(run=>run.context.sessionId===context?.sessionId&&run.context.rootId===context?.rootId);}
-  async function dispose(){if(disposed)return;disposed=true;for(const run of runs.values()){run.aborted=true;discardPending(run);resolveRun(run,{status:'interrupted'});}const conn=connection;conn?.rpc.close();conn?.child.kill();if(starting)try{const own=await starting;own.rpc.close();own.child.kill();}catch{}await saving;}
-  return {chat,inspect,listHistory,getHistoryProjectRoot,openHistory,openInDesktop,forkHistory,renameHistory,setHistoryArchived,changeInput,status,abort,toolResult,permissionResult,questionResult,dispose,hasRun};
+  async function dispose(){if(disposed)return;disposed=true;for(const run of runs.values()){run.aborted=true;run.detached=run.conn?.shared;discardPending(run);resolveRun(run,{status:'interrupted'});}const conn=connection;conn?.rpc.close();conn?.child.kill();if(starting)try{const own=await starting;own.rpc.close();own.child.kill();}catch{}await saving;}
+  return {chat,inspect,listHistory,getHistoryProjectRoot,openHistory,openInDesktop,forkHistory,renameHistory,setHistoryArchived,changeInput,status,abort,detach,toolResult,permissionResult,questionResult,dispose,hasRun};
 }
 module.exports={createService,promptContent,toolSpecs,configOptions};
