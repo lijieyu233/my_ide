@@ -5877,6 +5877,13 @@ const AiPanel = (() => {
     document.getElementById('ai-dsh-reasoning')?.addEventListener('change', event => { void changeNativeEffort(event.target.value); });
     document.getElementById('ai-dsh-reconnect')?.addEventListener('click',()=>{if(!busy)refreshDshOptions(false,true);});
     initCodexLifecycleMenu();
+    const refreshVisibleCodex = () => {
+      if (!document.hidden && visibleHistoryRefresh() === refreshCodexCatalog) {
+        void refreshCodexCatalog({ background: true });
+      }
+    };
+    window.addEventListener('focus', refreshVisibleCodex);
+    document.addEventListener('visibilitychange', refreshVisibleCodex);
     window.myIDE.ai.onDshEvent?.(handleDshEvent);
     window.myIDE.ai.onCodexEvent?.(handleDshEvent);
     const offDshWatch = window.myIDE.ai.onDshWatch?.(receiveDshWatch);

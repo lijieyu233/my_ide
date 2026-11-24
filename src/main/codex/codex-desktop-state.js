@@ -17,12 +17,76 @@ const lifecycle = [
 ];
 const overlapSize = Math.max(...lifecycle.map(({ code }) => code.length)) - 1;
 
+const pendingDeletionsKey = 'app-server-pending-project-deletions-by-host';
+const projectAliasesKey = 'app-server-project-id-by-legacy-project-id-by-host';
+const desktopKeys = ['local-projects', projectAliasesKey, pendingDeletionsKey,
+  'thread-project-assignments', 'thread-project-membership-host-ids', 'projectless-thread-ids'];
+const stateQuery = "SELECT key, value FROM settings WHERE scope = 'global' AND key IN (" +
+  desktopKeys.map(key => "'" + key + "'").join(', ') + ')';
+let sqlite;
+const desktopSnapshots = new Map();
+
+async function sqliteRevision(file) {
+  const stats = await Promise.all(['', '-wal', '-journal'].map(suffix =>
+    fs.stat(file + suffix).catch(error => {
+      if (error.code !== 'ENOENT' || !suffix) throw error;
+      return null;
+    })));
+  return {
+    stamp: stats.map(stat => stat && [stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':')).join('/'),
+    size: stats[0].size,
+    journal: stats.slice(1).some(stat => stat?.size > 0),
+  };
+}
+
+async function readSqliteState(file) {
+  const { stamp, size, journal } = await sqliteRevision(file);
+  const previous = desktopSnapshots.get(file);
+  if (previous?.stamp === stamp) return previous.state;
+
+  let entries;
+  if (journal) {
+    // A live journal must be read by SQLite itself so the result includes only committed changes.
+    const { stdout } = await runFile('sqlite3', ['-readonly', '-batch', '-json', file, stateQuery],
+      { encoding: 'utf8', timeout: 1500, windowsHide: true, maxBuffer: stateLimit });
+    entries = JSON.parse(stdout.trim() || '[]').map(row => [row.key, row.value]);
+  } else {
+    if (size > stateLimit) return previous?.state || null;
+    const SQL = await (sqlite ||= require('sql.js')());
+    const bytes = await fs.readFile(file);
+    if (stamp !== (await sqliteRevision(file)).stamp) {
+      return previous?.state || null;
+    }
+    const db = new SQL.Database(bytes);
+    try { entries = db.exec(stateQuery)[0]?.values || []; }
+    finally { db.close(); }
+  }
+  const state = Object.fromEntries(entries.map(([key, value]) => [key, JSON.parse(value)]));
+  desktopSnapshots.set(file, { stamp, state });
+  return state;
+}
+
 async function readDesktopState(home) {
+  const database = path.join(home, '.codex-global-state.sqlite');
+  const current = await readSqliteState(database).catch(error =>
+    error.code === 'ENOENT' ? null : desktopSnapshots.get(database)?.state);
+  if (current) return current;
   const file = path.join(home, '.codex-global-state.json');
   try {
     if ((await fs.stat(file)).size > stateLimit) return {};
     return JSON.parse(await fs.readFile(file, 'utf8')) || {};
   } catch { return {}; }
+}
+
+function pendingProjectIds(state) {
+  const ids = new Set();
+  for (const [host, pending] of Object.entries(state[pendingDeletionsKey] || {})) {
+    if (!host.startsWith('local:')) continue;
+    for (const record of Object.values(pending || {})) {
+      if (typeof record?.projectId === 'string') ids.add(record.projectId);
+    }
+  }
+  return ids;
 }
 
 function registeredProjectIds(state) {
@@ -135,4 +199,4 @@ function createDesktopStatusReader({ liveOwner = hasLiveOwner } = {}) {
   return observe;
 }
 
-module.exports = { readDesktopState, registeredProjectIds, projectAssignments, createDesktopStatusReader };
+module.exports = { readDesktopState, pendingProjectIds, registeredProjectIds, projectAssignments, createDesktopStatusReader };

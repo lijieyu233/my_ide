@@ -274,8 +274,11 @@ function createService(options={}){
 
   async function getHistoryProjectRoot(cfg, projectId) {
     const conn = await connect(cfg);
-    const project = (await history.listProjects(historyRequest(conn))).find(item => item.id === projectId);
-    if (!project?.roots[0]) throw Error('找不到 Codex 项目目录');
+    const [projects, desktop] = await Promise.all([
+      history.listProjects(historyRequest(conn)), desktopState.readDesktopState(codexHome()),
+    ]);
+    const project = projects.find(item => item.id === projectId);
+    if (!project?.roots[0] || desktopState.pendingProjectIds(desktop).has(projectId)) throw Error('找不到 Codex 项目目录');
     return canonical(project.roots[0]);
   }
 
@@ -334,10 +337,12 @@ function createService(options={}){
     const conn = await connect(cfg);
     const request = historyRequest(conn);
     const home = codexHome();
-    const [active, archived, projects, desktop] = await Promise.all([
+    const [active, archived, nativeProjects, desktop] = await Promise.all([
       history.listProjectThreads(request), history.listProjectThreads(request, true),
       history.listProjects(request), desktopState.readDesktopState(home),
     ]);
+    const pending = desktopState.pendingProjectIds(desktop);
+    const projects = nativeProjects.filter(project => !pending.has(project.id));
     const archivedIds = new Set(archived.map(item => item.threadId));
     const assignments = desktopState.projectAssignments(projects, desktop);
     const registeredIds = desktopState.registeredProjectIds(desktop);
@@ -520,11 +525,21 @@ function createService(options={}){
     const rootKey = norm(info.root);
     return locked('codex-project:' + rootKey, async () => {
       const request = historyRequest(conn);
-      const [projects, desktop] = await Promise.all([history.listProjects(request), desktopState.readDesktopState(codexHome())]);
+      const [nativeProjects, desktop] = await Promise.all([history.listProjects(request), desktopState.readDesktopState(codexHome())]);
+      const pending = desktopState.pendingProjectIds(desktop);
+      const projects = nativeProjects.filter(project => !pending.has(project.id));
       const registered = desktopState.registeredProjectIds(desktop);
       const threadSource = 'user';
       const existing = await matchWorkspace(info.root, projects, registered);
       if (existing) return { threadSource, projectId: existing };
+      if (pending.size) {
+        const pendingBinding = await withWorkspaceBindings(bindings => pending.has(bindings.get(rootKey)?.projectId));
+        const pendingRoots = await Promise.all(nativeProjects.filter(project => pending.has(project.id))
+          .map(project => canonical(project.roots[0]).catch(() => '')));
+        if (pendingBinding || pendingRoots.some(root => root && norm(root) === rootKey)) {
+          throw Error('Codex 正在移除该项目，请稍后重试');
+        }
+      }
       live(run);
 
       // A desktop link registers the folder in the desktop sidebar as well as in the app-server.
@@ -537,8 +552,12 @@ function createService(options={}){
         const deadline = Date.now() + (options.projectRegistrationTimeoutMs || 8000);
         do {
           live(run);
-          const updated = await history.listProjects(request);
-          const projectId = await matchWorkspace(info.root, updated, registered);
+          const [updated, currentDesktop] = await Promise.all([
+            history.listProjects(request), desktopState.readDesktopState(codexHome()),
+          ]);
+          const removing = desktopState.pendingProjectIds(currentDesktop);
+          const projectId = await matchWorkspace(info.root, updated.filter(project => !removing.has(project.id)),
+            desktopState.registeredProjectIds(currentDesktop));
           if (projectId) return { threadSource, projectId };
           await delay(250);
         } while (Date.now() < deadline);

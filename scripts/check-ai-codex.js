@@ -147,6 +147,19 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
      [...recent.querySelectorAll('.ai-hist-nm')].some(node=>node.textContent==='主动移出项目的会话')&&
      !recent.querySelector('[data-hist-jump]');
  },firstProject.name));
+ const stateFile=path.join(process.env.CODEX_HOME,'.codex-global-state.json');
+ const desktopState=JSON.parse(fs.readFileSync(stateFile,'utf8'));
+ fs.writeFileSync(stateFile,JSON.stringify({...desktopState,'app-server-pending-project-deletions-by-host':{
+   ['local:'+process.env.CODEX_HOME]:{'desktop-empty':{projectId:'desktop-empty',deleteAfterMs:Date.now()+60000}}
+ }}));
+ await js(()=>window.dispatchEvent(new Event('focus')));
+ await until(()=>js(()=>!document.querySelector('[data-codex-project="desktop-empty"]')),'removed Codex project disappears');
+ assert(fixture.projects.some(project=>project.id==='desktop-empty'));
+ fs.writeFileSync(stateFile,JSON.stringify(desktopState));
+ await js(()=>window.dispatchEvent(new Event('focus')));
+ await until(()=>js(()=>!!document.querySelector('[data-codex-project="desktop-empty"]')),'undo restores Codex project');
+ check('Codex project disappears during the desktop undo window and Undo restores it',true);
+ await capture('codex-project-removal');
  await js(()=>{
    const head=document.querySelector('[data-codex-project="desktop-empty"] .ai-hist-group-head');
    head.dispatchEvent(new MouseEvent('contextmenu',{button:2,bubbles:true,cancelable:true}));

@@ -234,6 +234,48 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
    assert.notEqual(bound.projectId,'other-project');
   }finally{await f.service.dispose();}
  });
+ await test('桌面端移除后立即隐藏项目，撤销后恢复原绑定和会话',async()=>{
+  const root=path.join(temp,'pending-removal');fs.mkdirSync(root);
+  const projectId='pending-native',legacyId='pending-desktop';
+  const threadId='019caa00-0000-7000-8000-000000000064';
+  const projects=[{id:projectId,name:'准备移除的项目',roots:[{path:root}]}];
+  const history=[{id:threadId,projectId,cwd:root,name:'原会话'}];
+  const f=fixture({projects,history});
+  const SQL=await require('sql.js')();
+  const db=new SQL.Database();
+  const aliases={'local:fixture':{[legacyId]:projectId}};
+  const registry={'local-projects':{[legacyId]:{id:legacyId}},'app-server-project-id-by-legacy-project-id-by-host':aliases};
+  const key='app-server-pending-project-deletions-by-host';
+  fs.mkdirSync(f.home,{recursive:true});
+  fs.writeFileSync(path.join(f.home,'.codex-global-state.json'),JSON.stringify(registry));
+  const dbFile=path.join(f.home,'.codex-global-state.sqlite');
+  db.run('CREATE TABLE settings (scope TEXT, key TEXT, value TEXT, PRIMARY KEY(scope,key))');
+  const save=state=>{
+   db.run('DELETE FROM settings');
+   for(const [key,value] of Object.entries(state))db.run('INSERT INTO settings VALUES (?,?,?)',['global',key,JSON.stringify(value)]);
+   fs.writeFileSync(dbFile+'.tmp',db.export());
+   fs.renameSync(dbFile+'.tmp',dbFile);
+  };
+  try{
+   save(registry);
+   assert.equal((await f.service.listHistory({},root)).activeBinding.projectId,projectId);
+   save({...registry,'local-projects':{},[key]:{'local:fixture':{[legacyId]:{projectId,deleteAfterMs:Date.now()+10000}}}});
+   const removed=await f.service.listHistory({},root);
+   assert.equal(removed.projects.length,0);
+   assert.equal(removed.activeBinding,undefined);
+   assert.equal(removed.items[0].threadId,threadId);
+   assert.equal(projects.length,1);
+   await assert.rejects(f.service.getHistoryProjectRoot({},projectId),/找不到 Codex 项目目录/);
+   const reply=await f.service.chat({},user('等待项目移除'),[],context(1,{rootId:root}));
+   assert.equal(reply.ok,false);
+   assert(!f.requests.some(request=>['project/create','thread/start'].includes(request.method)));
+   save({...registry,[key]:{'remote:fixture':{[legacyId]:{projectId,deleteAfterMs:Date.now()+10000}}}});
+   const restored=await f.service.listHistory({},root);
+   assert.equal(restored.projects[0].id,projectId);
+   assert.equal(restored.activeBinding.projectId,projectId);
+   assert.equal(restored.items[0].threadId,threadId);
+  }finally{db.close();await f.service.dispose();}
+ });
  await test('项目删除后重新登记，旧版缺少项目接口时仍可发送',async()=>{
   for(const unsupported of [false,true]){
    const f=fixture({deletedProjectKey:!unsupported,projectCreateUnsupported:unsupported});
