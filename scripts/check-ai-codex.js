@@ -1,8 +1,9 @@
 // Hidden production UI+IPC+Codex service/RPC. Only the app-server child is synthetic.
 const fs=require('fs'),path=require('path'),os=require('os'),assert=require('assert/strict');
 const {app,BrowserWindow,session,ipcMain,clipboard,nativeImage,shell}=require('electron');
-const desktopLinks=[], clipboardWrites=[], openExternal=shell.openExternal.bind(shell);
+const desktopLinks=[], clipboardWrites=[], richClipboardWrites=[], openExternal=shell.openExternal.bind(shell);
 clipboard.writeText=value=>clipboardWrites.push(value);
+clipboard.write=value=>richClipboardWrites.push(value);
 shell.openExternal=(url,...args)=>url.startsWith('codex:')?(desktopLinks.push(url),Promise.resolve()):openExternal(url,...args);
 const repo=path.resolve(__dirname,'..'),temp=fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(),'myide-codex-ui-'))),roots=['A','B'].map(n=>path.join(temp,n)),out=path.join(repo,'.ui-check-trash','codex-ui-'+process.pid);
 fs.mkdirSync(out,{recursive:true});for(const root of roots){fs.mkdirSync(root);fs.writeFileSync(path.join(root,'fixture.txt'),'MYIDE_DYNAMIC_READ_SENTINEL\n');}
@@ -62,8 +63,11 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
   const pixels=Buffer.alloc(240*320*4);
  for(let i=0;i<pixels.length;i+=4){pixels[i]=80;pixels[i+1]=160;pixels[i+2]=55;pixels[i+3]=255;}
  fs.writeFileSync(picture,nativeImage.createFromBitmap(pixels,{width:240,height:320}).toPNG());
+ const secondPicture=path.join(roots[1],'native-preview-second.png');
+ fs.writeFileSync(secondPicture,nativeImage.createFromPath(picture).resize({width:120}).toPNG());
+ const mixedMessage='带图片的历史消息\n保留 <标签> 和 & 符号';
  fixture.threads.set(externalId,{id:externalId,projectId:'desktop-empty',cwd:roots[1],model:'offline-codex',historyMode:'paginated',name:'桌面 Codex 外部会话',updatedAt:1710000000,running:false,queueListUnavailable:true,
-  items:[{type:'userMessage',content:[{type:'text',text:'CODEX_PREVIOUS_QUESTION'}]},{type:'agentMessage',text:'CODEX_PREVIOUS_ANSWER'},{type:'userMessage',content:[{type:'text',text:'带图片的历史消息'},{type:'localImage',path:picture}]}]});
+  items:[{type:'userMessage',content:[{type:'text',text:'CODEX_PREVIOUS_QUESTION'}]},{type:'agentMessage',text:'CODEX_PREVIOUS_ANSWER'},{type:'userMessage',content:[{type:'text',text:mixedMessage},{type:'localImage',path:picture},{type:'localImage',path:secondPicture}]}]});
  const earlierTurns=fixture.requests.filter(r=>r.method==='turn/start').length;
  await js(()=>App.showTool('sessions'));
  await until(()=>js(()=>[...document.querySelectorAll('.ai-hist-nm')].some(node=>node.textContent==='桌面 Codex 外部会话')),'external catalog');
@@ -136,6 +140,40 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  const historyImageSelector='#ai-msgs .ai-user .ai-image-preview';
  const draftImageSelector='#ai-images .ai-image-preview';
  await until(()=>js(selector=>document.querySelector(selector+' img')?.naturalWidth===240,historyImageSelector),'loaded image from Codex history');
+ await js(selector=>document.querySelector(selector).closest('.ai-msg').querySelector('.ai-copy').click(),historyImageSelector);
+ await until(()=>richClipboardWrites.length===1,'message copy writes rich and plain clipboard formats');
+ const copiedMessage=richClipboardWrites[0];
+ check('Copying a chat message puts the original text and both images on the clipboard',
+   copiedMessage.text===mixedMessage&&copiedMessage.html.includes('&lt;标签&gt; 和 &amp; 符号')&&
+   await js((html,selector)=>{
+     const fragment=document.createElement('template');
+     fragment.innerHTML=html;
+     const sources=images=>Array.from(images,img=>img.getAttribute('src'));
+     const pasted=sources(fragment.content.querySelectorAll('img'));
+     return pasted.length===2&&JSON.stringify(pasted)===JSON.stringify(sources(document.querySelectorAll(selector+' img')));
+   },copiedMessage.html,historyImageSelector));
+ await js(({text,html})=>{
+   const input=document.getElementById('ai-input');
+   input.value='before replace after';
+   input.setSelectionRange(7,14);
+   const data=new DataTransfer();
+   data.setData('text/plain',text);
+   data.setData('text/html',html);
+   input.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));
+ },copiedMessage);
+ await until(()=>js(()=>[...document.querySelectorAll('#ai-images img')].map(img=>img.naturalWidth).join(',')==='240,120'),
+   'both copied attachments are pasted in order');
+ check('Pasting the copied message restores the original text and both attachments',
+   await js(text=>document.getElementById('ai-input').value==='before '+text+' after',mixedMessage));
+ await js(()=>{
+   const input=document.getElementById('ai-input');
+   input.value='';
+   input.dispatchEvent(new Event('input',{bubbles:true}));
+   while (document.querySelector('#ai-images .ai-img-x')) document.querySelector('#ai-images .ai-img-x').click();
+   [...document.querySelectorAll('#ai-msgs .ai-user')].find(row=>row.textContent.includes('CODEX_PREVIOUS_QUESTION')).querySelector('.ai-copy').click();
+ });
+ await until(()=>clipboardWrites.includes('CODEX_PREVIOUS_QUESTION'),'text-only copy keeps the plain clipboard format');
+ check('Plain messages keep their text-only copy behavior',richClipboardWrites.length===1);
  const pasteComposerImage=()=>js(base64=>{
    const bytes=Uint8Array.from(atob(base64),char=>char.charCodeAt(0));
    const data=new DataTransfer();

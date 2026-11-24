@@ -1495,6 +1495,23 @@ ipcMain.handle('clip:copyImageAt', (event, x, y) => {
   } catch(error) { return {ok:false,error:error.message}; }
 });
 ipcMain.handle('clip:copy', (_e, t) => { clipboard.writeText(String(t)); return true; });
+ipcMain.handle('clip:copyChatMessage', (event, text, images) => {
+  if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame ||
+      typeof text !== 'string' || !Array.isArray(images) || !images.length) return false;
+  const maxClipboardChars = 48 * 1024 * 1024;
+  let size = text.length;
+  const raster = /^data:image\/(?:png|jpe?g|gif|webp|bmp|avif);base64,[A-Za-z0-9+/]+={0,2}$/i;
+  for (const source of images) {
+    if (typeof source !== 'string' || (size += source.length) > maxClipboardChars || !raster.test(source)) return false;
+  }
+  const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const body = '<div style="white-space:pre-wrap">' + escaped + '</div>';
+  const attachments = images.map(source => '<div><img src="' + source + '" alt="" style="max-width:100%;height:auto"></div>').join('');
+  const html = '<div data-myide-chat-message="1">' + body + attachments + '</div>';
+  if (html.length > maxClipboardChars) return false;
+  clipboard.write({ text, html });
+  return true;
+});
 ipcMain.handle('clip:writePng', (event, png) => {
   if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame ||
     typeof png !== 'string' || png.length > 8 * 1024 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(png)) return false;

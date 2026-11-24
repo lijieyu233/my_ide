@@ -1777,7 +1777,7 @@ const AiPanel = (() => {
     }
   }
 
-  // 消息气泡（含悬停复制按钮：一键复制原始 markdown 文本）
+  // 图文消息保留纯文本供普通输入框使用，支持富文本的位置可粘贴完整内容。
   function addMsg(role, text, opts) {
     if (role === 'user' || text) sealActivityGroup();
     const row = document.createElement('div');
@@ -1794,12 +1794,15 @@ const AiPanel = (() => {
     // 复制按钮（PyCharm AI Assistant 式悬停出现；文本可选中 + 一键复制双通道）
     const cp = document.createElement('button');
     cp.className = 'ai-copy';
-    cp.title = '复制全文';
+    const copyLabel = opts?.imgs?.length ? '复制消息' : '复制全文';
+    cp.title = copyLabel;
     cp.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1.5"/><path d="M10 5V3H3v7h2"/></svg>';
-    cp.setAttribute('aria-label','复制全文');
+    cp.setAttribute('aria-label', copyLabel);
     cp.onclick = async () => {
       try {
-        await MI.copyText(String(text == null ? '' : text));
+        const value = String(text ?? '');
+        const copied = opts?.imgs?.length ? await window.myIDE.clip.copyChatMessage(value, opts.imgs) : await MI.copyText(value);
+        if (copied === false) throw Error('剪贴板未写入');
         MI.toast('📋 已复制' + (role === 'user' ? '该消息' : '回复全文'), 'ok');
       } catch (e) { MI.toast('复制失败: ' + String(e), 'err'); }
     };
@@ -1960,9 +1963,28 @@ const AiPanel = (() => {
       box.appendChild(d);
     });
   }
+  function pasteChatMessage(event, clipboard) {
+    const html = clipboard.getData?.('text/html');
+    if (!html || !html.includes('data-myide-chat-message="1"') || html.length > 50 * 1024 * 1024) return false;
+    // Template contents are inert, so parsing clipboard HTML cannot load remote images.
+    const fragment = document.createElement('template');
+    fragment.innerHTML = html;
+    const message = fragment.content.querySelector('[data-myide-chat-message="1"]');
+    const raster = /^data:image\/(?:png|jpe?g|gif|webp|bmp|avif);base64,[A-Za-z0-9+/]+={0,2}$/i;
+    const images = [...(message?.querySelectorAll('img') || [])].map(image => image.getAttribute('src'));
+    if (!images.length || images.some(source => !raster.test(source))) return false;
+    event.preventDefault();
+    const text = clipboard.getData('text/plain');
+    if (text) inputEl.setRangeText(text, inputEl.selectionStart, inputEl.selectionEnd, 'end');
+    for (const source of images) pendingImages.push(source);
+    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+    renderImages();
+    return true;
+  }
+
   function onPasteImage(e) {
     const dt = e.clipboardData;
-    if (!dt || !dt.items) return;
+    if (!dt || pasteChatMessage(e, dt) || !dt.items) return;
     const item = [...dt.items].find((it) => it.kind === 'file' && /^image\//.test(it.type || ''));
     if (!item) return;
     e.preventDefault();
