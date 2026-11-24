@@ -1674,14 +1674,163 @@ const AiPanel = (() => {
     });
   }
 
+  let messageNavigation;
+  function initMessageNavigation() {
+    const box = msgsEl;
+    const rail = document.getElementById('ai-message-nav');
+    const preview = document.getElementById('ai-message-preview');
+    const latest = document.getElementById('ai-message-latest');
+    if (!box || !rail || !preview || !latest) return;
+    const transcript = box.parentElement;
+    const selector = '.ai-msg:is(.ai-user, .ai-assistant)';
+    let rows = [], active, selected, selectedTop, held, frame, listDirty = true;
+    const buttons = new Map();
+    const atLatest = () => box.scrollHeight - box.clientHeight - box.scrollTop <= 8;
+    const paused = () => !!held && held.parentElement === box;
+
+    function showPreview(button) {
+      const row = rows[Number(button.dataset.index)];
+      if (!row || row.parentElement !== box) return;
+      const body = row.querySelector('.ai-md');
+      const text = body?.textContent.trim().replace(/\s+/g, ' ') || '';
+      const excerpt = Array.from(text.slice(0, 265)).slice(0, 132).join('');
+      preview.textContent = text
+        ? excerpt + (excerpt.length < text.length ? '…' : '')
+        : body?.querySelector('img') ? '图片' : button.getAttribute('aria-label');
+      preview.hidden = false;
+      const offset = button.getBoundingClientRect().top - transcript.getBoundingClientRect().top;
+      preview.style.top = Math.max(4, Math.min(offset, transcript.clientHeight - preview.offsetHeight - 4)) + 'px';
+    }
+
+    function syncRows() {
+      const next = Array.from(box.children).filter(row => row.matches(selector));
+      const append = rows.every((row, index) => row === next[index]);
+      if (!append) {
+        rail.replaceChildren();
+        buttons.clear();
+        active = null;
+        preview.hidden = true;
+      }
+      const additions = document.createDocumentFragment();
+      next.slice(append ? rows.length : 0).forEach((row, offset) => {
+        const index = (append ? rows.length : 0) + offset;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.dataset.index = index;
+        button.setAttribute('aria-label', '第 ' + (index + 1) + ' 条消息 · ' + (row.classList.contains('ai-user') ? '你' : '助手'));
+        button.tabIndex = -1;
+        buttons.set(row, button);
+        additions.append(button);
+      });
+      rail.append(additions);
+      rows = next;
+      rail.hidden = rows.length === 0;
+      if (selected?.parentElement !== box) selected = null;
+      if (!paused()) held = null;
+    }
+
+    function refresh() {
+      frame = null;
+      if (listDirty) { syncRows(); listDirty = false; }
+      latest.hidden = !paused();
+      if (!rows.length || !box.clientHeight) return;
+      let low = 0, high = rows.length - 1;
+      const top = box.scrollTop + 20;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (rows[middle].offsetTop <= top) low = middle;
+        else high = middle - 1;
+      }
+      const row = selected || rows[atLatest() && box.scrollTop > 0 ? rows.length - 1 : low];
+      const button = buttons.get(row);
+      if (active === button) return;
+      if (active) { active.removeAttribute('aria-current'); active.tabIndex = -1; }
+      active = button;
+      active.setAttribute('aria-current', 'true');
+      active.tabIndex = 0;
+      if (active.offsetTop < rail.scrollTop) rail.scrollTop = active.offsetTop;
+      else if (active.offsetTop + active.offsetHeight > rail.scrollTop + rail.clientHeight) {
+        rail.scrollTop = active.offsetTop + active.offsetHeight - rail.clientHeight;
+      }
+    }
+
+    function schedule() {
+      if (frame == null) frame = requestAnimationFrame(refresh);
+    }
+    function resume() {
+      held = selected = null;
+      schedule();
+    }
+    function jump(button) {
+      const row = rows[Number(button.dataset.index)];
+      if (!row || row.parentElement !== box) return;
+      selected = row;
+      box.scrollTop = Math.max(0, row.offsetTop - 12);
+      selectedTop = box.scrollTop;
+      held = row === rows.at(-1) && atLatest() ? null : row;
+      preview.hidden = true;
+      if (!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+        row.querySelector('.ai-md')?.animate?.([{ backgroundColor: 'var(--bg-selected)', offset: .35 }, {}], 650);
+      }
+      schedule();
+    }
+
+    rail.addEventListener('pointerover', event => {
+      const button = event.target.closest('button');
+      if (button) showPreview(button);
+    });
+    rail.addEventListener('pointerleave', () => { preview.hidden = true; });
+    rail.addEventListener('focusin', event => {
+      if (event.target.matches('button')) showPreview(event.target);
+    });
+    rail.addEventListener('focusout', () => { preview.hidden = true; });
+    rail.addEventListener('scroll', () => { preview.hidden = true; }, { passive: true });
+    rail.addEventListener('click', event => {
+      const button = event.target.closest('button');
+      if (button) jump(button);
+    });
+    rail.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { preview.hidden = true; return; }
+      const button = event.target.closest('button');
+      if (!button) return;
+      const index = Number(button.dataset.index);
+      const target = { ArrowUp: index - 1, ArrowDown: index + 1, Home: 0, End: rows.length - 1 }[event.key];
+      if (target === undefined) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const next = buttons.get(rows[Math.max(0, Math.min(rows.length - 1, target))]);
+      next.focus({ preventScroll: true });
+      if (next.offsetTop < rail.scrollTop || next.offsetTop + next.offsetHeight > rail.scrollTop + rail.clientHeight) {
+        rail.scrollTop = next.offsetTop - rail.clientHeight / 2;
+        requestAnimationFrame(() => { if (document.activeElement === next) showPreview(next); });
+      }
+    });
+    box.addEventListener('scroll', () => {
+      if (selected && Math.abs(selectedTop - box.scrollTop) > 1) selected = null;
+      if (!selected && atLatest()) held = null;
+      schedule();
+    }, { passive: true });
+    latest.addEventListener('click', () => { resume(); scrollBottom(); box.focus({ preventScroll: true }); });
+
+    // Streaming updates are inside a row. Only additions and removals change the message index.
+    new MutationObserver(records => {
+      if (!records.some(record => [...record.addedNodes, ...record.removedNodes].some(node => node.matches?.(selector)))) return;
+      listDirty = true;
+      schedule();
+    }).observe(box, { childList: true });
+    if (typeof ResizeObserver !== 'undefined') new ResizeObserver(schedule).observe(box);
+    messageNavigation = { paused, resume };
+    schedule();
+  }
+
   // 真实项目数千条历史逐行读 scrollHeight 会反复强制布局；回放仍同步保留全部内容，只在最外层结算一次滚动。
   let replayDepth = 0, historyReplayJob = null;
   const pendingScrolls=new WeakSet();
   function scrollBottom() {
     const box=msgsEl;
-    if(!box||replayDepth||backgroundView||!box.isConnected||pendingScrolls.has(box))return;
+    if(!box||replayDepth||backgroundView||!box.isConnected||pendingScrolls.has(box)||messageNavigation?.paused())return;
     // 流式突发不能逐条读取scrollHeight，否则每个chunk都迫使整栏重新布局。
-    pendingScrolls.add(box);setTimeout(()=>{pendingScrolls.delete(box);if(box===msgsEl&&!backgroundView&&box.isConnected&&!replayDepth)box.scrollTop=box.scrollHeight;},16);
+    pendingScrolls.add(box);setTimeout(()=>{pendingScrolls.delete(box);if(box===msgsEl&&!backgroundView&&box.isConnected&&!replayDepth&&!messageNavigation?.paused())box.scrollTop=box.scrollHeight;},16);
   }
   const livePaints=new WeakMap(),LIVE_TEXT_LIMIT=8192;
   function paintLiveText(row,text,{final=false,plain=false,cursor=false}={}){
@@ -2579,6 +2728,7 @@ const AiPanel = (() => {
     if(inputOptions?.draft){run.initialInputDraft=inputOptions.draft;run.inputTransport={dshWatchId:inputOptions.dshWatchId,dshInputMode:inputOptions.dshInputMode,expectedRunId:inputOptions.expectedRunId};}
     if (!run.initialInputDraft && cfg.engine !== 'codex') await followActive();
     if (!runIsLive(run)) return;
+    messageNavigation?.resume();
     agentRounds = 0;   // 新任务重置 Agent 循环计数
     closeSlash();
     if (!run.initialInputDraft) compressHistory(); // 补充消息已锁定自己的附件，由宿主管理历史
@@ -3189,7 +3339,7 @@ const AiPanel = (() => {
       if (!samePrefix || msgs.length !== next.length) {
         const appendFrom = samePrefix ? msgs.length : 0;
         const container = msgsEl, top = container.scrollTop;
-        const follow = container.scrollHeight - container.clientHeight - top < 36;
+        const follow = !messageNavigation?.paused() && container.scrollHeight - container.clientHeight - top < 36;
         msgs = appendFrom ? msgs.concat(next.slice(appendFrom)) : next;
         if (!await replayHistory(wanted, !appendFrom, appendFrom, follow)) return;
         if (!follow && !appendFrom) container.scrollTop = top;
@@ -5673,6 +5823,7 @@ const AiPanel = (() => {
     let savedFont;try{savedFont=localStorage.getItem(LS_FONT);}catch{}
     applyAiFont(savedFont == null || savedFont.trim() === '' ? AI_FONT_DEFAULT : savedFont);
     document.getElementById('ai-reading-settings')?.addEventListener('click',toggleReadingSettings);
+    initMessageNavigation();
     msgsEl?.addEventListener('click', event => {
       const href = replyAnchor(event)?.getAttribute('href')?.trim();
       if (!href || href.startsWith('#')) return;

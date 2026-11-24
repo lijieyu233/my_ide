@@ -470,7 +470,12 @@
     </div>
     </div>
     <div id="ai-session-preview-bar" class="ai-session-preview-bar hidden"></div>
-    <div id="ai-msgs"></div>
+    <div class="ai-transcript">
+      <nav id="ai-message-nav" aria-label="消息跳转" hidden></nav>
+      <div id="ai-msgs" tabindex="-1"></div>
+      <div id="ai-message-preview" aria-hidden="true" hidden></div>
+      <button id="ai-message-latest" type="button" aria-label="回到最新消息" title="回到最新消息" hidden><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M4 9l4 4 4-4"/></svg></button>
+    </div>
     <div class="ai-input-bar">
       <!-- 运行状态行：与 DSH 一致，固定在输入框上方（不在消息流里滚动） -->
       <div id="ai-runstate" class="ai-run-state hidden" role="status" aria-live="polite">

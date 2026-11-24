@@ -4635,6 +4635,7 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 /* 模型与推理留在输入区；连接和工程归属并入同一个紧凑头部，正文保持阅读层级。 */
 #ai-panel {
   container-type: inline-size; color-scheme: dark;
+  --ai-chat-inset: max(min(12%, 28px), calc((100% - 780px) / 2));
   --ai-body-text: #d1d5db; --ai-strong-text: #f4f5f7; --ai-process-text: #a3aab5; --ai-header-text: #c7cbd2;
   --ai-link-text: #87baff; --ai-code-text: #e9bc81; --ai-running-text: #87baff;
   --ai-success-text: #8bc9a0; --ai-warning-text: #e5bc70; --ai-error-text: #f09097;
@@ -4682,7 +4683,41 @@ body.theme-light #ai-panel, body.theme-pink #ai-panel {
 #ai-dsh-info { min-width: 0; max-width: 8em; font-size: 1em; color: var(--ai-process-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #ai-dsh-reconnect { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: 0; border-radius: 5px; padding: 0; color: var(--ai-process-text); background: transparent; }
 #ai-dsh-reconnect:hover { background: var(--btn-hover); color: var(--ai-body-text); }
-#ai-msgs { padding: 20px 16px; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.ai-transcript { flex: 1; min-height: 0; min-width: 0; display: flex; position: relative; }
+#ai-msgs {
+  position: relative; min-width: 0;
+  padding: 20px var(--ai-chat-inset);
+  overscroll-behavior: contain; scrollbar-gutter: stable both-edges;
+}
+#ai-msgs:focus { outline: none; }
+#ai-message-nav {
+  position: absolute; z-index: 1; inset: 14px auto 14px 3px;
+  display: flex; flex-direction: column; align-items: stretch; width: 22px;
+  overflow: auto; overscroll-behavior: contain; scrollbar-width: none;
+}
+#ai-message-nav > button {
+  flex: 0 0 11px; display: flex; align-items: center; padding: 0 0 0 5px;
+  border: 0; background: transparent; color: var(--ai-process-text); cursor: pointer;
+}
+#ai-message-nav > button::before { content: ''; width: 5px; height: 1px; background: currentColor; opacity: .40; }
+#ai-message-nav > button:is(:hover, :focus-visible, [aria-current]) { color: var(--ai-body-text); }
+#ai-message-nav > button:is(:hover, :focus-visible, [aria-current])::before { width: 15px; opacity: 1; }
+#ai-message-nav > button:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+#ai-message-preview {
+  position: absolute; z-index: 2; left: 28px; max-width: min(280px, calc(100% - 40px));
+  padding: 8px 10px; border: 1px solid var(--border-mid); border-radius: 8px;
+  background: var(--bg-panel); color: var(--ai-body-text); box-shadow: 0 4px 16px #0004;
+  font-size: calc(var(--ai-font-size, 13px) - 1px); line-height: 1.45;
+  overflow-wrap: anywhere; pointer-events: none;
+}
+#ai-message-latest {
+  position: absolute; z-index: 1; bottom: 8px; left: 50%; transform: translateX(-50%);
+  width: 28px; height: 28px; display: grid; place-items: center; padding: 0;
+  border: 1px solid var(--border-mid); border-radius: 50%;
+  background: var(--bg-panel); color: var(--ai-body-text); cursor: pointer;
+}
+#ai-message-latest:hover { background: var(--bg-hover); }
+:is(#ai-message-nav, #ai-message-preview, #ai-message-latest)[hidden] { display: none; }
 .ai-welcome { padding: 12px 4px 0; }
 .ai-card-ic { width: 32px; height: 32px; margin-bottom: 12px; border-radius: 9px; }
 .ai-card-title { font-size: 1.08em; margin-bottom: 8px; }
@@ -4803,7 +4838,7 @@ details[open] > .ai-tool-summary > .ai-tool-ic::after { transform: rotate(225deg
 .ai-dsh-thought { color: var(--text-dim); background: transparent; border-color: var(--border-pane); }
 .ai-dsh-thought summary, .ai-dsh-output summary { cursor: pointer; font-size: .92em; }
 .ai-edit, .ai-confirm { border-color: var(--ui-line); }
-.ai-input-bar { display: flex; flex-wrap: wrap; padding: 10px 12px 8px; gap: 6px; border-top: 0; }
+.ai-input-bar { display: flex; flex-wrap: wrap; padding: 10px var(--ai-chat-inset) 8px; gap: 6px; border-top: 0; }
 .ai-input-box { flex-direction: column; align-items: stretch; gap: 8px; width: 100%; min-width: 0; padding: 12px; border-radius: 17px; border-color: transparent; background: color-mix(in srgb, var(--text) 7%, var(--bg)); }
 .ai-input-box:focus-within { border-color: var(--ui-line); box-shadow: none; }
 #ai-input { flex: none; width: 100%; height: 50px; min-height: 50px; padding: 0; font-size: var(--ai-font-size, 13px); line-height: 1.65; letter-spacing: 0; word-spacing: 0; }
@@ -4852,7 +4887,8 @@ details[open] > .ai-tool-summary > .ai-tool-ic::after { transform: rotate(225deg
 }
 @container (max-width: 160px) {
   /* 用户可主动压到零宽；控件裁在本栏内，不能盖住编辑区或右侧工具入口。 */
-  #ai-panel > :not(#ai-resize):not(#ai-msgs) { overflow: hidden; }
+  #ai-panel > :not(#ai-resize):not(.ai-transcript) { overflow: hidden; }
+  #ai-message-nav { display: none; }
 }
 
 /* 编辑组是文档布局，与Markdown源码/预览对照相互独立。 */
