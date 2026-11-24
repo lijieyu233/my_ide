@@ -2649,8 +2649,8 @@ body.theme-light #set-box, body.theme-pink #set-box { color-scheme: light; }
 /* ---------- Codex：中性深灰、冷灰界面、绿色强调 ---------- */
 body.theme-codex {
   --md-title: #dce5df;
-  --bg: #202122;
-  --bg-tabbar: #1d2021;
+  --bg: #181919;
+  --bg-tabbar: #1d1e1e;
   --bg-panel: #191d1f;
   --bg-title: #15191b;
   --bg-hover: #24292b;
