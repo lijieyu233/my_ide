@@ -1079,8 +1079,8 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const rows=()=>[...f.w.document.querySelectorAll('.ai-hist-row')];
     assert.equal(rows().length,2,'历史列表应有两条：'+rows().map(r=>r.textContent.trim()));
     assert(rows().every(r=>r.classList.contains('running')),'两条都在跑，都要标运行中');
-    assert(rows().every(r=>r.querySelector('.ai-hist-run')),'运行中要有圆点标识');
-    assert(rows().every(r=>r.textContent.includes('运行中')),'运行中要有文字标识');
+    assert(rows().every(r=>r.querySelector('.ai-hist-indicator .ai-hist-run')),'运行中使用状态列的转圈');
+    assert(rows().every(r=>!r.textContent.includes('运行中')),'状态不添加可见文字');
     assert.equal(rows().filter(r=>r.classList.contains('cur')).length,1,'当前查看的只有一条');
 
     // 切回 A：接回后台那份（带着后台输出），不中断任何一方
@@ -1107,13 +1107,13 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
       {sessionId:'host-selected',title:'当前已结束的对话',cwd:f.A,running:false,updatedAt:1,bindings:[{sessionId:selected,rootId:f.A,scope:'project'}]}
     ];
     const rows=()=>[...f.w.document.querySelectorAll('.ai-hist-row')];
-    f.openSessions();await until(()=>rows().length===2&&rows().some(r=>r.textContent.includes('后台运行中')));
+    f.openSessions();await until(()=>rows().length===2&&rows().some(r=>r.querySelector('.ai-hist-run')));
     assert.equal(rows()[0].dataset.id,selected);assert(rows()[0].classList.contains('cur'));assert.equal(rows()[0].getAttribute('aria-current'),'true');
     assert(!rows()[0].querySelector('.ai-hist-run'));
     const other=rows()[1];assert.equal(other.dataset.id,background);assert(!other.hasAttribute('aria-current'));
-    assert.equal(other.querySelector('.ai-hist-live').textContent,'后台运行中');assert(other.querySelector('.ai-hist-ts .ai-hist-run'));
+    assert(other.querySelector('.ai-hist-indicator .ai-hist-run'));assert(!other.textContent.includes('运行中'));
     other.click();await tick();await tick();f.openSessions();await tick();await tick();
-    assert.equal(rows()[0].dataset.id,background);assert.equal(rows()[0].getAttribute('aria-current'),'true');assert.equal(rows()[0].querySelector('.ai-hist-live').textContent,'运行中');
+    assert.equal(rows()[0].dataset.id,background);assert.equal(rows()[0].getAttribute('aria-current'),'true');assert(rows()[0].querySelector('.ai-hist-indicator .ai-hist-run'));
     assert.equal(rows().filter(r=>r.hasAttribute('aria-current')).length,1);assert.equal(f.aborts.length,0);assert.equal(f.calls.length,2);
   });
   await test('Harness切换会话/新建/切项目/收起面板都不中断，只有停止按钮发取消',async()=>{
@@ -1182,7 +1182,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     // ③ running 取宿主实时值
     const live=rows().find(r=>r.textContent.includes('DSH 里发起的会话'));
     const idle=rows().find(r=>r.textContent.includes('DSH 里跑完的会话'));
-    assert(live.classList.contains('running')&&live.textContent.includes('运行中'),'宿主标记 running 的显示运行中');
+    assert(live.classList.contains('running')&&live.querySelector('.ai-hist-indicator .ai-hist-run'),'宿主标记 running 的显示转圈');
     assert(!idle.classList.contains('running'),'宿主已结束的不标运行中');
     // 在 DSH 里中断：宿主列表变为 running=false，再开历史 → 标记必须跟着消失
     f.dshCatalog[0].running=false;
@@ -1220,7 +1220,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     f.openSessions();await tick();await tick();
     const rows=f.w.document.querySelectorAll('.ai-hist-row');assert.equal(rows.length,1);
     assert.equal(rows[0].dataset.id,id);assert(rows[0].textContent.includes('DSH标题'));
-    assert(rows[0].textContent.includes('运行中'));
+    assert(rows[0].querySelector('.ai-hist-indicator .ai-hist-run'));
     assert.equal(rows[0].getAttribute('aria-current'),'true');
     f.renameSession('同步新标题',rows[0]);
     await until(()=>f.renames?.length===1);assert.equal(f.renames[0].id,'host-same');
@@ -1241,7 +1241,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     f.dshCatalog=[{sessionId:'session-own',title:'本工程会话',cwd:f.A,rootDir:f.A},{sessionId:'session-foreign',title:'其他工程会话',cwd:f.B,rootDir:f.B,running:true},{sessionId:'session-unknown',title:'归属未知',cwd:''},{sessionId:'session-unused',title:'空白不显示',cwd:f.B,rootDir:f.B,blank:true}];
     f.openSessions();await tick();await tick();
     const groups=f.w.document.querySelectorAll('.ai-hist-group');assert.equal(groups.length,3);
-    const foreign=f.element('[data-id="host:session-foreign"]');assert.equal(foreign.dataset.root,f.B);assert(foreign.textContent.includes('后台运行中'));assert.equal(foreign.querySelectorAll('button').length,1);
+    const foreign=f.element('[data-id="host:session-foreign"]');assert.equal(foreign.dataset.root,f.B);assert(foreign.querySelector('.ai-hist-indicator .ai-hist-run'));assert(!foreign.textContent.includes('运行中'));assert.equal(foreign.querySelectorAll('button').length,1);
     const foreignMenu=f.sessionMenu(foreign);
     assert.deepEqual([...foreignMenu.querySelectorAll('[role="menuitem"]')].map(item=>item.textContent),
       ['打开会话','重命名','置顶会话','分叉会话','复制 Session ID','在文件资源管理器中显示','在 VS Code 中打开','归档会话']);

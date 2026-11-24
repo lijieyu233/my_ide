@@ -3812,8 +3812,15 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ai-hist-hint svg.ic { width: 12px; height: 12px; }
 .ai-hist-ts { display: inline-flex; align-items: center; gap: 4px; font-size: .9em; color: var(--text-dim); flex: none; white-space: nowrap; }
 .ai-hist-ts:empty, .ai-hist-row:not(.cur, .running, :hover, :focus-within) .ai-hist-ts { display: none; }
-.ai-hist-run { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--ok-text, #4caf7d); }
-.ai-hist-live { color: var(--ok-text, #4caf7d); }
+.ai-hist-indicator { display: grid; place-items: center; flex: 0 0 12px; height: 12px; }
+.ai-hist-run {
+  box-sizing: border-box; width: 10px; height: 10px; border-radius: 50%;
+  border: 1px solid var(--text-dim); border-right-color: var(--text-bright);
+  animation: ai-hist-spin .75s linear infinite;
+}
+.ai-hist-unread { width: 6px; height: 6px; border-radius: 50%; background: var(--ok-text, #4caf7d); }
+@keyframes ai-hist-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ai-hist-run { animation: none; } }
 .ai-hist-b { display: grid; place-items: center; flex: none; width: 22px; height: 24px; padding: 0; color: var(--text-dim); border-radius: var(--ui-radius); }
 .ai-hist-b svg.ic { width: 13px; height: 13px; }
 .ai-hist-rows .ai-hist-b { height: var(--sidebar-tree-row-height); }

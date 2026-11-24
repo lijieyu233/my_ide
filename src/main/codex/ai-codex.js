@@ -54,6 +54,7 @@ function createService(options={}){
   let workspaceBindings;
   const mapping=()=>valueOf(options.mappingFile),explicitHome=()=>valueOf(options.homeDir)||options.home;
   const observeDesktop=desktopState.createDesktopStatusReader();
+  const desktopTurns = new Map();
   const desktopAvailable = () => !connection?.shared && options.desktopOwnsProjectThreads?.() === true;
   const codexHome = () => explicitHome() || process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
   const workspace=()=>path.join(mapping()?path.dirname(mapping()):path.join(os.tmpdir(),'myide-codex'),'myide-codex-detached');
@@ -352,6 +353,24 @@ function createService(options={}){
     });
   }
 
+  async function completedDesktopTurn(request, item, running) {
+    const id = item.threadId, previous = desktopTurns.get(id);
+    if (item.archived) { desktopTurns.delete(id); return; }
+    if (running) {
+      if (!previous?.running) {
+        if (desktopTurns.size >= 1000) desktopTurns.delete(desktopTurns.keys().next().value);
+        desktopTurns.set(id, { running: true });
+      }
+      return;
+    }
+    if (!previous?.running) return previous?.completed;
+    const latest = await history.readLatestTurn(request, { id, historyMode: item.historyMode }).catch(() => null);
+    if (!latest || latest.turn?.status === 'inProgress' || desktopTurns.get(id) !== previous) return;
+    const completed = latest.turn?.status === 'completed' && typeof latest.turn.id === 'string' ? latest.turn.id : undefined;
+    desktopTurns.set(id, { completed });
+    return completed;
+  }
+
   async function listHistory(cfg, rootDir = '') {
     const conn = await connect(cfg);
     const request = historyRequest(conn);
@@ -398,8 +417,10 @@ function createService(options={}){
     return { projects: shownProjects, bindings, activeBinding: bindings.find(binding => activeRoot && norm(binding.rootDir) === norm(activeRoot)), items: await Promise.all(visible.map(async item => {
       const desktop = item.archived || locallyRunning.has(item.threadId)
         ? { running: false } : conn.shared ? { running: item.running } : await observeDesktop(home, item);
-      const { rolloutPath, ...summary } = item;
-      return { ...summary, ...desktop, desktopOwned, ...(conn.shared ? { sharedControl: true } : {}) };
+      const completedTurnId = locallyRunning.has(item.threadId)
+        ? undefined : await completedDesktopTurn(request, item, desktop.running);
+      const { rolloutPath, historyMode, ...summary } = item;
+      return { ...summary, ...desktop, completedTurnId, desktopOwned, ...(conn.shared ? { sharedControl: true } : {}) };
     })) };
   }
 

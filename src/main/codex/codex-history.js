@@ -77,7 +77,8 @@ async function listProjectThreads(request, archived = false) {
   await pages(request, 'thread/list', { ...accountThreads, archived }, 100, maxThreadPages, data => {
     for (const thread of data) {
       if (isProjectThread(thread) && !threads.has(thread.id)) {
-        threads.set(thread.id, { ...threadSummary(thread), archived, rolloutPath: thread.path, running: !archived && thread.status?.type === 'active' });
+        threads.set(thread.id, { ...threadSummary(thread), archived, rolloutPath: thread.path,
+          historyMode: thread.historyMode, running: !archived && thread.status?.type === 'active' });
       }
     }
   });

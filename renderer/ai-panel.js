@@ -185,12 +185,19 @@ const AiPanel = (() => {
       ? run.codexInputStatus || '原会话正在 Codex 中打开' : '';
     setRunState(run, inputStatus || (status === 'limited' ? '已达本次工具操作上限，可继续处理剩余任务' : status === 'cancelled' ? run.engine==='dsh'?'已停止本地派发；DSH 停止和队列撤回状态请刷新确认':run.engine==='codex'?'已请求停止 Codex；以原生回执为准':'已停止' : status === 'incomplete' ? '回复未完成，未执行工具' : status === 'failed' ? '生成失败' : '已完成'), true);
     if (curStream === run.stream?.element) { curStream = null; curText = ''; }
+    if (status === 'completed') {
+      const { sessionId, rootId, requestId } = run.identity;
+      const threadId = run.engine === 'codex' && run.nativeState?.threadId;
+      const key = threadId ? historyCodexKey(threadId) : historyRunKey(run.engine, sessionId, rootId);
+      saveHistoryCompletion(key, run.nativeState?.turnId || requestId, !canSeeHistoryReply());
+    }
     busy = false; setBusyUI(false); persistSession(); markRegen();
     if (!backgroundView) document.getElementById('ai-stop')?.classList.add('hidden');
     for(const [id,item] of nativeInputRequests)if(item.run===run){if(item.rendered)nativeInputRequests.delete(id);else if(item.accepted&&!item.error)item.error='本次运行已结束，但这条消息尚未确认被消费。请先刷新原生队列确认，再决定是否恢复草稿。';}
     renderNativeInputUI();
     if (run.stream) Promise.resolve(window.myIDE.ai.finish(run.stream.context)).catch(() => {});
     if (!backgroundView && run.engine === 'codex') void refreshNativeQueue(true);
+    if (!backgroundView) refreshHistInPlace();
     reconcileDshAfterOwn(run).catch(() => {});
   }
   function stopRun(invalidate = false) {
@@ -1522,6 +1529,7 @@ const AiPanel = (() => {
     }
     if (v && inputEl) {inputEl.focus();refreshDshOptions();restoreBackgroundRun();ensureDshWatch();}
     if (getConfig().engine === 'codex') syncHistoryCatalog();
+    if (v) refreshHistInPlace();
   }
 
   // ---------- 消息渲染 ----------
@@ -3505,11 +3513,56 @@ const AiPanel = (() => {
       if(lastUserAt!=null)markRegen();if(follow)scrollBottom();return true;
     }finally{if(historyReplayJob===job){historyReplayJob=null;setBusyUI(busy);}}
   }
+  const historyReadKey = 'myide-history-completions';
+  const historyCompletions = new Map();
+  try {
+    for (const [key, mark] of Object.entries(JSON.parse(localStorage.getItem(historyReadKey)) || {})) {
+      if (typeof mark?.turn === 'string') historyCompletions.set(key, mark);
+    }
+  } catch {}
+  const historyRunKey = (engine, id, root) => JSON.stringify([engine, pathKey(root), id]);
+  const historyCodexKey = id => 'codex:' + id;
+  const canSeeHistoryReply = () => !backgroundView && panel && !panel.classList.contains('hidden') &&
+    !document.hidden && document.hasFocus() && !historyReplayJob &&
+    (!dshSessionAccess || dshSessionAccess.state === 'ready');
+
+  function saveHistoryCompletion(key, turn, unread) {
+    const previous = historyCompletions.get(key);
+    if (previous?.turn === turn && (!previous.unread || unread)) return false;
+    historyCompletions.delete(key);
+    historyCompletions.set(key, { turn, unread });
+    if (historyCompletions.size > 1000) historyCompletions.delete(historyCompletions.keys().next().value);
+    try { localStorage.setItem(historyReadKey, JSON.stringify(Object.fromEntries(historyCompletions))); } catch {}
+    return true;
+  }
+
+  function markViewedHistoryReply() {
+    if (!curSessionId || !canSeeHistoryReply() || !historyCompletions.size) return;
+    const engine = getConfig().engine, root = sessionRoot();
+    const keys = [historyRunKey(engine, curSessionId, root)];
+    if (engine === 'codex') {
+      const item = codexSelectedHistoryItem();
+      const threadId = item?.threadId || dshSessionAccess?.hostId || currentRun?.nativeState?.threadId;
+      // When following an external turn, wait for the final history refresh before clearing its mark.
+      if (threadId && (!codexLiveView?.observed || codexLiveView.threadId !== threadId)) keys.push(historyCodexKey(threadId));
+    }
+    for (const key of keys) {
+      const mark = historyCompletions.get(key);
+      if (mark?.unread) saveHistoryCompletion(key, mark.turn, false);
+    }
+  }
+
+  function historyReplyUnread(engine, session) {
+    const native = session.codexThreadId && historyCompletions.get(historyCodexKey(session.codexThreadId));
+    return !!(native?.unread || historyCompletions.get(historyRunKey(engine, session.id, session.rootDir))?.unread);
+  }
+
   let histSidebar = null, histSidebarVisible = false;
   const historyWorkspaces = new Map();
   let expandedCodexBinding = null;
   let otherWorkspacesExpanded;
   function refreshHistInPlace() {
+    markViewedHistoryReply();
     if (!histSidebarVisible || !histSidebar?.isConnected) return false;
     // Catalog updates may arrive while a session is running. Keep the drag source attached until drop or cancel.
     if (codexHistoryDrag) return true;
@@ -3706,6 +3759,7 @@ const AiPanel = (() => {
       renderCodexObservedActivity();
       view.revision = selected.revision;
       view.observed = running;
+      if (!running && selected.completedTurnId) refreshHistInPlace();
     } catch {
       // Retry on the next catalog poll without interrupting input or replacing the current history.
     } finally { view.pending = false; }
@@ -3732,6 +3786,9 @@ const AiPanel = (() => {
         catalogFailures.delete('codex');
         codexCatalog = { launcher: codexPath, items: result.items, projects: result.projects || [],
           bindings: result.bindings || [], activeBinding: result.activeBinding, workspaceRoot: pathKey(result.workspaceRoot) };
+        for (const item of result.items) {
+          if (item.completedTurnId) saveHistoryCompletion(historyCodexKey(item.threadId), item.completedTurnId, true);
+        }
         const selected = codexSelectedHistoryItem();
         if (codexLiveView && selected?.running && !previous?.running) codexLiveView.activity = '';
         if (previous?.running !== selected?.running || previous?.archived !== selected?.archived || previous?.desktopOwned !== selected?.desktopOwned) setBusyUI(busy);
@@ -4337,6 +4394,11 @@ const AiPanel = (() => {
     return new Map((window.App?.getProjects?.() || []).map(project => [pathKey(project.path), project.path]).filter(([key]) => key));
   }
 
+  function historyStatusIcon(running, unread) {
+    return '<span class="ai-hist-indicator" aria-hidden="true">' +
+      (running ? '<span class="ai-hist-run"></span>' : unread ? '<span class="ai-hist-unread"></span>' : '') + '</span>';
+  }
+
   function renderHistRows(sidebar, all, running) {
     const rows = sidebar.querySelector('.ai-hist-rows');
     const config = getConfig(), dsh = config.engine === 'dsh', codex = codexProjectHistory();
@@ -4353,7 +4415,8 @@ const AiPanel = (() => {
     status.textContent = (dsh || codex) && histError ? '目录更新失败：' + histError : '';
     status.classList.toggle('error', (dsh || codex) && !!histError);
 
-    const groups = new Map(), runningGroups = new Set();
+    const groups = new Map(), runningGroups = new Set(), unreadGroups = new Set();
+    const unreadSessions = new Set();
     const root = pathKey(window.App?.root);
     const flat = dsh && historyPrefs.group === 'flat', tree = dsh && historyPrefs.group === 'tree';
     const query = historySearch.toLowerCase();
@@ -4383,6 +4446,10 @@ const AiPanel = (() => {
         }
       }
       if (running.has(session.id)) runningGroups.add(key);
+      if (historyReplyUnread(config.engine, session)) {
+        unreadSessions.add(session);
+        unreadGroups.add(key);
+      }
       if (query && !String(session.title || '').toLowerCase().includes(query)) continue;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(session);
@@ -4405,7 +4472,7 @@ const AiPanel = (() => {
     const showOther = narrow || (otherWorkspacesExpanded ?? ordered.every(([key]) => isOtherWorkspace(key)));
     const entries = tree ? historyTree(ordered, root, running) : ordered;
     const otherIds = [];
-    let html = '', otherHtml = '', otherRunning = false;
+    let html = '', otherHtml = '', otherRunning = false, otherUnread = false;
     for (const [key, items, depth = 0, collapsed = false, hasChildren = false] of entries) {
       const isOther = isOtherWorkspace(key);
       const unassigned = key === null;
@@ -4432,52 +4499,55 @@ const AiPanel = (() => {
       const groupName = recent ? '最近' : unassigned ? '未分组' : workspace?.title || sessionRootLabel(groupRoot);
       const childId = 'ai-hist-items-' + index;
       const groupId = 'ai-hist-workspace-' + index;
-      const groupRunning = runningGroups.has(key);
+      const groupRunning = runningGroups.has(key), groupUnread = unreadGroups.has(key);
+      const groupState = groupRunning ? '有会话正在运行' : groupUnread ? '有未读回复' : '';
       let groupHtml = '<section id="' + groupId + '" class="ai-hist-group" data-root="' + esc(groupRoot || '') + '"' +
         (flat ? ' data-flat-history' : unassigned ? ' data-unassigned' : '') +
         (recent ? ' data-codex-recent' : codex ? ' data-codex-project="' + esc(workspace.id) + '"' : '') +
         (depth ? ' style="padding-inline-start:' + depth * 14 + 'px"' : '') +
         (collapsed || isOther && !showOther ? ' hidden' : '') + '>' +
         (flat ? '' : '<div class="ai-hist-group-head"' + (codex && !recent && !narrow ? codexSortAttributes('projects', key) : '') + '><button type="button" class="ai-hist-group-title" data-hist-toggle aria-expanded="' + expanded + '" aria-controls="' + childId + '"' + (current ? ' aria-current="location"' : '') +
-          (groupRunning ? ' aria-label="' + esc(groupName + '，有会话正在运行') + '"' : '') + (items.length || hasChildren ? '' : ' disabled') + ' title="' + esc(
+          (groupState ? ' aria-label="' + esc(groupName + '，' + groupState) + '"' : '') + (items.length || hasChildren ? '' : ' disabled') + ' title="' + esc(
           workspace?.createdAt ? groupRoot + '\n创建于 ' + new Date(workspace.createdAt).toLocaleString() :
           groupRoot || (unassigned ? 'DSH 未提供可用的工作区目录' : groupName)) + '">' +
         '<span class="ai-hist-workspace-icon">' + historyIcon(historyGroupIcon(expanded, recent)) + '</span>' +
         '<span class="ai-hist-workspace-name">' + esc(groupName) + '</span>' +
-        (groupRunning ? '<span class="ai-hist-run" title="有会话正在运行" aria-hidden="true"></span>' : '') +
-        (recent ? '' : '<span class="ai-hist-workspace-count">' + items.length + '</span>') + '</button>' +
+        (!recent && !groupState ? '<span class="ai-hist-workspace-count">' + items.length + '</span>' : '') + '</button>' +
         (groupRoot && !current ? '<button type="button" class="ai-hist-b" data-hist-jump="' + esc(groupRoot) + '" title="打开工程" aria-label="打开工程：' + esc(groupName) + '">' + historyIcon('M6 3H3v10h10v-3M8 3h5v5m0-5L7 9') + '</button>' : '') +
-        '</div>') + '<div class="ai-hist-items" id="' + childId + '"' + (expanded ? '' : ' hidden') + '>';
+        historyStatusIcon(groupRunning, groupUnread) + '</div>') + '<div class="ai-hist-items" id="' + childId + '"' + (expanded ? '' : ' hidden') + '>';
       for (const session of orderedItems) {
         const selected = isHistorySessionSelected(session), isRunning = running.has(session.id);
         const picked = selectedHistoryRows.has(historyRowKey(session.id, session.rootDir));
-        const state = selected ? '运行中' : '后台运行中';
+        const unread = unreadSessions.has(session);
+        const state = isRunning ? '运行中' : unread ? '未读回复' : '';
         const time = session.ts ? relTime(session.ts) : '';
         const hint = session.unknownRoot ? '工作区未经确认' : session.localOnly && dsh ? 'MyIDE 本地记录' : '';
         groupHtml += '<div class="ai-hist-row' + (selected ? ' cur' : '') + (isRunning ? ' running' : '') + '" data-id="' + esc(session.id) + '" data-root="' + esc(session.rootDir || '') + '"' +
           (selected ? ' aria-current="true"' : '') + (picked ? ' data-batch-selected' : '') + (pinRanks.has(session.hostId) ? ' data-pinned' : '') +
           (codex && !narrow ? codexSortAttributes(codexSessionScope, codexSessionId(session)) : '') +
           '><button type="button" class="ai-hist-open"' + (session.unknownRoot ? ' disabled' : ' aria-haspopup="menu"') +
-          (picked ? ' aria-pressed="true"' : '') + '>' +
+          (picked ? ' aria-pressed="true"' : '') + (state ? ' aria-label="' + esc(session.title + '，' + state) + '"' : '') + '>' +
           '<span class="ai-hist-session-icon">' + historyIcon('M2 3h12v8H7l-3 3v-3H2zM5 6h6M5 8.5h4') + '</span>' +
           '<span class="ai-hist-nm" title="' + esc(session.title) + '">' + esc(session.title) + '</span>' +
           (hint ? '<span class="ai-hist-hint" title="' + hint + '" aria-label="' + hint + '">' + historyIcon('M8 7v4M8 5h.01M14 8a6 6 0 1 1-12 0 6 6 0 0 1 12 0Z') + '</span>' : '') +
-          '<span class="ai-hist-ts">' + (isRunning ? '<span class="ai-hist-run" aria-hidden="true"></span><span class="ai-hist-live">' + state + '</span>' : time) + '</span></button></div>';
+          '<span class="ai-hist-ts">' + (state ? '' : time) + '</span>' + historyStatusIcon(isRunning, unread) + '</button></div>';
       }
       groupHtml += '</div></section>';
       if (isOther) {
         otherHtml += groupHtml;
         otherIds.push(groupId);
         if (groupRunning) otherRunning = true;
+        if (groupUnread) otherUnread = true;
       } else {
         html += groupHtml;
       }
     }
     if (otherIds.length) {
       html += '<button type="button" class="ai-hist-other-toggle" data-hist-other aria-expanded="' + showOther +
-        '" aria-controls="' + otherIds.join(' ') + '"' + (otherRunning ? ' aria-label="其他工作区，有会话正在运行"' : '') + '>' +
-        '<span class="ai-hist-chevron">' + historyIcon('M4.6 6.4L8 9.8l3.4-3.4') + '</span><span>其他工作区</span>' +
-        (otherRunning ? '<span class="ai-hist-run" title="有会话正在运行" aria-hidden="true"></span>' : '') + '</button>' + otherHtml;
+        '" aria-controls="' + otherIds.join(' ') + '"' + (otherRunning ? ' aria-label="其他工作区，有会话正在运行"' :
+          otherUnread ? ' aria-label="其他工作区，有未读回复"' : '') + '>' +
+        '<span class="ai-hist-chevron">' + historyIcon('M4.6 6.4L8 9.8l3.4-3.4') + '</span><span class="ai-hist-workspace-name">其他工作区</span>' +
+        historyStatusIcon(otherRunning, otherUnread) + '</button>' + otherHtml;
     }
     if (!groups.size && !histLoading) html = '<div class="ai-hist-empty">' + (codex && codexArchiveOnly ? '暂无已归档会话' : '暂无会话') + '</div>';
     if (historyRowsMarkup.get(rows) === html) return;
@@ -6483,9 +6553,9 @@ const AiPanel = (() => {
     document.getElementById('ai-dsh-reconnect')?.addEventListener('click',()=>{if(!busy)refreshDshOptions(false,true);});
     initCodexLifecycleMenu();
     const refreshVisibleCodex = () => {
-      if (!document.hidden && visibleHistoryRefresh() === refreshCodexCatalog) {
-        void refreshCodexCatalog({ background: true });
-      }
+      if (document.hidden) return;
+      refreshHistInPlace();
+      if (visibleHistoryRefresh() === refreshCodexCatalog) void refreshCodexCatalog({ background: true });
     };
     window.addEventListener('focus', refreshVisibleCodex);
     document.addEventListener('visibilitychange', refreshVisibleCodex);

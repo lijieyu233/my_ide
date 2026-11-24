@@ -537,10 +537,21 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  check('A collapsed project shows the running marker only for its own active sessions',await js(()=>{
    const active=document.querySelector('[data-codex-project="desktop-b"] [data-hist-toggle]');
    return active.getAttribute('aria-expanded')==='false'&&active.getAttribute('aria-label')==='桌面工程 B，有会话正在运行'&&
-     active.querySelector('.ai-hist-run')?.checkVisibility()&&!document.querySelector('[data-codex-project="desktop-empty"] [data-hist-toggle] .ai-hist-run');
+     active.parentElement.querySelector('.ai-hist-run')?.checkVisibility()&&!document.querySelector('[data-codex-project="desktop-empty"] .ai-hist-group-head .ai-hist-run');
  }));
  await capture('codex-running-project-collapsed');
  await js(()=>document.querySelector('[data-codex-project="desktop-b"] [data-hist-toggle][aria-expanded="false"]').click());
+ check('Project and session spinners use the same right edge without visible status labels',await js(()=>{
+   const group=document.querySelector('[data-codex-project="desktop-b"]');
+   const projectIcon=group.querySelector('.ai-hist-group-head .ai-hist-run');
+   const active=group.querySelector('.ai-hist-row.cur.running');
+   const chatIcon=active?.querySelector('.ai-hist-indicator .ai-hist-run');
+   return projectIcon?.checkVisibility()&&chatIcon?.checkVisibility()&&
+     Math.abs(projectIcon.parentElement.getBoundingClientRect().left-chatIcon.parentElement.getBoundingClientRect().left)<1&&
+     !active.textContent.includes('运行中')&&getComputedStyle(chatIcon).animationName==='ai-hist-spin'&&
+     !group.querySelector('.ai-hist-unread');
+ }));
+ await capture('codex-sidebar-spinners');
  const beforeDesktopTurn=fixture.requests.filter(r=>r.method==='turn/start').length;
  await js(()=>{
    const input=document.getElementById('ai-input');
@@ -674,14 +685,24 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
      document.getElementById('ai-codex-activity').classList.contains('hidden');
  }));
  command.status='completed';
+ await js(()=>{Object.defineProperty(document,'hasFocus',{configurable:true,value:()=>false});});
+ original.turn={id:'offline-desktop-unread-completion',status:'completed'};
  original.items.push({id:'desktop-final',type:'agentMessage',text:'CODEX_DESKTOP_FINAL'});
  original.desktopRunning=false;
  await until(()=>js(()=>!document.getElementById('ai-send').disabled&&!document.querySelector('.ai-hist-row.cur.running')&&
    document.getElementById('ai-msgs').textContent.includes('CODEX_DESKTOP_FINAL')),'desktop turn finished');
- check('The project running marker disappears after its last active session ends',await js(()=>{
-   const project=document.querySelector('[data-codex-project="desktop-b"] [data-hist-toggle]');
-   return project&&!project.querySelector('.ai-hist-run')&&!project.hasAttribute('aria-label');
- }));
+ await until(()=>js(()=>{
+   const group=document.querySelector('[data-codex-project="desktop-b"]');
+   return group.querySelector('.ai-hist-group-head .ai-hist-unread')&&group.querySelector('.ai-hist-row.cur .ai-hist-unread')&&!group.querySelector('.ai-hist-run');
+ }),'completed in background gets unread dots');
+ check('Only the completed unread turn displays a dot in its project and conversation',true);
+ await capture('codex-sidebar-unread');
+ await js(()=>{
+   Object.defineProperty(document,'hasFocus',{configurable:true,value:()=>true});
+   window.dispatchEvent(new Event('focus'));
+ });
+ await until(()=>js(()=>!document.querySelector('[data-codex-project="desktop-b"] .ai-hist-unread')),'read completion clears both dots');
+ check('Viewing the completed conversation clears both dots',true);
  check('Codex desktop completion syncs exactly once without another turn',
    fixture.requests.filter(r=>r.method==='turn/start').length===beforeDesktopTurn && await js(()=>
      [...document.querySelectorAll('#ai-msgs .ai-msg')].filter(node=>node.textContent.includes('CODEX_DESKTOP_FINAL')).length===1));
