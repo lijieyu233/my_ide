@@ -2373,6 +2373,9 @@ const AiPanel = (() => {
   // 少一套 CSS、行为也一致（↑↓ 选择 / Enter 确认 / Esc 关闭）。
   const SLASH_CMDS = [
     { cmd: '/目标', alias: 'goal', tip: '设定或查看 Codex 目标', action: 'goal', codex: true },
+    { cmd: '/新会话', alias: 'new', tip: '在当前工作区开始新会话', action: 'codex-new', codex: true },
+    { cmd: '/分叉', alias: 'fork', tip: '从当前会话创建分支', action: 'codex-fork', codex: true },
+    { cmd: '/归档', alias: 'archive', tip: '归档当前会话', action: 'codex-archive', codex: true },
     { cmd: '/精简', tip: '压缩篇幅、去掉废话，保持原意', prompt: '把当前内容精简一下：去掉重复和废话，保持原意不变。' },
     { cmd: '/扩写', tip: '把要点展开成完整表达', prompt: '把当前内容扩写成完整表达，补上必要的细节和过渡。' },
     { cmd: '/润色', tip: '只改表达，不动事实和结构', prompt: '润色当前内容：只改表达和语气，不要改变事实与结构。' },
@@ -2450,6 +2453,14 @@ const AiPanel = (() => {
   }
   async function runSlashAction(kind) {
     if (kind === 'goal') { openCodexGoal(); return; }
+    if (kind === 'codex-new') { startNewSession(); return; }
+    if (kind === 'codex-fork' || kind === 'codex-archive') {
+      const target = sessionsForHist().all.find(item => item.codexThreadId && isHistorySessionSelected(item));
+      if (!target) { MI.toast('当前没有已保存的 Codex 会话', 'err'); return; }
+      if (kind === 'codex-fork') await openCodexHistory(target, true);
+      else await manageCodexArchive(target, true);
+      return;
+    }
     if (kind === 'compact') {
       const before = msgs.reduce((n, m) => n + msgChars(m), 0);
       compressHistory();
