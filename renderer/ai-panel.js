@@ -2264,7 +2264,8 @@ const AiPanel = (() => {
     const target = nativeInputTarget(), queue = nativeQueueSource();
     const draftConflict = codexConflictForCurrentDraft();
     const offerOriginalSettings = codex && !b && !draftConflict?.turnId && !!draftConflict?.needsOriginalSettings;
-    const showActions = offerOriginalSettings || !codexPrimaryQueues() && running;
+    const desktopSteer = codex && !b && running && !!target?.threadId;
+    const showActions = offerOriginalSettings || (desktopSteer ? !!inputEl.value.trim() : !codexPrimaryQueues() && running);
     const actions=document.getElementById('ai-running-input-actions');
     actions?.classList.toggle('hidden', !showActions);
     actions?.querySelector('span')?.classList.toggle('hidden', codex);
@@ -2272,14 +2273,18 @@ const AiPanel = (() => {
     const ready = hasDraft && (codex || (target.kind === 'run' ? currentRun.inputReady === true : queue?.available === true));
     const queueButton=document.getElementById('ai-queue-submit'),steerButton=document.getElementById('ai-steer-submit');
     if (queueButton) {
+      queueButton.classList.toggle('hidden', desktopSteer && !offerOriginalSettings);
       queueButton.disabled = !ready;
       queueButton.textContent = offerOriginalSettings ? '用原设置发送' : '排队';
       queueButton.title = offerOriginalSettings ? '只对这条消息沿用原会话的模型、思考强度和权限'
         : codex ? '加入原会话的待发队列，沿用原会话权限' : '本轮结束后按顺序处理，不停止当前任务';
     }
     if (steerButton) {
-      steerButton.classList.toggle('hidden', codex && !busy);
-      steerButton.disabled = codex ? !hasDraft || !target?.run : !ready ||
+      steerButton.classList.toggle('hidden', codex && !b && !desktopSteer);
+      steerButton.textContent = desktopSteer ? '在 Codex 中插入' : '插入';
+      steerButton.title = desktopSteer ? '复制草稿文字并打开原会话（Alt+Enter）'
+        : '在当前任务下一步安全边界补充要求（Alt+Enter）';
+      steerButton.disabled = codex ? !hasDraft || !target?.run && !desktopSteer : !ready ||
         (target.kind === 'run' ? !currentRun.inputActive : !dshWatch?.state?.running);
     }
     const box=document.getElementById('ai-input-queue');if(!box)return;
@@ -2391,7 +2396,26 @@ const AiPanel = (() => {
   }
   async function submitCodexInput(mode) {
     const target = nativeInputTarget(), draft = freezeInputDraft();
-    if (!target || !draft || mode === 'steer' && !target.run) return;
+    if (!target || !draft) return;
+    if (mode === 'steer' && !target.run) {
+      if (!codexObservedRunning()) return;
+      nativeInputPending = true;
+      renderNativeInputUI();
+      try {
+        const result = await window.myIDE.ai.codexInput(getConfig(), target, { kind: 'openDesktop' });
+        if (!result?.ok) throw Error(result?.error || '无法打开 Codex 会话');
+        if (draft.key === inputViewKey()) {
+          if (!await MI.copyText(draft.raw)) throw Error('复制草稿失败');
+          MI.toast('草稿文字已复制', 'ok');
+        }
+      } catch (error) {
+        if (draft.key === inputViewKey()) MI.toast(error.message, 'err');
+      } finally {
+        nativeInputPending = false;
+        renderNativeInputUI();
+      }
+      return;
+    }
     const requestId = 'myide-input-' + window.crypto.randomUUID();
     const item = mode === 'steer' ? { requestId, draft, run: currentRun, rendered: false } : null;
     if (item) nativeInputRequests.set(requestId, item);
@@ -5531,7 +5555,8 @@ const AiPanel = (() => {
         if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
           e.preventDefault();
           if (codexPrimaryQueues()) {
-            if (!e.altKey) void submitRunningInput('queue');
+            if (e.altKey && codexObservedRunning()) void submitRunningInput('steer');
+            else if (!e.altKey) void submitRunningInput('queue');
           } else if(codexRunningInput() || getConfig().engine==='dsh'&&(busy||dshObservedRunning()))submitRunningInput(e.altKey?'steer':'queue');
           else if (!busy) send();
         }

@@ -1,7 +1,8 @@
 // Hidden production UI+IPC+Codex service/RPC. Only the app-server child is synthetic.
 const fs=require('fs'),path=require('path'),os=require('os'),assert=require('assert/strict');
 const {app,BrowserWindow,session,ipcMain,clipboard,nativeImage,shell}=require('electron');
-const desktopLinks=[], openExternal=shell.openExternal.bind(shell);
+const desktopLinks=[], clipboardWrites=[], openExternal=shell.openExternal.bind(shell);
+clipboard.writeText=value=>clipboardWrites.push(value);
 shell.openExternal=(url,...args)=>url.startsWith('codex:')?(desktopLinks.push(url),Promise.resolve()):openExternal(url,...args);
 const repo=path.resolve(__dirname,'..'),temp=fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(),'myide-codex-ui-'))),roots=['A','B'].map(n=>path.join(temp,n)),out=path.join(repo,'.ui-check-trash','codex-ui-'+process.pid);
 fs.mkdirSync(out,{recursive:true});for(const root of roots){fs.mkdirSync(root);fs.writeFileSync(path.join(root,'fixture.txt'),'MYIDE_DYNAMIC_READ_SENTINEL\n');}
@@ -175,10 +176,21 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
    const input=document.getElementById('ai-input');
    input.value='等待桌面完成的草稿';
    input.dispatchEvent(new Event('input',{bubbles:true}));
-   input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',altKey:true,bubbles:true,cancelable:true}));
    return true;
  });
- check('Codex external activity keeps unsent drafts',fixture.requests.filter(r=>r.method==='turn/start').length===beforeDesktopTurn&&
+ check('The external Codex turn shows a distinct insertion action beside the draft',await js(()=>{
+   const button=document.getElementById('ai-steer-submit');
+   return button.checkVisibility()&&!button.disabled&&button.textContent==='在 Codex 中插入';
+ }));
+ const steerCalls=fixture.requests.filter(r=>r.method==='turn/steer').length;
+ const desktopOpens=desktopLinks.length;
+ await js(()=>document.getElementById('ai-input').dispatchEvent(
+   new KeyboardEvent('keydown',{key:'Enter',altKey:true,bubbles:true,cancelable:true})));
+ await until(()=>desktopLinks.length>desktopOpens&&clipboardWrites.includes('等待桌面完成的草稿'),
+   'desktop insertion opens the original chat and prepares its draft');
+ check('Desktop insertion handoff keeps the draft and starts no turn or queue entry',
+   desktopLinks.at(-1)==='codex://threads/'+externalId&&fixture.requests.filter(r=>r.method==='turn/start').length===beforeDesktopTurn&&
+   fixture.requests.filter(r=>r.method==='turn/steer').length===steerCalls&&!original.inputQueue?.length&&
    await js(()=>document.getElementById('ai-input').value==='等待桌面完成的草稿'));
  original.items.push({id:'desktop-progress',type:'agentMessage',text:'CODEX_DESKTOP_PROGRESS'});
  const command={id:'desktop-command',type:'commandExecution',command:'codex queue --help token=PRIVATE_TOKEN_FIXTURE access_token=PRIVATE_QUEUE_FIXTURE',status:'inProgress'};
@@ -207,7 +219,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  await until(()=>js(()=>document.getElementById('ai-input-queue').textContent.includes('等待桌面完成的草稿')&&!document.getElementById('ai-input').value),'native queue receipt');
  check('MyIDE queues on the same Codex desktop chat and leaves the running turn alone',
    original.inputQueue?.length===1&&fixture.requests.filter(r=>r.method==='turn/start').length===beforeDesktopTurn&&
-   await js(()=>document.getElementById('ai-steer-submit').classList.contains('hidden')));
+   await js(()=>document.getElementById('ai-running-input-actions').classList.contains('hidden')));
  await js(()=>{document.querySelector('#ai-input-queue [data-queue-action="remove"]').click();
    const input=document.getElementById('ai-input');input.value='等待桌面完成的草稿';input.dispatchEvent(new Event('input',{bubbles:true}));});
  await until(()=>js(()=>document.getElementById('ai-input-queue').classList.contains('hidden')),'native queue withdrawal');
