@@ -190,6 +190,21 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  await js(()=>window.dispatchEvent(new Event('focus')));
  await until(()=>js(()=>!!document.querySelector('[data-codex-project="desktop-empty"]')),'undo restores Codex project');
  check('Codex project disappears during the desktop undo window and Undo restores it',true);
+ await js(()=>{
+   const head=document.querySelector('[data-codex-project="desktop-empty"] .ai-hist-group-head');
+   head.dispatchEvent(new MouseEvent('contextmenu',{button:2,bubbles:true,cancelable:true}));
+   [...document.querySelectorAll('#ctx-menu button')].find(button=>button.textContent==='重命名').click();
+ });
+ await until(()=>js(()=>document.querySelector('.ai-hist-name-form input')?.value==='桌面空项目'),'project rename input');
+ await js(()=>{
+   const form=document.querySelector('.ai-hist-name-form');
+   form.querySelector('input').value='桌面项目新名称';
+   form.requestSubmit();
+ });
+ await until(()=>js(()=>document.querySelector('[data-codex-project="desktop-empty"] .ai-hist-workspace-name')?.textContent==='桌面项目新名称'),'renamed project row');
+ const renamedProject=fixture.projects.find(project=>project.id==='desktop-empty');
+ check('Renaming a Codex project updates the original project and preserves its roots',renamedProject.name==='桌面项目新名称'&&renamedProject.roots[0].path===emptyRoot);
+ await capture('codex-project-rename');
  await capture('codex-project-removal');
  await js(()=>{
    const head=document.querySelector('[data-codex-project="desktop-empty"] .ai-hist-group-head');

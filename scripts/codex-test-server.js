@@ -28,6 +28,13 @@ function createServer(){
    if(message.method==='account/gatewayOAuth/read')return reply(message.id,{providerId:'openai',providerName:'OpenAI',required:false,status:null,error:null});
    if(message.method==='model/list')return reply(message.id,{data:models,nextCursor:null});
    if(message.method==='project/list')return reply(message.id,{data:projects,nextCursor:null});
+   if(message.method==='project/update'){
+    const project=projects.find(item=>item.id===p.projectId);
+    if(!project)return send({id:message.id,error:{code:-32602,message:'No synthetic project'}});
+    if(Object.keys(p).sort().join()!=='name,projectId')throw Error('Unexpected project update');
+    project.name=p.name;
+    return reply(message.id,{project});
+   }
    if(message.method==='project/create'){
     const project={id:'offline-project-'+(projects.length+1),name:p.name,roots:p.roots};
     projects.push(project);

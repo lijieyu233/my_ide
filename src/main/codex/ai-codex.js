@@ -273,14 +273,32 @@ function createService(options={}){
     return 'codex:' + threadId;
   }
 
-  async function getHistoryProjectRoot(cfg, projectId) {
-    const conn = await connect(cfg);
+  async function historyProject(request, projectId) {
     const [projects, desktop] = await Promise.all([
-      history.listProjects(historyRequest(conn)), desktopState.readDesktopState(codexHome()),
+      history.listProjects(request), desktopState.readDesktopState(codexHome()),
     ]);
-    const project = projects.find(item => item.id === projectId);
-    if (!project?.roots[0] || desktopState.pendingProjectIds(desktop).has(projectId)) throw Error('找不到 Codex 项目目录');
+    return desktopState.pendingProjectIds(desktop).has(projectId) ? null : projects.find(item => item.id === projectId);
+  }
+
+  async function getHistoryProjectRoot(cfg, projectId) {
+    const project = await historyProject(historyRequest(await connect(cfg)), projectId);
+    if (!project?.roots[0]) throw Error('找不到 Codex 项目目录');
     return canonical(project.roots[0]);
+  }
+
+  async function renameProject(cfg, projectId, name) {
+    const title = typeof name === 'string' ? name.trim() : '';
+    if (!title || title.length > 120 || /[\u0000-\u001f\u007f]/.test(title)) throw Error('项目名称须为 1 至 120 个字符');
+    if (typeof projectId !== 'string' || !projectId || projectId.length > 200) throw Error('无效的 Codex 项目');
+    const request = historyRequest(await connect(cfg));
+    return locked('rename-project:' + projectId, async () => {
+      const project = await historyProject(request, projectId);
+      if (!project) throw Error('找不到 Codex 项目');
+      if (project.title === title) return { title };
+      const result = await request('project/update', { projectId, name: title });
+      if (result?.project?.id !== projectId || result.project.name !== title) throw Error('Codex 未确认重命名');
+      return { title };
+    });
   }
 
   function withWorkspaceBindings(task) {
@@ -1024,6 +1042,6 @@ function createService(options={}){
   }
   function hasRun(context){return [...runs.values()].some(run=>run.context.sessionId===context?.sessionId&&run.context.rootId===context?.rootId);}
   async function dispose(){if(disposed)return;disposed=true;for(const run of runs.values()){run.aborted=true;run.detached=run.conn?.shared;discardPending(run);resolveRun(run,{status:'interrupted'});}const conn=connection;conn?.rpc.close();conn?.child.kill();if(starting)try{const own=await starting;own.rpc.close();own.child.kill();}catch{}await saving;}
-  return {chat,inspect,listHistory,getHistoryProjectRoot,openHistory,openInDesktop,forkHistory,renameHistory,setHistoryArchived,changeInput,status,abort,detach,toolResult,permissionResult,questionResult,dispose,hasRun,stopSharedBackend};
+  return {chat,inspect,listHistory,getHistoryProjectRoot,renameProject,openHistory,openInDesktop,forkHistory,renameHistory,setHistoryArchived,changeInput,status,abort,detach,toolResult,permissionResult,questionResult,dispose,hasRun,stopSharedBackend};
 }
 module.exports={createService,promptContent,toolSpecs,configOptions};

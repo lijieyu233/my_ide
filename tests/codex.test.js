@@ -29,6 +29,12 @@ function fixture(config={}){
    else if(r.method==='project/list'){
      assert.equal(p.sortKey,'position');
      send(c,{id:r.id,result:{data:config.projects||[],nextCursor:null}});
+   }else if(r.method==='project/update'){
+     const project=config.projects.find(item=>item.id===p.projectId);
+     assert(project);
+     assert.deepEqual(Object.keys(p).sort(),['name','projectId']);
+     project.name=p.name;
+     send(c,{id:r.id,result:{project}});
    }else if(r.method==='project/create'){
      if(config.projectCreateUnsupported)return send(c,{id:r.id,error:{code:-32601,message:'unsupported'}});
      if(config.deletedProjectKey&&p.idempotencyKey.startsWith('myide-root-'))return send(c,{id:r.id,error:{code:-32602,message:'idempotency key refers to deleted project: '+p.idempotencyKey}});
@@ -285,6 +291,24 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
    assert.equal(restored.activeBinding.projectId,projectId);
    assert.equal(restored.items[0].threadId,threadId);
   }finally{db.close();await f.service.dispose();}
+ });
+ await test('重命名保持 Codex 项目 ID、目录和会话归属',async()=>{
+  const root=path.join(temp,'rename-project');fs.mkdirSync(root);
+  const project={id:'project-to-rename',name:'原项目',roots:[{path:root}]};
+  const threadId='019caa00-0000-7000-8000-000000000062';
+  const f=fixture({projects:[project],history:[{id:threadId,projectId:project.id,cwd:root,name:'原会话'}]});
+  try{
+   assert.equal((await f.service.listHistory({},root)).activeBinding.projectId,project.id);
+   await assert.rejects(f.service.renameProject({},project.id,'  '),/项目名称/);
+   await assert.rejects(f.service.renameProject({},'missing-project','新名字'),/找不到 Codex 项目/);
+   assert.deepEqual(await f.service.renameProject({},project.id,'  新项目  '),{title:'新项目'});
+   const directory=await f.service.listHistory({},root);
+   assert.deepEqual(directory.projects,[{id:project.id,title:'新项目',roots:[root]}]);
+   assert.equal(directory.activeBinding.projectId,project.id);
+   assert.equal(directory.items[0].threadId,threadId);
+   assert.equal(directory.items[0].projectId,project.id);
+   assert.equal(f.requests.filter(request=>request.method==='project/update').length,1);
+  }finally{await f.service.dispose();}
  });
  await test('项目删除后重新登记，旧版缺少项目接口时仍可发送',async()=>{
   for(const unsupported of [false,true]){

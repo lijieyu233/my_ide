@@ -940,6 +940,14 @@ ipcMain.handle('ai:codex-sessions',async (event, cfg) => {
     return { ok: true, workspaceRoot: rootDir, ...await CODEX.listHistory(cfg, rootDir) };
   } catch (error) { return { ok: false, error: error.message }; }
 });
+ipcMain.handle('ai:codex-rename-project', async (event, cfg, projectId, title) => {
+  try {
+    await codexHistoryConfig(event, cfg);
+    return { ok: true, ...await CODEX.renameProject(cfg, projectId, title) };
+  } catch (error) {
+    return { ok: false, error: error.code === -32601 ? '当前 Codex 版本暂不支持项目重命名' : error.message };
+  }
+});
 ipcMain.handle('ai:codex-desktop-project', async (event, cfg, projectId) => {
   try {
     await codexHistoryConfig(event, cfg);

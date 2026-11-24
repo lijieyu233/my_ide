@@ -3862,9 +3862,25 @@ const AiPanel = (() => {
     const current = () => histSidebarVisible && anchor.isConnected && scope === sessKey() && engine === getConfig().engine;
     const actions = [{ label: '在资源管理器中显示', run: () => window.myIDE.shell.showInFolder(rootDir) }];
     if (engine === 'codex' && group.dataset.codexProject) {
+      const projectId = group.dataset.codexProject;
       actions.unshift({ label: '在 Codex 中打开', run: async () => {
-        const result = await window.myIDE.ai.codexDesktopProject(getConfig(), group.dataset.codexProject);
+        const result = await window.myIDE.ai.codexDesktopProject(getConfig(), projectId);
         if (!result?.ok) MI.toast(result?.error || '无法打开 Codex 项目', 'err');
+      } });
+      const project = currentCodexCatalog()?.projects.find(item => item.id === projectId);
+      if (project) actions.push({ label: '重命名', run: async () => {
+        const title = (await editHistoryName(anchor, '项目名称', project.title))?.trim();
+        if (!title || title === project.title || !current()) return;
+        const config = getConfig(), launcher = config.codexPath || '';
+        const result = await window.myIDE.ai.codexRenameProject(config, projectId, title);
+        if (!result?.ok) throw Error(result?.error || '重命名失败');
+        if (!codexProjectHistory() || launcher !== (getConfig().codexPath || '')) return;
+        const updated = currentCodexCatalog()?.projects.find(item => item.id === projectId);
+        if (updated) updated.title = result.title;
+        // A poll that started before the write may still have the old project name.
+        if (codexCatalogRequest?.launcher === launcher) codexCatalogRequest = null;
+        refreshHistInPlace();
+        void refreshCodexCatalog({ background: true });
       } });
     }
     if (engine === 'dsh') {

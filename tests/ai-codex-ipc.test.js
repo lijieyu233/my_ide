@@ -13,6 +13,7 @@ const codex={abort:id=>aborts.push(id),status:async launcher=>({ok:true,launcher
     assert.equal(rootDir,root);
     return {items:[{threadId:'fixture-thread',projectId:'fixture-project'}],projects:[{id:'fixture-project',title:'Fixture'}]};
   },
+  renameProject:async(_cfg,projectId,title)=>{calls.push({kind:'rename-project',projectId,title});return {title};},
   openHistory:async(_cfg, threadId, archived)=>({threadId,archived,messages:[]}),
   setHistoryArchived:async (_cfg,threadId,archived)=>calls.push({kind:'archive',threadId,archived}),
   forkHistory:async(_cfg, threadId)=>({threadId:'fork-'+threadId,messages:[]}),
@@ -45,6 +46,10 @@ const settled=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
     assert.equal(directory.workspaceRoot,root);
     assert.equal(directory.items[0].threadId,'fixture-thread');
     assert.equal(directory.projects[0].id,directory.items[0].projectId);
+    assert.equal((await handlers.get('ai:codex-rename-project')(fake,cfg,'fixture-project','新名称')).ok,false);
+    const renamed=await invoke('ai:codex-rename-project',cfg,'fixture-project','新名称');
+    assert.equal(renamed.title,'新名称');
+    assert.deepEqual(calls.at(-1),{kind:'rename-project',projectId:'fixture-project',title:'新名称'});
     assert.equal((await invoke('ai:codex-history',cfg,'fixture-thread',true)).archived,true);
     assert.equal((await invoke('ai:codex-archive',cfg,'fixture-thread',true)).ok,true);
     assert.deepEqual(calls.at(-1),{kind:'archive',threadId:'fixture-thread',archived:true});
