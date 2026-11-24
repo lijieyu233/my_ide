@@ -44,6 +44,7 @@ async function test(name, fn) {
     production.push('src/main/ai/ai-project-tools.js','src/main/ai/ai-owner-router.js','src/main/browser/browser-tab-views.js','src/main/browser/browser-color-scheme.js','src/main/browser/browser-context-menu.js');
     production.push('src/main/browser/tool-shortcuts.js');
     production.push('src/main/reader/reader-notes.js','src/main/reader/reader-workspace.js','src/main/reader/reader-service.js','src/main/reader/reader-worker.js','src/main/files/file-read.js','src/main/browser/browser-interactions.js','src/main/browser/browser-frames.js','src/main/browser/browser-upload.js','src/main/browser/browser-capture.js');
+    production.push('src/main/codex/codex-shared-host.js','src/main/codex/codex-desktop-bridge.cs');
     for (const file of production) put(file, fs.readFileSync(path.join(root, file)));
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
     put('package.json', JSON.stringify({ main: 'main.js', dependencies: pkg.dependencies }));

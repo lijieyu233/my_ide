@@ -29,10 +29,23 @@ const G = require('./src/main/git/git-service');
 const DB = require('./src/main/db/db-service');
 const AI = require('./src/main/ai/ai-service');
 const DSH=require('./src/main/dsh/ai-dsh').createService({homeDir:()=>UI_CHECK?path.join(app.getPath('userData'),'harness-home'):undefined,mappingFile:()=>path.join(app.getPath('userData'),'dsh-native-sessions.json')});
+const sharedCodexHost = require('./src/main/codex/codex-shared-host').createSharedHost();
+let codexStartup;
+function prepareSharedCodex() {
+  if (!ownsWindow || UI_CHECK || LIVE_CHECK || SMOKE || process.env.MYIDE_CODEX_SHARED_LAUNCHER) {
+    return Promise.resolve(null);
+  }
+  codexStartup ||= sharedCodexHost.start().catch(error => {
+    LOG('Codex shared startup: ' + error.message);
+    return null;
+  });
+  return codexStartup;
+}
 const CODEX=require('./src/main/codex/ai-codex').createService({
   homeDir:()=>UI_CHECK?path.join(app.getPath('userData'),'codex-home'):undefined,
   mappingFile:()=>path.join(app.getPath('userData'),'codex-sessions.json'),
   sharedLauncher: () => UI_CHECK ? undefined : process.env.MYIDE_CODEX_SHARED_LAUNCHER,
+  sharedRuntime: async () => (await prepareSharedCodex())?.runtime,
   desktopOwnsProjectThreads: () => process.platform === 'win32' && !!app.getApplicationNameForProtocol('codex://threads/'),
 });
 const aiRuns = require('./src/main/ai/ai-runs').createRegistry();
@@ -125,7 +138,7 @@ ipcMain.handle('ai:ssh',async(e,context,call)=>{
 let stateFile = null;
 let pendingOpenArg = OPEN_ARG;
 // 隐藏自检用独立profile；用户窗口必须先拿锁，不能重复加载同一份设置和后台查询。
-if (!HIDDEN_WINDOW) require('./src/main/app/app-instance').claim({ app, getWindow: () => mainWindow, openProject: requested => {
+const ownsWindow = !HIDDEN_WINDOW && require('./src/main/app/app-instance').claim({ app, getWindow: () => mainWindow, openProject: requested => {
   const win = mainWindow;
   if (!win || win.isDestroyed()) { pendingOpenArg = requested; return; }
   const send = () => { if (!win.isDestroyed()) win.webContents.send('app:open-project', requested); };
@@ -921,11 +934,19 @@ ipcMain.handle('ai:codex-desktop-project', async (event, cfg, projectId) => {
     const root = await CODEX.getHistoryProjectRoot(cfg, projectId);
     const url = new URL('codex://new');
     url.searchParams.set('path', root);
-    await shell.openExternal(url.href);
+    await openCodexDesktop(url.href);
     return { ok: true };
   } catch (error) { return { ok: false, error: error.message }; }
 });
-const openCodexDesktopThread = threadId => shell.openExternal('codex://threads/' + threadId);
+async function openCodexDesktop(url) {
+  if ((await prepareSharedCodex())?.status === 'shared') {
+    const result = await sharedCodexHost.open(url);
+    if (result.status !== 'shared') throw Error('请退出单独启动的 Codex 后重试');
+    if (result.opened) return;
+  }
+  await shell.openExternal(url);
+}
+const openCodexDesktopThread = threadId => openCodexDesktop('codex://threads/' + threadId);
 ipcMain.handle('ai:codex-desktop-thread', async (event, cfg, threadId) => {
   try {
     await codexHistoryConfig(event, cfg);
@@ -1840,6 +1861,7 @@ app.whenReady().then(() => {
     { label: 'View', submenu: [{ role: 'toggleDevTools' }, { role: 'resetZoom' }] },
   ]));
   const win = createWindow();
+  void prepareSharedCodex();
 
   if (SMOKE) {
     const errors = [];

@@ -16,6 +16,7 @@ runtimeFiles.push('src/main/ai/ai-workbench-tools.js','src/main/db/ai-query-jobs
 runtimeFiles.push('src/main/search/search-service.js', 'src/main/tasks/task-recovery.js', 'src/main/ai/ai-runs.js', 'src/main/launch/launch-exit.js', 'src/main/launch/launch-readiness.js');
 runtimeFiles.push('src/main/ai/ai-tool-authority.js', 'src/main/ai/ai-permission-store.js', 'src/main/ai/ai-permission-bridge.js', 'src/main/ai/ai-approval-ui.js', 'src/main/ai/ai-approval-preload.js');
 resources.push('src/main/dsh/dsh-native-plugin.cjs', 'renderer/ai-approval.html', 'renderer/ai-approval.js', 'renderer/ai-approval.css');
+resources.push('src/main/codex/codex-desktop-bridge.cs');
 
 function checkPackage(archive, arch = process.arch) {
   if (!fs.existsSync(archive)) throw Error('打包校验失败：找不到 ' + archive);

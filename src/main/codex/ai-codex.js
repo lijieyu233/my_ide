@@ -232,13 +232,14 @@ function createService(options={}){
     if(connection&&!connection.rpc.closed){if(connection.launcher!==launcher)throw Error('Codex 启动路径已改变，请重启 MyIDE 后重新连接');return connection;}
     starting=(async()=>{
       await load();
+      const sharedRuntime = await options.sharedRuntime?.();
       const sharedLauncher = valueOf(options.sharedLauncher);
-      const runtime = await (options.resolveRuntime || resolveRuntime)(sharedLauncher || launcher || undefined);
+      const runtime = sharedRuntime || await (options.resolveRuntime || resolveRuntime)(sharedLauncher || launcher || undefined);
       if(disposed)throw Error('Codex 连接已关闭');
       const env={...process.env,...runtime.env},home=explicitHome();if(typeof home==='string'&&home){env.CODEX_HOME=home;await fs.mkdir(home,{recursive:true});}
       await fs.mkdir(workspace(),{recursive:true});if(disposed)throw Error('Codex 连接已关闭');
       const child=(options.spawn||spawn)(runtime.executable,[...(runtime.args||[]),'app-server','--stdio','-c','thread_unload_delay_secs=1'],{env,cwd:workspace(),stdio:['pipe','pipe','pipe'],windowsHide:true,shell:false});
-      const conn={child,rpc:new Rpc(child,options.rpcOptions),launcher,runtime,shared:!!sharedLauncher};connection=conn;
+      const conn={child,rpc:new Rpc(child,options.rpcOptions),launcher,runtime,shared:!!(sharedRuntime || sharedLauncher)};connection=conn;
       conn.rpc.on('notification',message=>notification(conn,message));conn.rpc.on('request',request=>serverRequest(conn,request));
       conn.rpc.on('closed',()=>{if(child.exitCode==null)child.kill();if(connection===conn)connection=null;for(const session of sessions.values())if(session.conn===conn){session.attached=false;session.stopping=null;if(session.run)resolveRun(session.run,{status:'failed'});}});
       try{const initialized=await conn.rpc.request('initialize',{clientInfo:{name:'myide',title:'MyIDE',version:'0.8.5'},capabilities:{experimentalApi:true,requiredHumanApproval:true,explicitGatewayOauth:true}},options.requestTimeoutMs||45000);if(!initialized||typeof initialized.userAgent!=='string')throw Error('本机 Codex 不支持 app-server initialize');conn.rpc.notify('initialized');return conn;}
@@ -860,11 +861,12 @@ function createService(options={}){
 
   async function status(launcher) {
     try {
+      const sharedRuntime = await options.sharedRuntime?.();
       const sharedLauncher = valueOf(options.sharedLauncher);
-      const runtime = await (options.resolveRuntime || resolveRuntime)(sharedLauncher || launcher || undefined);
+      const runtime = sharedRuntime || await (options.resolveRuntime || resolveRuntime)(sharedLauncher || launcher || undefined);
       const selected = runtime.launcher || runtime.executable;
       return { ok: true, available: true, connected: !!connection && !connection.rpc.closed,
-        launcher: selected, path: selected, transport: sharedLauncher ? 'shared' : 'stdio' };
+        launcher: selected, path: selected, transport: sharedRuntime || sharedLauncher ? 'shared' : 'stdio' };
     } catch (error) {
       return { ok: false, available: false, connected: false, error: error.message };
     }
