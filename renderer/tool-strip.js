@@ -169,6 +169,24 @@ window.ToolStrip = (() => {
     document.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();close();}},{capture:true,signal:events.signal});
     window.addEventListener('blur',()=>close(),{signal:events.signal});
   }
+  let browserKeySync = null;
+  async function syncBrowserToolKeys(entries) {
+    const browser = window.myIDE?.browser;
+    if (!browser?.setToolKeys) return;
+    const key = JSON.stringify(entries);
+    if (browserKeySync?.key === key) return;
+    const request = { key };
+    browserKeySync = request;
+    try {
+      const result = await browser.setToolKeys(entries);
+      if (!result?.ok) throw Error('原生进程未接受快捷键');
+    } catch (error) {
+      if (browserKeySync !== request) return;
+      browserKeySync = null;
+      console.warn('[tool-strip] 浏览器内的跳转快捷键同步失败', error);
+    }
+  }
+
   function syncKeys() {
     const bindings=new Map(Shortcuts.bindings().map(binding=>[binding.id,binding])),native=[];
     for(const [name,id] of Object.entries(actions)) {
@@ -178,7 +196,7 @@ window.ToolStrip = (() => {
     }
     const collapse=document.getElementById('tool-sidebar'),sidebar=bindings.get('toggle-sidebar');
     if(collapse&&sidebar)collapse.title='收起 / 展开侧栏（'+(sidebar.effectiveCombos.join(' / ')||'未设置快捷键')+'）';
-    const pending=window.myIDE?.browser?.setToolKeys?.(native);pending?.then(result=>{if(!result?.ok)MI.toast('浏览器内的跳转快捷键同步失败','err');}).catch(error=>MI.toast('浏览器内的跳转快捷键同步失败：'+error.message,'err'));
+    void syncBrowserToolKeys(native);
   }
   function init() {
     if(strip)return;strip=document.getElementById('tool-strip');if(!strip)return;

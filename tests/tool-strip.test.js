@@ -6,7 +6,13 @@ function fixture(saved){
  if(saved)for(const [key,value]of Object.entries(saved))w.localStorage.setItem(key,value);
  w.DocumentPaths={key:value=>value||null};w.Viewer={openTabs:[],activeTab:null};w.App={root:'D:/project',tool:'project',showTool(name){this.tool=name;calls.push(name);},getTool(){return this.tool;}};w.MI={toast:(...args)=>notices.push(args)};
  w.Modal={stack:[],answer:true,show(box){d.getElementById('modal-mask').classList.remove('hidden');d.getElementById('modal-mask').append(box);this.stack.push(box);},hide(){const box=this.stack.pop();box?.remove();box?.onModalHide?.();if(!this.stack.length)d.getElementById('modal-mask').classList.add('hidden');},confirm:async()=>w.Modal.answer};
- w.myIDE={browser:{setToolKeys:async entries=>{w.native=entries;return {ok:true};},onToolShortcut:cb=>w.nativeAction=cb}};
+ const nativeService=require('../src/main/browser/tool-shortcuts').createService();
+ w.myIDE={browser:{setToolKeys:async entries=>{
+   w.native=entries;
+   w.nativeSyncs=(w.nativeSyncs||0)+1;
+   return nativeService.set(entries);
+ },onToolShortcut:cb=>w.nativeAction=cb}};
+ w.matchBrowserKey=input=>nativeService.match(input);
  for(const file of ['shortcuts.js','settings.js'])w.eval(read(file));
  w.Shortcuts.register('tool-quick-launch',{desc:'打开快速启动',keys:[],run:()=>w.App.showTool('quick-launch')});
  for(const name of ['project','outline','browser','bookshelf','remote','db','tasks','launch','quick-launch','log','git','search'])d.getElementById('tool-'+name).onclick=()=>{w.App.tool=name;calls.push('click:'+name);};
@@ -37,6 +43,31 @@ async function test(name,fn){const f=fixture();try{await fn(f);passed++;console.
  await test('冲突取消保留双方、确认只转移冲突键，提示和原生网页键位同步',async f=>{
   const {w}=f;w.Shortcuts.setBindings('tool-project',['ctrl+alt+j','ctrl+1']);w.Modal.answer=false;await f.menu('remote');f.q('[data-tool-shortcut]').click();f.key('j',{ctrlKey:true,altKey:true});await tick();assert.equal(w.Shortcuts.bindings().find(b=>b.id==='tool-remote').combos.length,0);assert(w.Shortcuts.bindings().find(b=>b.id==='tool-project').combos.includes('ctrl+alt+j'));
   w.Modal.answer=true;f.q('[data-key-action=tool-remote] .set-combo').click();f.key('j',{ctrlKey:true,altKey:true});await tick();assert.deepEqual([...w.Shortcuts.bindings().find(b=>b.id==='tool-project').combos],['ctrl+1']);assert(f.q('#tool-remote').title.includes('ctrl+alt+j'));assert(w.native.find(b=>b.id==='tool-remote').combos.includes('ctrl+alt+j'));w.Modal.hide();w.nativeAction('tool-remote');await tick();assert.equal(w.App.tool,'remote');
+ });
+ await test('完整工具条快捷键可在网页内使用，同步无变化或失败时不弹提示',async f=>{
+  const {w}=f;
+  const before=w.nativeSyncs;
+  w.Shortcuts.register('fixture-only',{desc:'其他动作',keys:[],run:()=>{}});
+  assert.equal(w.nativeSyncs,before);
+  w.Shortcuts.setBinding('tool-sessions','ctrl+alt+j');
+  w.Shortcuts.setBinding('tool-clipboard','ctrl+alt+k');
+  assert.equal(w.matchBrowserKey({type:'keyDown',key:'j',control:true,alt:true}),'tool-sessions');
+  assert.equal(w.matchBrowserKey({type:'keyDown',key:'k',control:true,alt:true}),'tool-clipboard');
+  const warnings=[];
+  w.console.warn=(...args)=>warnings.push(args);
+  const nativeSync=w.myIDE.browser.setToolKeys;
+  w.myIDE.browser.setToolKeys=async()=>({ok:false});
+  w.Shortcuts.setBinding('tool-clipboard','ctrl+alt+l');
+  await tick();
+  w.myIDE.browser.setToolKeys=async()=>{throw Error('模拟 IPC 断开');};
+  w.Shortcuts.setBinding('tool-clipboard','ctrl+alt+m');
+  await tick();
+  assert.equal(warnings.length,2);
+  assert.equal(f.notices.length,0);
+  w.myIDE.browser.setToolKeys=nativeSync;
+  w.Shortcuts.register('fixture-retry',{desc:'其他动作',keys:[],run:()=>{}});
+  await tick();
+  assert.equal(w.matchBrowserKey({type:'keyDown',key:'m',control:true,alt:true}),'tool-clipboard');
  });
  await test('编辑器和终端输入焦点均可跳转，重复按下不收起，弹窗和输入法不误触',async f=>{
   const {w,d,key}=f;w.Shortcuts.setBinding('tool-remote','ctrl+alt+j');const terminal=d.createElement('div');terminal.id='remote-terminal-panes';terminal.innerHTML='<textarea></textarea>';d.body.append(terminal);const input=terminal.firstChild;input.addEventListener('keydown',e=>e.stopPropagation());input.focus();assert(key('j',{ctrlKey:true,altKey:true},input).defaultPrevented);assert.equal(w.App.tool,'remote');key('j',{ctrlKey:true,altKey:true},input);assert.equal(w.App.tool,'remote');assert.equal(input.value,'');

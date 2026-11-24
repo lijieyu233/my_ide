@@ -1,5 +1,5 @@
 // 原生网页只接受宿主登记的工具跳转，不把网页传来的动作或脚本作为命令执行。
-const allowed=new Set(['tool-project','tool-outline','search-panel','commit-tool-window','tool-browser','tool-bookshelf','tool-remote','tool-db','tool-tasks','tool-launch','tool-quick-launch','git-log']);
+const allowed=new Set(['tool-sessions','tool-clipboard','tool-project','tool-outline','search-panel','commit-tool-window','tool-browser','tool-bookshelf','tool-remote','tool-db','tool-tasks','tool-launch','tool-quick-launch','git-log']);
 function createService(){
  let keys=new Map();
  return {
