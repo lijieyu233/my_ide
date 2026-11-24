@@ -52,6 +52,7 @@ function createService(options={}){
   let connection=null,starting=null,loaded=false,loading=null,disposed=false,saving=Promise.resolve();
   const mapping=()=>valueOf(options.mappingFile),explicitHome=()=>valueOf(options.homeDir)||options.home;
   const observeDesktop=desktopState.createDesktopStatusReader();
+  const desktopAvailable = () => options.desktopOwnsProjectThreads?.() === true;
   const codexHome = () => explicitHome() || process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
   const workspace=()=>path.join(mapping()?path.dirname(mapping()):path.join(os.tmpdir(),'myide-codex'),'myide-codex-detached');
   const emit=(run,event)=>{if(!disposed&&!run.aborted&&!run.expired)run.onEvent({...event,context:run.context});};
@@ -300,11 +301,12 @@ function createService(options={}){
       .map(p => norm(p.roots[0])));
     const shownProjects = projects.filter(p => !p.provisional || registeredIds.has(p.id) ||
       occupiedProjects.has(p.id) || p.roots.length !== 1 || !registeredRoots.has(norm(p.roots[0])));
+    const desktopOwned = desktopAvailable();
     return { projects: shownProjects, items: await Promise.all(visible.map(async item => {
       const desktop = item.archived || locallyRunning.has(item.threadId)
         ? { running: false } : await observeDesktop(home, item);
       const { rolloutPath, ...summary } = item;
-      return { ...summary, ...desktop };
+      return { ...summary, ...desktop, desktopOwned };
     })) };
   }
 
@@ -549,10 +551,11 @@ function createService(options={}){
     const info=await identity(context),conn=await connect(cfg),data=await catalog(conn),record=saved.get(info.key),session=sessions.get(info.key);
     if(session?.blocked||record?.blocked)throw Error(session?.blocked||record.blocked);
     const expected=context.expectedThreadId||context.expectedHostId;if(expected&&expected!==(session?.id||record?.id))throw Error('Codex 历史会话身份失配');
+    const desktopOwned = info.scope === 'project' && !!record?.id && desktopAvailable();
     let model=session?.model||record?.model||cfg.codexModel||data.models.find(m=>m.isDefault)?.model||'',effort=session?.effort||record?.effort||cfg.codexReasoning||null;
-    if(apply){if(session?.run||session?.stopping)throw Error('此 Codex 会话仍在运行');model=cfg.codexModel||model;effort=cfg.codexReasoning||data.models.find(m=>m.model===model)?.defaultReasoningEffort||null;validateChoice(data.models,model,effort);pendingChoices.set(info.key,{model,effort});}
-    const pending=pendingChoices.get(info.key);if(pending){model=pending.model;effort=pending.effort;}
-    return {ok:true,...data,sessionId:session?.id||record?.id||null,modelConfirmation:session?.attached?'native-resumed':record?'pending-native-resume':'catalog-only',configOptions:configOptions(data.models,model,effort),transport:'stdio',experimentalTools:true};
+    if(apply && !desktopOwned){if(session?.run||session?.stopping)throw Error('此 Codex 会话仍在运行');model=cfg.codexModel||model;effort=cfg.codexReasoning||data.models.find(m=>m.model===model)?.defaultReasoningEffort||null;validateChoice(data.models,model,effort);pendingChoices.set(info.key,{model,effort});}
+    const pending=pendingChoices.get(info.key);if(pending && !desktopOwned){model=pending.model;effort=pending.effort;}
+    return {ok:true,...data,desktopOwned,sessionId:session?.id||record?.id||null,modelConfirmation:session?.attached?'native-resumed':record?'pending-native-resume':'catalog-only',configOptions:configOptions(data.models,model,effort),transport:'stdio',experimentalTools:true};
   }
   async function assertContinuation(request, thread, turnId) {
     const { thread: checkedThread, turn } = await history.readLatestTurn(request, thread);
@@ -562,6 +565,33 @@ function createService(options={}){
     const { data } = await request('thread/queue/list', { threadId: thread.id, limit: 1 });
     if (!Array.isArray(data)) throw Error('无法确认 Codex 待发队列');
     if (data.length) throw Error('原会话已有待发消息');
+    return { thread: checkedThread, turn };
+  }
+
+  async function submitToDesktop(run, request, binding, info, input, continuation, onQueue) {
+    return locked(info.key, async () => {
+      const expected = run.context.expectedThreadId || run.context.expectedHostId;
+      if (binding.blocked || (expected && binding.id !== expected) || saved.get(info.key) !== binding ||
+          norm(binding.cwd) !== norm(info.cwd)) throw Error('Codex 会话身份已变化');
+      const native = await history.readProjectThread(request, binding.id);
+      if (norm(await projectThreadRoot(native)) !== norm(info.cwd)) throw Error('Codex 会话工作目录已变化');
+      const latest = continuation
+        ? await assertContinuation(request, native, continuation)
+        : await history.readLatestTurn(request, native).catch(() => null);
+      const observed = await observeDesktop(codexHome(), {
+        threadId: native.id, rolloutPath: native.path, running: native.status?.type === 'active',
+      });
+      const idle = !observed.running && latest && latest.thread.status?.type !== 'active' && latest.turn?.status !== 'inProgress';
+      live(run);
+      onQueue();
+      const clientUserMessageId = 'myide-input-' + crypto.randomUUID();
+      const itemId = await enqueueInput(request, { threadId: native.id, input, clientUserMessageId });
+      // Waking an idle thread must not unpause an older message.
+      const wakeDesktop = !!idle && await request('thread/queue/list', { threadId: native.id, limit: 2 })
+        .then(({ data, nextCursor }) => !nextCursor && data?.length === 1 && data[0].id === itemId)
+        .catch(() => false);
+      return { threadId: native.id, itemId, clientUserMessageId, wakeDesktop };
+    });
   }
 
   async function chat(cfg={},messages,tools,context,onEvent=()=>{},onTool=()=>{}){
@@ -573,6 +603,14 @@ function createService(options={}){
     try{
       const input=promptContent(messages,context.page),info=await identity(context);live(run);statusEvent(run,'connecting','正在连接本机 Codex app-server');
       const conn=await connect(cfg);statusEvent(run,'catalog','正在核对 Codex 账号状态与模型目录');const data=await catalog(conn);live(run);if(data.requiresOpenaiAuth&&!data.loggedIn)throw Error('本机 Codex 尚未登录，请在 Codex 官方客户端或 CLI 中登录后重新连接');
+      const binding = saved.get(info.key), request = historyRequest(conn);
+      if (binding?.id && info.scope === 'project' && desktopAvailable()) {
+        const submission = await submitToDesktop(run, request, binding, info, input, cfg.codexContinueTurnId, () => {
+          queueing = true;
+          statusEvent(run, 'submitting', '正在提交到 Codex 桌面端');
+        });
+        return { ...result('queued'), ok: true, ...submission };
+      }
       const permission = require('./codex-permissions').policy(cfg.codexPermission);
       if (permission.thread.permissions) {
         const profiles = await historyRequest(conn)('permissionProfile/list', { cwd: info.cwd });
@@ -581,8 +619,7 @@ function createService(options={}){
         }
       }
       statusEvent(run,'resuming','正在创建或恢复原生 Codex 线程');
-      const binding = saved.get(info.key);
-      const continuation = cfg.codexContinueTurnId, request = historyRequest(conn);
+      const continuation = cfg.codexContinueTurnId;
       const readContinuation = async () => {
         if (!binding?.id) throw Error('没有可继续的 Codex 原会话');
         const { thread } = await request('thread/read', { threadId: binding.id, includeTurns: false });

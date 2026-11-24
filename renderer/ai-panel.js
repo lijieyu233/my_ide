@@ -239,7 +239,7 @@ const AiPanel = (() => {
   const dshScopeMismatch = () => !!dshSessionAccess && dshSessionAccess.scope !== dshScope();
   const dshScopeError = () => dshScope() === 'reader' ? '阅读页使用独立对话，请新建会话' : '当前是阅读页的独立对话，请新建项目会话';
   const dshModelUnavailable = () => dshConfigOptions.find(option=>option.id==='model')?.available === false;
-  const dshCanSend = (codexIdle = false) => !nativeEngine() || (codexIdle || !codexObservedRunning()) && (getConfig().engine!=='codex'||dshOptionsState==='ready') && !historyReplayJob && (!dshSessionAccess || dshSessionAccess.state === 'ready' && !dshScopeMismatch()) && !dshModelUnavailable();
+  const dshCanSend = (codexIdle = false) => !nativeEngine() || (codexIdle || !codexObservedRunning()) && (getConfig().engine!=='codex'||dshOptionsState==='ready') && !historyReplayJob && (!dshSessionAccess || dshSessionAccess.state === 'ready' && !dshScopeMismatch()) && (codexDesktopOwnsCurrentSession() || !dshModelUnavailable());
   function rejectDshSend(codexIdle = false) {
     if (!codexIdle && codexObservedRunning()) return true;
     if (codexSelectedHistoryItem()?.archived) {
@@ -650,6 +650,12 @@ const AiPanel = (() => {
       return;
     }
     if (getConfig().engine === 'codex') {
+      if (codexDesktopOwnsCurrentSession()) {
+        b.classList.remove('on');
+        b.title = '权限沿用 Codex 原会话，点击在 Codex 中查看';
+        if (label) label.textContent = 'Codex 权限';
+        return;
+      }
       const mode = codexPermissionMode(), text = codexPermissionLabels[mode];
       b.classList.toggle('on', mode !== 'read-only');
       b.title = 'Codex 权限：' + text;
@@ -1326,9 +1332,15 @@ const AiPanel = (() => {
     if(info){info.textContent=dshModelUnavailable()?'DSH 已连接 · 原模型不可用':'DSH 已连接';info.title=dshModelUnavailable()?model.unavailableReason||'原模型不可用，请选择可用模型':sessionId?'当前 DSH 会话：'+sessionId:'首次发送消息时创建 DSH 会话';}
   }
 
+  function codexDesktopOwnsCurrentSession() {
+    if (getConfig().engine !== 'codex' || busy) return false;
+    return codexSelectedHistoryItem()?.desktopOwned === true ||
+      dshSessionAccess?.sessionId === curSessionId && dshSessionAccess.epoch === pageEpoch && dshSessionAccess.desktopOwned === true;
+  }
+
   let codexEffortRequest = null;
   function codexEffortEditable() {
-    return dshOptionsState === 'ready' && codexEffortRequest !== inputViewKey() &&
+    return dshOptionsState === 'ready' && !codexDesktopOwnsCurrentSession() && codexEffortRequest !== inputViewKey() &&
       (!busy || !!nativeInputTarget());
   }
 
@@ -1370,8 +1382,8 @@ const AiPanel = (() => {
     const needsLogin=result?.ok&&result.requiresOpenaiAuth===true&&result.loggedIn!==true;
     dshOptionsState=result?.ok&&!needsLogin?'ready':'error';dshConfigOptions=result?.ok?result.configOptions||[]:[];
     if(needsLogin)result={...result,ok:false,error:'Codex 尚未登录，请先在官方 Codex 客户端或 CLI 登录，再点击重新连接；MyIDE 不读取、复制或代填登录凭据。'};
-    if(info){info.textContent=needsLogin?'Codex 已连接 · 未登录':result?.ok?'Codex 已连接':'Codex 连接失败';info.title=result?.ok?'Codex 权限可在输入框的盾牌菜单设置。'+(result.modelConfirmation==='pending-native-resume'?' 原会话模型将在发送前由原生恢复确认。':''):result?.error||'请检查 Codex 启动器与本机登录状态';}
-    if(result?.ok)dshSessionAccess={sessionId,hostId:result.sessionId||'',state:'ready',scope:dshScope(),epoch,error:''};
+    if(info){info.textContent=needsLogin?'Codex 已连接 · 未登录':result?.ok?'Codex 已连接':'Codex 连接失败';info.title=result?.desktopOwned?'此会话由 Codex 桌面端运行':result?.ok?'Codex 权限可在输入框的盾牌菜单设置。'+(result.modelConfirmation==='pending-native-resume'?' 原会话模型将在发送前由原生恢复确认。':''):result?.error||'请检查 Codex 启动器与本机登录状态';}
+    if(result?.ok)dshSessionAccess={sessionId,hostId:result.sessionId||'',desktopOwned:result.desktopOwned===true,state:'ready',scope:dshScope(),epoch,error:''};
     refreshModelSel();setBusyUI(busy);
   }
   async function refreshDshOptions(apply=false,retry=false){
@@ -1420,7 +1432,7 @@ const AiPanel = (() => {
     document.querySelector('.ai-dsh-status')?.classList.toggle('hidden',!nativeEngine(cfg.engine));
     if(nativeEngine(cfg.engine)){
       const model=dshConfigOptions.find(option=>option.id==='model'),choices=(model?.options||[]).flatMap(option=>option.options||[option]);
-      const ready=dshOptionsState==='ready'&&!dshScopeMismatch()&&(cfg.engine!=='codex'||!busy);sel.disabled=!ready;
+      const ready=dshOptionsState==='ready'&&!dshScopeMismatch()&&(cfg.engine!=='codex'||!busy&&!codexDesktopOwnsCurrentSession());sel.disabled=!ready;
       const optionHtml=option=>'<option value="'+esc(option.value)+'"'+(option.disabled?' disabled':'')+'>'+esc(option.name)+'</option>';
       // 目录已带原生分类；只在查找选中值时展开，展示保留来源，不能按同名模型去重。
       const groupedHtml=(model?.options||[]).map(option=>Array.isArray(option.options)
@@ -2748,7 +2760,7 @@ const AiPanel = (() => {
     if (b && getConfig().engine === 'codex') codexLiveView = null;
     if (getConfig().engine === 'codex') {
       const model = document.getElementById('ai-model');
-      if (model) model.disabled = b || dshOptionsState !== 'ready';
+      if (model) model.disabled = b || codexDesktopOwnsCurrentSession() || dshOptionsState !== 'ready';
     }
     const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect){reconnect.disabled=b||dshOptionsState==='loading';reconnect.setAttribute('aria-label','重新连接 '+nativeLabel());reconnect.title='重新连接 '+nativeLabel()+'，保留会话，不重发任务';}
     renderCodexObservedActivity();
@@ -2767,9 +2779,9 @@ const AiPanel = (() => {
     sendBtn.disabled = queueMode ? !inputEl.value.trim() || submitting || !nativeInputTarget()
       : codexArchived || stopping || !b && !external && (!dshCanSend() || submitting);
     sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b || external ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : continuation ? '<path d="M5 3v10l8-5z" fill="currentColor" stroke="none"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b || external ? '⏹' : '➤') + '</span>';
-    const continuationTitle = continuation && codexConflictForCurrentDraft()?.turnId === continuation
+    const continuationTitle = continuation && (codexDesktopOwnsCurrentSession() || codexConflictForCurrentDraft()?.turnId === continuation)
       ? '加入待发，沿用原会话的设置和权限' : '继续上一次中断的任务';
-    sendBtn.title = continuation ? continuationTitle : queueMode ? '发送到原 Codex 会话，沿用原会话权限（Enter）' : codexArchived ? '请先取消归档再发送' : b && currentRun?.engine==='codex' ? '请求中断当前 Codex 轮次，不影响其他会话' : b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : external ? '停止 DSH 当前会话；Enter 排队，Alt+Enter 插入' : '发送（Enter）';
+    sendBtn.title = continuation ? continuationTitle : queueMode ? '发送到原 Codex 会话，沿用原会话权限（Enter）' : codexArchived ? '请先取消归档再发送' : b && currentRun?.engine==='codex' ? '请求中断当前 Codex 轮次，不影响其他会话' : b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : external ? '停止 DSH 当前会话；Enter 排队，Alt+Enter 插入' : codexDesktopOwnsCurrentSession() ? '由 Codex 桌面端发送，沿用原会话设置和权限（Enter）' : '发送（Enter）';
     sendBtn.setAttribute('aria-label', codexArchived ? sendBtn.title : b || external ? '停止生成' : continuation ? '继续' : '发送消息');
   }
 
@@ -3109,7 +3121,7 @@ const AiPanel = (() => {
         codexCatalog = { launcher: codexPath, items: result.items, projects: result.projects || [] };
         const selected = codexSelectedHistoryItem();
         if (codexLiveView && selected?.running && !previous?.running) codexLiveView.activity = '';
-        if (previous?.running !== selected?.running || previous?.archived !== selected?.archived) setBusyUI(busy);
+        if (previous?.running !== selected?.running || previous?.archived !== selected?.archived || previous?.desktopOwned !== selected?.desktopOwned) setBusyUI(busy);
         else if (previous?.title !== selected?.title) renderCurrentSessionTitle();
         void syncCodexLiveHistory(selected, config);
         if (panel && !panel.classList.contains('hidden')) void refreshNativeQueue(true);
@@ -5599,7 +5611,7 @@ const AiPanel = (() => {
       for(const file of event.target.files||[])onPasteImage({clipboardData:{items:[{kind:'file',type:file.type,getAsFile:()=>file}]},preventDefault(){}});
       event.target.value='';
     });
-    if (permBtn) permBtn.onclick = (e) => { e.stopPropagation(); togglePermPop(); };
+    if (permBtn) permBtn.onclick = (e) => { e.stopPropagation(); if(codexDesktopOwnsCurrentSession())void updateNativeQueue(null,'openDesktop');else togglePermPop(); };
     syncPermBtn();
     const contextDetails = document.getElementById('ai-context-details');
     if (contextDetails) contextDetails.onclick = showCtxBreakdown;

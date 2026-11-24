@@ -29,7 +29,11 @@ const G = require('./src/main/git/git-service');
 const DB = require('./src/main/db/db-service');
 const AI = require('./src/main/ai/ai-service');
 const DSH=require('./src/main/dsh/ai-dsh').createService({homeDir:()=>UI_CHECK?path.join(app.getPath('userData'),'harness-home'):undefined,mappingFile:()=>path.join(app.getPath('userData'),'dsh-native-sessions.json')});
-const CODEX=require('./src/main/codex/ai-codex').createService({homeDir:()=>UI_CHECK?path.join(app.getPath('userData'),'codex-home'):undefined,mappingFile:()=>path.join(app.getPath('userData'),'codex-sessions.json')});
+const CODEX=require('./src/main/codex/ai-codex').createService({
+  homeDir:()=>UI_CHECK?path.join(app.getPath('userData'),'codex-home'):undefined,
+  mappingFile:()=>path.join(app.getPath('userData'),'codex-sessions.json'),
+  desktopOwnsProjectThreads: () => process.platform === 'win32' && !!app.getApplicationNameForProtocol('codex://threads/'),
+});
 const aiRuns = require('./src/main/ai/ai-runs').createRegistry();
 const aiOwners=require('./src/main/ai/ai-owner-router').createRouter();
 const AiToolContract = require('./src/main/ai/ai-tool-contract');

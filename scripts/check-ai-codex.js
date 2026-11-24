@@ -9,8 +9,8 @@ fs.mkdirSync(out,{recursive:true});for(const root of roots){fs.mkdirSync(root);f
 os.homedir=()=>temp;process.env.HOME=process.env.USERPROFILE=temp;process.env.CODEX_HOME=path.join(temp,'codex-home');app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
 for(const flag of ['disable-background-timer-throttling','disable-renderer-backgrounding','disable-backgrounding-occluded-windows'])app.commandLine.appendSwitch(flag);
 for(const name of ['readText','readHTML','readRTF','readFindText'])clipboard[name]=()=>'';clipboard.readImage=()=>nativeImage.createEmpty();clipboard.availableFormats=()=>[];clipboard.readBuffer=()=>Buffer.alloc(0);
-const fixture=require('./codex-test-server').createServer(),codex=require('../src/main/codex/ai-codex'),create=codex.createService;let service;
-codex.createService=options=>(service=create({...options,resolveRuntime:async()=>({executable:process.execPath,args:[],launcher:'offline-fixture'}),spawn:fixture.spawn}));
+const fixture=require('./codex-test-server').createServer(),codex=require('../src/main/codex/ai-codex'),create=codex.createService;let service, desktopOwnsProjectThreads=false;
+codex.createService=options=>(service=create({...options,desktopOwnsProjectThreads:()=>desktopOwnsProjectThreads,resolveRuntime:async()=>({executable:process.execPath,args:[],launcher:'offline-fixture'}),spawn:fixture.spawn}));
 const network=[],checks=[],handle=ipcMain.handle.bind(ipcMain);ipcMain.handle=(channel,fn)=>handle(channel,(event,...args)=>{if(channel==='browser:tool-keys')return {ok:true};return fn(event,...args);});
 let win,done=false;app.on('browser-window-created',(_e,w)=>{w.setSkipTaskbar(true);w.on('show',()=>{throw Error('Test window became visible');});});app.on('web-contents-created',(_e,wc)=>wc.setBackgroundThrottling(false));app.on('ready',()=>session.defaultSession.webRequest.onBeforeRequest({urls:['http://*/*','https://*/*','ws://*/*','wss://*/*']},(data,reply)=>{network.push(data.url);reply({cancel:true});}));require('../main');
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),js=(fn,...args)=>win.webContents.executeJavaScript('('+fn.toString()+')('+args.map(a=>JSON.stringify(a)).join(',')+')');
@@ -556,5 +556,31 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),90000);
  await js(()=>document.querySelector('#ai-input-queue [data-queue-action="remove"]').click());
  await until(()=>!original.inputQueue.length,'withdraw the continuation fixture');
  original.writerLocked=false;
+ desktopOwnsProjectThreads=true;
+ original.turn={id:'desktop-last-completed',status:'completed'};
+ await js(()=>document.querySelector('[data-hist-refresh]').click());
+ await until(()=>js(()=>document.getElementById('ai-model').disabled&&
+   document.querySelector('#ai-perm .ai-perm-text').textContent==='Codex 权限'),'composer exposes the actual owner of execution settings');
+ const startDesktopRoute=fixture.requests.length;
+ const wakesBefore=desktopLinks.filter(link=>link==='codex://threads/wake/'+externalId).length;
+ await pasteComposerImage();
+ await until(()=>js(selector=>document.querySelector(selector+' img')?.naturalWidth===240,draftImageSelector),'desktop-owned attachment loaded');
+ await js(()=>AiPanel.ask('桌面端接收 MyIDE 消息'));
+ await until(()=>original.inputQueue?.length===1&&desktopLinks.filter(link=>link==='codex://threads/wake/'+externalId).length===wakesBefore+1,
+   'idle Desktop received message and background wake');
+ check('A send to an idle Desktop session uses its queue without acquiring a writer',
+   original.inputQueue[0].input[0].text==='桌面端接收 MyIDE 消息'&&original.inputQueue[0].input[1]?.type==='image'&&
+   !fixture.requests.slice(startDesktopRoute).some(r=>['thread/start','thread/resume','turn/start'].includes(r.method)));
+ await js(()=>document.querySelector('#ai-input-queue [data-queue-action="remove"]').click());
+ await until(()=>!original.inputQueue.length,'desktop-only example withdrawn');
+ original.turn={id:'desktop-stopped-session',status:'interrupted'};
+ await until(()=>js(()=>document.getElementById('ai-send').getAttribute('aria-label')==='继续'),'Desktop-owned interrupted turn can continue');
+ await js(()=>document.getElementById('ai-send').click());
+ await until(()=>original.inputQueue?.length===1&&desktopLinks.filter(link=>link==='codex://threads/wake/'+externalId).length===wakesBefore+2,
+   'one Continue wakes the original Desktop session');
+ check('Continue routes to the exact Desktop thread on the first click without restarting or forking',
+   original.inputQueue[0].input[0].text==='继续'&&
+   !fixture.requests.slice(startDesktopRoute).some(r=>['thread/start','thread/resume','turn/start','thread/fork','turn/interrupt'].includes(r.method)));
+ await capture('codex-desktop-owned');
  const gap=await js(()=>Math.max(...window.__codexGaps));check('renderer stays responsive in native tool flow',gap<250,{maxHeartbeatMs:gap});check('isolated fixture remained hidden and offline',!network.length&&BrowserWindow.getAllWindows().every(w=>!w.isVisible()));await finish(0);
 })().catch(async error=>{console.error(error.stack);if(win&&!win.isDestroyed())try{console.error('CODEX_UI_STATE '+JSON.stringify(await js(()=>({state:AiPanel.aiState(),info:document.getElementById('ai-dsh-info')?.title,fixtureText:document.getElementById('ai-msgs')?.textContent.slice(-700)}))));}catch{}await finish(1,error.message);});
