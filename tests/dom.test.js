@@ -168,6 +168,12 @@ function makeDom() {
       pathOfDroppedFile: () => P + '/osdrop.txt', // 模拟 Electron webUtils 取到的真实路径
       setRecent: async () => ({ ok: true }),
       inspectDirectory: async () => ({ ok: true }),
+      locateFileProject: async (path, roots) => {
+        if (FAKE_FS[path]?.type !== 'file') return { ok: false, error: '链接指向的文件不存在' };
+        const root = roots.filter(root => path.startsWith(root.replace(/\/$/, '') + '/'))
+          .sort((a, b) => b.length - a.length)[0] || '';
+        return { ok: true, root, path };
+      },
       readDir: async (p) => (FAKE_FS[p] ? FAKE_FS[p].children.map((c) => ({ name: c.split('/').pop(), type: FAKE_FS[c].type, path: c, mtime: FAKE_FS[c].mtime, ctime: FAKE_FS[c].ctime, size: FAKE_FS[c].size })) : []),
       listAll: async (root) => ({ files: Object.keys(FAKE_FS).filter((f) => FAKE_FS[f].type === 'file'), truncated: false }),
       grep: async (root, q) => ({ results: [{ file: 'README.md', line: 1, text: '# 标题' }, { file: 'notes.txt', line: 2, text: '关键词命中' }], truncated: false, elapsed: 5 }),
@@ -6076,6 +6082,47 @@ assert_(panel, 'CM6 搜索面板出现');
       assert(!$(d, '#ctx-menu:not(.hidden) [aria-label="回复链接操作"]'));
     } finally {
       delete FAKE_FS[local];
+      w.close();
+    }
+  });
+
+  await okAsync('AI 文件链接先打开所属项目，再打开文档并定位行号', async () => {
+    const d = makeDom(), w = d.window;
+    const nested = P + '/子项目';
+    const file = nested + '/设计 说明.md';
+    FAKE_FS[file] = { type: 'file', content: '# 标题\n\n正文' };
+    try {
+      await loadApp(d);
+      await w.App.openProject(nested);
+      await w.App.openProject(P);
+      const msg = $(d, '#ai-msgs');
+      const link = href => {
+        msg.innerHTML = '<div class="ai-assistant"><div class="ai-md"><a>方案</a></div></div>';
+        const node = msg.querySelector('a');
+        node.setAttribute('href', href);
+        return node;
+      };
+      let line;
+      w.Viewer.revealLine = value => { line = value; };
+      click(link('/' + encodeURI(file) + '#L3'));
+      for (let i = 0; i < 25 && line !== 3; i++) await tick();
+      assert.equal(w.App.root, nested);
+      assert.equal(w.Viewer.activeTab?.path, file);
+      assert.equal(line, 3);
+
+      await w.App.openProject(P);
+      const originalSave = w.Viewer.saveAllDirty;
+      let triedSave = false;
+      w.Viewer.saveAllDirty = async () => { triedSave = true; return { ok: false }; };
+      try {
+        click(link('/' + encodeURI(file)));
+        for (let i = 0; i < 25 && !triedSave; i++) await tick();
+        assert(triedSave);
+        assert.equal(w.App.root, P);
+        assert(!w.Viewer.openTabs.some(tab => tab.path === file));
+      } finally { w.Viewer.saveAllDirty = originalSave; }
+    } finally {
+      delete FAKE_FS[file];
       w.close();
     }
   });

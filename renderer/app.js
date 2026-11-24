@@ -1293,7 +1293,7 @@ const App = (() => {
 
   return {
     init, openFolder, setRoot, openProject, removeProject, refreshAll, refreshGit, refreshOutline,
-    switchTool, showTool, hideSideTool, closeBrowser, getTool, getPageContext, setTool, backToEditor, updateStatusbar, getProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip, showProjMenu, openProject, LAYOUT, resizeColumn, saveColumnWidths,
+    switchTool, showTool, hideSideTool, closeBrowser, getTool, getPageContext, setTool, backToEditor, updateStatusbar, getProjects, knownProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip, showProjMenu, openProject, LAYOUT, resizeColumn, saveColumnWidths,
     get root() { return root; },
     fitName, ftIcon, dirIcon,
     get gitRefreshDelay() { return gitRefreshDelay; },

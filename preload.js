@@ -57,6 +57,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     getRecent: () => ipcRenderer.invoke('fs:getRecent'),
     setRecent: (p) => ipcRenderer.invoke('fs:setRecent', p),
     inspectDirectory: (p) => ipcRenderer.invoke('fs:inspectDirectory', p),
+    locateFileProject: (file, roots) => ipcRenderer.invoke('fs:locateFileProject', file, roots),
     readDir: (p, showHidden) => ipcRenderer.invoke('fs:readDir', p, showHidden),
     listAll: (p, showHidden) => ipcRenderer.invoke('fs:listAll', p, showHidden),
     grep: (p, q) => ipcRenderer.invoke('fs:grep', p, q),

@@ -604,6 +604,33 @@ async function inspectProjectDirectory(p) {
   catch (error) { return { ok: false, errorCode: error.code, error: error.code === 'ENOENT' ? '项目位置不存在或已离线' : error.code === 'ENOTDIR' ? '项目位置不是目录' : ['EACCES','EPERM'].includes(error.code) ? '没有权限读取项目目录' : '无法读取项目目录：' + error.message }; }
 }
 ipcMain.handle('fs:inspectDirectory', (_e, p) => inspectProjectDirectory(p));
+ipcMain.handle('fs:locateFileProject', async (event, file, roots) => {
+  if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame) {
+    return { ok: false, error: '无效的文件来源' };
+  }
+  const absolute = value => typeof value === 'string' && value.length <= 4096 && path.isAbsolute(value);
+  if (!absolute(file) || !Array.isArray(roots) || roots.length > 256) return { ok: false, error: '文件路径无效' };
+  const containsFile = (root, file) => {
+    const relative = path.relative(root, file);
+    return relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+  };
+  try {
+    const realFile = await fs.promises.realpath(file);
+    if (!(await fs.promises.stat(realFile)).isFile()) return { ok: false, error: '链接目标不是文件' };
+    const known = await Promise.all([...new Set(roots.filter(absolute))].map(async root =>
+      ({ root, real: await fs.promises.realpath(root).catch(() => null) })));
+    const matches = known.filter(project => project.real && containsFile(project.real, realFile));
+    const repo = await G.findRoot(path.dirname(realFile)).catch(() => null);
+    if (repo) matches.push({ root: repo, real: repo });
+    matches.sort((a, b) => b.real.length - a.real.length);
+    const project = matches[0];
+    return { ok: true, root: project?.root || '', path: project
+      ? path.join(project.root, path.relative(project.real, realFile)) : realFile };
+  } catch (error) {
+    const missing = error.code === 'ENOENT' || error.code === 'ENOTDIR';
+    return { ok: false, error: missing ? '链接指向的文件不存在' : '无法打开链接指向的文件：' + error.message };
+  }
+});
 ipcMain.handle('fs:setRecent', async (_e, p) => {
   if (p !== null) { const result = await inspectProjectDirectory(p); if (!result.ok) return result; }
   try {

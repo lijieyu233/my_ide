@@ -1544,11 +1544,26 @@ const AiPanel = (() => {
       return local?.rel ? { path: local.root.replaceAll('\\', '/') + '/' + local.rel, line } : null;
     } catch { return null; }
   }
+  let replyLinkIntent = 0;
   async function openReplyLink(target) {
+    const intent = ++replyLinkIntent;
     if (target.path) {
-      const result = await Viewer.openFile(target.path);
-      if (result?.ok && Number.isSafeInteger(target.line) && target.line > 0 &&
-          DocumentPaths.key(Viewer.activeTab?.path) === DocumentPaths.key(target.path)) Viewer.revealLine(target.line);
+      const origin = DocumentPaths.key(App.root);
+      const codex = currentCodexCatalog();
+      const roots = [...new Set([App.root, sessionRoot(), ...App.knownProjects(),
+        ...(codex?.projects || []).flatMap(project => project.roots),
+        ...(catalogUsable() ? [...dshCatalog.workspaces.values()].map(workspace => workspace.rootDir) : []),
+      ].filter(Boolean))].slice(0, 256);
+      const file = await window.myIDE.fs.locateFileProject(target.path, roots);
+      if (intent !== replyLinkIntent || DocumentPaths.key(App.root) !== origin) return;
+      if (!file?.ok) throw Error(file?.error || '无法定位链接指向的文件');
+      const destination = DocumentPaths.key(file.root);
+      if (destination && destination !== origin) {
+        if (!await App.openProject(file.root) || intent !== replyLinkIntent || DocumentPaths.key(App.root) !== destination) return;
+      }
+      const result = await Viewer.openFile(file.path);
+      if (result?.ok && intent === replyLinkIntent && Number.isSafeInteger(target.line) && target.line > 0 &&
+          DocumentPaths.key(Viewer.activeTab?.path) === DocumentPaths.key(file.path)) Viewer.revealLine(target.line);
     } else if (target.url.startsWith('mailto:')) {
       await window.myIDE.shell.openExternal(target.url);
     } else {
