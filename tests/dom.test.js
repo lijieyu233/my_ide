@@ -1753,11 +1753,12 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
   });
 
-  await okAsync('主题切换：默认深色 → 浅色 → 粉红 → 深红 → 石墨 → 回深色', async () => {
+  await okAsync('主题切换：默认深色 → Codex → 浅色 → 粉红 → 深红 → 石墨 → 回深色', async () => {
     const T = 'myide-theme';
     const cls = () => $(dom, 'body').className;
-    const isDark = () => !/theme-(light|pink|crimson|graphite)/.test(cls());
+    const isDark = () => !/theme-(codex|light|pink|crimson|graphite)/.test(cls());
     const chain = [
+      ['toggle', 'codex', 'theme-codex'],
       ['toggle', 'light', 'theme-light'],
       ['key', 'pink', 'theme-pink'],
       ['toggle', 'crimson', 'theme-crimson'],

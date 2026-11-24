@@ -4,9 +4,9 @@ const Theme = (() => {
   const A_KEY = 'myide-accent';        // 旧版单独强调色键（首次加载迁移后删除）
   const C_KEY = 'myide-custom-theme';  // 当前覆盖层颜色 JSON（用户主题激活时含其配色）
   const UT_KEY = 'myide-user-themes';  // 用户自定义主题列表 [{id, name, base, colors}]
-  const ORDER = ['dark', 'light', 'pink', 'crimson', 'graphite']; // toggle 循环顺序
-  const NAMES = { dark: '深色', light: '浅色', pink: '粉红', crimson: '深红', graphite: '石墨' };
-  const CLS = { light: 'theme-light', pink: 'theme-pink', crimson: 'theme-crimson', graphite: 'theme-graphite' };
+  const ORDER = ['dark', 'codex', 'light', 'pink', 'crimson', 'graphite']; // toggle 循环顺序
+  const NAMES = { dark: '深色', codex: 'Codex', light: '浅色', pink: '粉红', crimson: '深红', graphite: '石墨' };
+  const CLS = { codex: 'theme-codex', light: 'theme-light', pink: 'theme-pink', crimson: 'theme-crimson', graphite: 'theme-graphite' };
 
   // UI 可动态调整的变量（字段名 → CSS 变量 + 分组）
   // 注意：主题变量定义在 body.theme-* 选择器上，覆盖层必须写 body inline style 才能赢过它

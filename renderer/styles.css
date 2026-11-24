@@ -2505,6 +2505,7 @@ body.theme-light #set-box, body.theme-pink #set-box { color-scheme: light; }
   background: var(--swatch-bg, var(--bg-panel)); box-shadow: inset 0 -3px var(--swatch-accent, var(--accent));
 }
 .set-theme-swatch[data-theme-base="dark"] { --swatch-bg: #212121; --swatch-accent: #4f9cd6; }
+.set-theme-swatch[data-theme-base="codex"] { --swatch-bg: #191d1f; --swatch-accent: #68bb78; }
 .set-theme-swatch[data-theme-base="light"] { --swatch-bg: #f5f5f5; --swatch-accent: #007acc; }
 .set-theme-swatch[data-theme-base="pink"] { --swatch-bg: #fff0f5; --swatch-accent: #d66b93; }
 .set-theme-swatch[data-theme-base="crimson"] { --swatch-bg: #2a171d; --swatch-accent: #f06292; }
@@ -2644,6 +2645,37 @@ body.theme-light #set-box, body.theme-pink #set-box { color-scheme: light; }
 .toast.ok { border-left-color: var(--green); }
 .toast.err { border-left-color: var(--red); white-space: pre-wrap; }
 @keyframes toast-in { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* ---------- Codex：中性深灰、冷灰界面、绿色强调 ---------- */
+body.theme-codex {
+  --md-title: #dce5df;
+  --bg: #202122;
+  --bg-tabbar: #1d2021;
+  --bg-panel: #191d1f;
+  --bg-title: #15191b;
+  --bg-hover: #24292b;
+  --bg-selected: #2c3133;
+  --bg-input: #24282a;
+  --border: #141718;
+  --border-mid: #3d4446;
+  --text: #d3d9d7;
+  --text-bright: #f1f4f2;
+  --text-dim: #9da8a7;
+  --accent: #68bb78;
+  --on-accent: #152019;
+  --green: #83c78e;
+  --red: #e5898a;
+  --yellow: #dbba73;
+  --btn-bg: #252a2c;
+  --btn-border: #3a4244;
+  --btn-hover: #303638;
+  --panel-strong: #222729;
+  --menu-border: #3a4244;
+  --code-bg: #1b1e1f;
+  --code-text: #d2ddd6;
+  --editor-text: #dce2df;
+  --num-dim: #849190;
+}
 
 /* ---------- 浅色主题（PyCharm Light 风格） ---------- */
 body.theme-light {
@@ -4641,6 +4673,32 @@ body.theme-light #ai-panel, body.theme-pink #ai-panel {
   --ai-link-text: #235da8; --ai-code-text: #855015; --ai-running-text: #235da8;
   --ai-success-text: #286743; --ai-warning-text: #81591d; --ai-error-text: #a13242;
 }
+body.theme-codex #ai-panel {
+  background: #181919;
+  --ai-body-text: #e2e5e3;
+  --ai-strong-text: #f1f4f2;
+  --ai-process-text: #a0a7a4;
+  --ai-header-text: #c7ceca;
+  --ai-link-text: var(--accent);
+  --ai-code-text: #d2ddd6;
+  --ai-running-text: var(--accent);
+}
+body.theme-codex .ai-input-box {
+  background: #313333;
+  border-color: #414544;
+}
+body.theme-codex .ai-msg.ai-user .ai-md {
+  background: #2d653a;
+  color: #f5faf6;
+}
+body.theme-codex #ai-send {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+body.theme-codex #ai-send:not(:disabled):hover {
+  background: color-mix(in srgb, var(--accent) 85%, white);
+}
+
 /* 三层信息共用一个轻量头部，只保留最外侧分隔；工程归属与引擎并排，不再重复一整行。 */
 .ai-panel-header { flex: none; min-width: 0; padding: 6px 12px; border-bottom: 1px solid var(--ui-line); background: color-mix(in srgb, var(--bg-panel) 80%, var(--bg)); display: flex; flex-direction: column; gap: 2px; }
 .ai-head { padding: 0; border: 0; height: 24px; min-height: 24px; color: var(--ai-process-text); }
