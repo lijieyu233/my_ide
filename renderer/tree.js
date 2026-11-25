@@ -1528,7 +1528,7 @@ const Tree = (() => {
 
   async function renameItem(item, suppliedName) {
     const operationRoot=rootPath;
-    const name = suppliedName ?? await Modal.prompt('重命名', '新名称：', item.name);
+    const name = suppliedName ?? await Modal.prompt('重命名', '新名称：', item.name, { splitExtension: item.type === 'file' });
     if (!name || name === item.name) return;
     if(rootPath!==operationRoot){MI.toast('项目已切换，重命名未执行', 'err');return;}
     const targetRange=item.path.replace(/[\\/][^\\/]+$/, '')+'/'+name;

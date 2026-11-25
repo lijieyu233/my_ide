@@ -67,15 +67,20 @@ const App = (() => {
         box.querySelector('#cf-x').onclick = () => finish(false);
       });
     },
-    prompt(title, label, value) {
+    prompt(title, label, value, { splitExtension = false } = {}) {
       return new Promise((resolve) => {
         const box = document.createElement('div');
+        const name = String(value ?? '');
+        const dot = name.lastIndexOf('.');
+        const hasSuffix = splitExtension && dot > 0 && dot < name.length - 1;
         box.innerHTML = `
           <div class="m-head">${title} <span class="x" id="pf-x">✕</span></div>
-          <div class="m-body">
-            <label class="m-label">${label}</label>
-            <input id="pf-input" type="text" value="${String(value || '').replace(/"/g, '&quot;')}"
-              style="width:100%;background:var(--bg-input);border:1px solid var(--btn-border);border-radius:4px;color:var(--text-bright);padding:6px 8px;outline:none">
+          <div class="m-body${splitExtension ? ' m-file-name' : ''}">
+            <div>
+              <label for="pf-input" class="m-label">${splitExtension ? '文件名' : label}</label>
+              <input id="pf-input" class="m-prompt-input" type="text">
+            </div>
+            ${splitExtension ? '<div><label for="pf-extension" class="m-label">后缀</label><input id="pf-extension" class="m-prompt-input" type="text"></div>' : ''}
           </div>
           <div class="m-foot">
             <button class="tb-btn m-cancel" id="pf-no">取消</button>
@@ -83,14 +88,46 @@ const App = (() => {
           </div>`;
         Modal.show(box);
         const input = box.querySelector('#pf-input');
-        setTimeout(() => { input.focus(); input.select(); }, 50);
-        const done = (v) => { Modal.hide(); resolve(v); };
-        box.querySelector('#pf-yes').onclick = () => done(input.value);
+        const suffix = box.querySelector('#pf-extension');
+        input.value = hasSuffix ? name.slice(0, dot) : name;
+        if (suffix) {
+          suffix.value = hasSuffix ? name.slice(dot + 1) : '';
+          suffix.addEventListener('focus', () => suffix.select());
+          input.required = true;
+        }
+        const focusInput = () => {
+          if (Modal.stack.at(-1) !== box) return;
+          input.focus();
+          input.select();
+        };
+        if (splitExtension) focusInput();
+        else setTimeout(focusInput, 50);
+        let settled = false;
+        const done = (result) => {
+          if (settled || Modal.stack.at(-1) !== box) return;
+          settled = true;
+          Modal.hide();
+          resolve(result);
+        };
+        box.onModalHide = () => {
+          if (!settled) { settled = true; resolve(null); }
+          if (box.modalOrigin?.isConnected && !box.modalOrigin.closest('.hidden,[hidden]')) box.modalOrigin.focus({ preventScroll: true });
+        };
+        const submit = () => {
+          if (!suffix) { done(input.value); return; }
+          if (!input.reportValidity()) return;
+          const extension = suffix.value.trim().replace(/^\./, '');
+          done(input.value + (extension ? '.' + extension : ''));
+        };
+        box.querySelector('#pf-yes').onclick = submit;
         box.querySelector('#pf-no').onclick = () => done(null);
         box.querySelector('#pf-x').onclick = () => done(null);
-        input.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') done(input.value);
-          if (e.key === 'Escape') done(null);
+        box.addEventListener('keydown', (event) => {
+          if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229 ||
+              (event.target !== input && event.target !== suffix)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          submit();
         });
       });
     },

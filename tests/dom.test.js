@@ -10777,6 +10777,25 @@ assert_(panel, 'CM6 搜索面板出现');
   });
 
   console.log('');
+  await saveCase('文件重命名预选名称并独立编辑后缀，文件夹保留单输入框',async(d)=>{
+    const {Tree, Modal, document: doc} = d.window;
+    const start = (name, type) => Tree.renameItem({path:P+'/'+name, name, type});
+    let pending = start('notes.txt', 'file');
+    const name = doc.getElementById('pf-input'), suffix = doc.getElementById('pf-extension');
+    assert.equal(name.value,'notes');assert.equal(suffix.value,'txt');assert.equal(doc.activeElement,name);
+    assert.equal(name.selectionStart,0);assert.equal(name.selectionEnd,name.value.length);
+    suffix.focus();assert.equal(suffix.selectionEnd,suffix.value.length);suffix.value='.md';
+    suffix.dispatchEvent(new d.window.KeyboardEvent('keydown',{key:'Enter',bubbles:true,isComposing:true}));
+    assert(doc.getElementById('pf-extension'));
+    doc.getElementById('pf-yes').click();
+    assert((await pending)?.ok);assert(FAKE_FS[P+'/notes.md']);
+    pending = start('.gitignore', 'file');
+    assert.equal(doc.getElementById('pf-input').value,'.gitignore');assert.equal(doc.getElementById('pf-extension').value,'');
+    Modal.hide();await pending;
+    pending = start('src.backup', 'dir');
+    assert.equal(doc.getElementById('pf-input').value,'src.backup');assert(!doc.getElementById('pf-extension'));
+    doc.getElementById('pf-no').click();await pending;
+  });
   await saveCase('Shift+F6 重命名：优先树选中项，未选中时退回当前文件；远程文件不冒充本地',async(d,viewer)=>{
     const tree=d.window.Tree,shortcuts=d.window.Shortcuts;
     const binding=shortcuts.bindings().find(b=>b.id==='rename-file');

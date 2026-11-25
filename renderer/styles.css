@@ -1895,6 +1895,8 @@ table.diff-table { border-collapse: collapse; width: 100%; table-layout: fixed; 
 }
 #commit-msg:focus { border-color: var(--accent); }
 .m-label { font-size: 12px; color: var(--text-dim); margin-bottom: 4px; display: block; }
+.m-file-name { display: grid; grid-template-columns: minmax(0, 1fr) minmax(78px, 24%); gap: 8px; }
+.m-prompt-input { width: 100%; background: var(--bg-input); border: 1px solid var(--btn-border); border-radius: 4px; color: var(--text-bright); padding: 6px 8px; outline: none; }
 .m-ok { background: #2e6b34; color: #fff; border: 1px solid #3a8a41; }
 .m-ok:hover { background: #357d3c; }
 .m-cancel { background: var(--btn-hover); color: var(--text); border: 1px solid var(--menu-border); }
