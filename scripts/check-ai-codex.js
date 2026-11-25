@@ -149,6 +149,29 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
    JSON.stringify(received.map(entry=>entry.result))===JSON.stringify([
     {answers:{path:{answers:['继续当前方案','user_note: 先保留正文']}}}, {answers:{}},
    ]) && network.length===0);
+  await js(()=>AiPanel.ask('ASK_ASYNC_CODEX'));
+  await until(()=>js(()=>document.querySelectorAll('.ai-codex-question input').length===2),'async question card');
+  check('Async question has options and a waiting state without a duplicate list',await js(()=>{
+   const form=document.querySelector('.ai-codex-question');
+   return form.textContent.includes('调整方向') && !!form.querySelector('textarea') &&
+    form.querySelector('button').disabled && !form.querySelector('button[type="button"]') &&
+    document.getElementById('ai-runstate').textContent.includes('等待回答') &&
+    !document.getElementById('ai-msgs').textContent.includes('- 调整方向');
+  }));
+  await capture('codex-async-question');
+  await js(()=>{
+   const form=document.querySelector('.ai-codex-question');
+   form.querySelectorAll('input')[1].click();
+   form.requestSubmit();
+  });
+  await until(()=>js(()=>!document.querySelector('.ai-codex-question')&&
+   document.getElementById('ai-msgs').textContent.includes('原轮次收到异步回答')),'async answer consumed');
+  const starts=fixture.requests.filter(r=>r.method==='turn/start');
+  const asyncReply=fixture.receipts.filter(receipt=>receipt.kind==='async-question');
+  check('Async answer is inserted into the original thread and turn once',
+   starts.length===3 && asyncReply.length===1 && asyncReply[0].threadId===starts[2].params.threadId &&
+    asyncReply[0].turnId===fixture.requests.find(r=>r.method==='turn/steer').params.expectedTurnId &&
+    JSON.parse(asyncReply[0].text.split('\n')[1])[0].answer==='调整方向' && network.length===0);
   await finish(0);
   return;
  }

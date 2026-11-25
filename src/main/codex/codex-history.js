@@ -1,5 +1,6 @@
 const path = require('node:path');
 const { createMediaReader, isMediaItem, mediaLabel } = require('./codex-media');
+const { readAsyncQuestion, readAsyncAnswers } = require('./codex-questions');
 
 const nativeId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 const myideInputId = /^myide-input-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
@@ -134,6 +135,8 @@ function activityTitle(summary) {
 async function readMessages(request, thread, redact) {
   let chars = 0, commands = 0, titles = 0, deferredReads = 0, activity = '', activityId = '', latestTurn, inLatestTurn = true, runningCommand = false;
   const messages = [], readMedia = createMediaReader();
+  const asyncQuestions = [], answered = new Map();
+  let latestQuestionId;
   const append = async (item, turnId) => {
     if (!item) return true;
     latestTurn ??= turnId;
@@ -167,12 +170,23 @@ async function readMessages(request, thread, redact) {
     }
     const role = item?.type === 'userMessage' ? 'user' : item?.type === 'agentMessage' ? 'assistant' : '';
     if (!role) return true;
-    const text = role === 'assistant' ? item.text :
+    const original = role === 'assistant' ? item.text :
       (item.content || []).filter(block => block.type === 'text').map(block => block.text).join('\n');
+    const question = readAsyncQuestion(item);
+    if (latest && !messages.length) latestQuestionId = question?.id;
+    const received = role === 'user' && readAsyncAnswers(original);
+    for (const { id, index } of received || []) {
+      if (!answered.has(id)) answered.set(id, new Set());
+      answered.get(id).add(String(index));
+    }
+    if (question && turnId === latestTurn && !question.questions.every(field => answered.get(question.id)?.has(field.id))) {
+      asyncQuestions.push(question);
+    }
+    const text = received ? received.map(value => value.answer).join('\n') : original;
     if (typeof text !== 'string' || !text.trim() && !imgs.length) return true;
     const content = text.slice(0, Math.min(120000, maxHistoryChars - chars));
     const submissionId = role === 'user' ? inputId(item.clientId) : undefined;
-    messages.push({ role, content, ...(imgs.length ? { _imgs: imgs } : {}),
+    messages.push({ role, content, ...(question ? { _codexQuestionId: question.id } : {}), ...(imgs.length ? { _imgs: imgs } : {}),
       ...(submissionId ? { _codexInputId: submissionId } : {}) });
     chars += content.length;
     return messages.length < maxMessages && chars < maxHistoryChars;
@@ -200,7 +214,8 @@ async function readMessages(request, thread, redact) {
       }
     }
   }
-  return { messages: messages.reverse(), activity: activity || (runningCommand ? '正在执行命令' : ''), activityId };
+  return { messages: messages.reverse(), asyncQuestions, latestQuestionId,
+    activity: activity || (runningCommand ? '正在执行命令' : ''), activityId };
 }
 
 module.exports = { provisionalProjectKey, isProjectThread, listProjects, listProjectThreads, findProjectThread, readProjectThread, threadSummary, readMessages, activityTitle, readLatestTurn, assertThreadIdle, assertIdle, inputId };

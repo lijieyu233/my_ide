@@ -15,6 +15,14 @@ function createServer(){
     return;
    }
    if(input==='继续'){finish(thread,turn,'已继续原任务');return;}
+   if (input === 'ASK_ASYNC_CODEX') {
+    const item = { id: 'call_fixture_async', type: 'agentMessage', text: '选择下一步\n- 继续当前方案\n- 调整方向',
+     questions: [{ title: '选择下一步', options: ['继续当前方案', '调整方向'] }] };
+    thread.items ||= [];
+    thread.items.push(item);
+    notice('item/completed', { ...base, item });
+    return;
+   }
    if (input === 'ASK_USER_CODEX') {
     const questions = [{ id: 'path', question: '选择下一步', isOther: true, options: [
      { label: '继续当前方案', description: '保留已有内容' }, { label: '调整方向' },
@@ -101,7 +109,13 @@ function createServer(){
     const item = { type: 'userMessage', id: 'steered-' + p.clientUserMessageId, clientId: p.clientUserMessageId, content: p.input };
     t.items?.push(item);
     notice('item/completed', { threadId: t.id, turnId: t.turn.id, item });
-    return reply(message.id,{turnId:t.turn.id});
+    reply(message.id,{turnId:t.turn.id});
+    const text = p.input?.[0]?.text;
+    if (text?.startsWith('<send_user_message_question_reply>')) {
+     receipts.push({kind:'async-question',threadId:t.id,turnId:t.turn.id,text});
+     finish(t,t.turn,'原轮次收到异步回答');
+    }
+    return;
    }
    if(message.method==='thread/read'){
     const t=threads.get(p.threadId);

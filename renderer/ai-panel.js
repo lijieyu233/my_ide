@@ -3903,7 +3903,8 @@ const AiPanel = (() => {
     const running = !busy && selected?.running === true && !selected.archived;
     const view = codexLiveView;
     const current = running && view?.threadId === selected.threadId && view.ticket === sessionLoadTicket ? view : null;
-    const group = current?.activityId ? [...msgsEl.querySelectorAll('[data-codex-activity-id]')].find(
+    const waiting = current?.waitingForAsyncAnswer === true;
+    const group = !waiting && current?.activityId ? [...msgsEl.querySelectorAll('[data-codex-activity-id]')].find(
       item => item.dataset.codexActivityId === current.activityId
     ) : null;
     if (codexObservedGroup && codexObservedGroup !== group) {
@@ -3928,7 +3929,7 @@ const AiPanel = (() => {
     row.classList.toggle('hidden', !showFallback);
     if (!showFallback) return;
     const text = row.firstElementChild;
-    const label = current?.activity || 'Codex 正在运行';
+    const label = waiting ? '等待回答' : current?.activity || 'Codex 正在运行';
     if (text.textContent !== label) text.textContent = label;
   }
 
@@ -3963,6 +3964,8 @@ const AiPanel = (() => {
       view.activityId = result.activityId;
       const turnId = result.activeTurnId || null;
       view.questions = result.pendingQuestions || [];
+      view.asyncQuestions = result.asyncQuestions || [];
+      view.waitingForAsyncAnswer = result.waitingForAsyncAnswer;
       if (view.turnId !== turnId) {
         view.turnId = turnId;
         if (selected.sharedControl) setBusyUI(busy);
@@ -5471,10 +5474,12 @@ const AiPanel = (() => {
     else switchSessionDraft(se.id, root, !!foreign);
     curSessionId = se.id;
     dshSessionAccess = access;
-    if (codexHistory?.activeTurnId) {
+    if (codexHistory?.activeTurnId || codexHistory?.asyncQuestions?.length) {
       codexLiveView = {
         ticket, scope: sessKey(), threadId: codexHistory.threadId, launcher: getConfig().codexPath || '',
-        turnId: codexHistory.activeTurnId, questions: codexHistory.pendingQuestions || [], observed: true,
+        turnId: codexHistory.activeTurnId || null, questions: codexHistory.pendingQuestions || [],
+        asyncQuestions: codexHistory.asyncQuestions || [], waitingForAsyncAnswer: codexHistory.waitingForAsyncAnswer,
+        observed: !!codexHistory.activeTurnId,
       };
     }
     setBusyUI(false);
@@ -6747,7 +6752,7 @@ const AiPanel = (() => {
     } catch {}
   }
 
-  function makeCodexQuestionCard(request, { isCurrent, respond, remove }) {
+  function makeCodexQuestionCard(request, { isCurrent, respond, remove, openDesktop }) {
     const box = document.createElement('form');
     box.className = 'ai-codex-question';
     box.setAttribute('aria-label', 'Codex 提问');
@@ -6757,7 +6762,7 @@ const AiPanel = (() => {
       const title = document.createElement('legend');
       title.textContent = question.question;
       group.append(title);
-      const choices = (question.options || []).map(option => {
+      const choices = (openDesktop ? [] : question.options || []).map(option => {
         const row = document.createElement('label');
         const choice = document.createElement('input');
         choice.type = 'radio';
@@ -6775,15 +6780,21 @@ const AiPanel = (() => {
         return choice;
       });
       let custom;
-      if (question.allowCustom || !choices.length) {
+      if (!openDesktop && (question.allowCustom || !choices.length)) {
         custom = document.createElement('textarea');
         custom.rows = 1;
-        custom.maxLength = 20000;
+        custom.maxLength = request.async ? 4000 : 20000;
         custom.placeholder = '自定义回答';
         custom.setAttribute('aria-label', '自定义回答');
         group.append(custom);
       }
       box.append(group);
+      if (request.async && custom) {
+        for (const choice of choices) choice.addEventListener('change', () => { custom.value = ''; });
+        custom.addEventListener('input', () => {
+          if (custom.value.trim()) for (const choice of choices) choice.checked = false;
+        });
+      }
       fields.push({ id: question.id, choices, custom });
     }
 
@@ -6795,8 +6806,9 @@ const AiPanel = (() => {
     skip.className = 'tb-btn';
     send.className = 'tb-btn m-ok';
     skip.textContent = '跳过';
-    send.textContent = '回答';
-    actions.append(skip, send);
+    send.textContent = openDesktop ? '在 Codex 中回答' : '回答';
+    if (!request.async) actions.append(skip);
+    actions.append(send);
     box.append(actions);
 
     const answers = () => fields.map(({ id, choices, custom }) => ({
@@ -6806,7 +6818,7 @@ const AiPanel = (() => {
     }));
     const ready = values => values.every(answer => answer.selected.length || answer.custom);
     let sending = false, closed = false;
-    const update = () => { send.disabled = sending || !ready(answers()); };
+    const update = () => { send.disabled = sending || !openDesktop && !ready(answers()); };
     const close = () => {
       if (closed) return;
       closed = true;
@@ -6814,16 +6826,17 @@ const AiPanel = (() => {
       remove?.();
     };
     const submit = async values => {
-      if (closed || sending || values && !ready(values)) return;
+      if (closed || sending || !openDesktop && values && !ready(values)) return;
       if (!isCurrent()) return close();
       sending = skip.disabled = true;
       update();
       try {
+        if (openDesktop) { await openDesktop(); return; }
         const result = await respond(values);
         if (result?.ok || !isCurrent()) close();
-        else MI.toast('回答未被接收', 'err');
+        else MI.toast(result?.error || '回答未被接收', 'err');
       } catch {
-        if (isCurrent()) MI.toast('回答未被接收', 'err');
+        if (isCurrent()) MI.toast(openDesktop ? '无法打开 Codex 会话' : '回答未被接收', 'err');
       } finally {
         sending = skip.disabled = false;
         update();
@@ -6839,21 +6852,25 @@ const AiPanel = (() => {
 
   let observedCodexQuestion;
   function renderObservedCodexQuestion() {
-    const view = codexLiveView, selected = codexSelectedHistoryItem();
+    const view = codexLiveView;
     const current = () => !!view && !busy && codexLiveView === view && view.ticket === sessionLoadTicket &&
-      view.scope === sessKey() && view.threadId === codexSelectedHistoryItem()?.threadId;
-    const request = current() && !selected.archived && view.turnId
-      ? view.questions?.find(question => !view.answeredQuestions?.has(question.id)) : null;
+      view.scope === sessKey() && view.threadId === codexSelectedHistoryItem()?.threadId && !codexSelectedHistoryItem()?.archived;
+    const unanswered = question => !view.answeredQuestions?.has(question.id);
+    const request = current()
+      ? (view.turnId && view.questions?.find(unanswered)) || view.asyncQuestions?.find(unanswered) : null;
     if (observedCodexQuestion?.view === view && observedCodexQuestion?.id === request?.id) return;
     observedCodexQuestion?.close();
     observedCodexQuestion = null;
     if (!request) return;
     const turnId = view.turnId, target = { sessionId: curSessionId, threadId: view.threadId, turnId };
     const card = makeCodexQuestionCard(request, {
-      isCurrent: () => current() && view.turnId === turnId,
+      isCurrent: () => current() && (request.async || view.turnId === turnId),
+      ...(request.desktopOnly ? { openDesktop: () => transferCodexToDesktop(view.threadId, false) } : {}),
       respond: async answers => {
-        const result = await window.myIDE.ai.codexInput(getConfig(), target, { kind: 'answerQuestion', id: request.id, answers });
+        const kind = request.async ? 'answerAsyncQuestion' : 'answerQuestion';
+        const result = await window.myIDE.ai.codexInput(getConfig(), { ...target, turnId: view.turnId }, { kind, id: request.id, answers });
         if (result?.ok) (view.answeredQuestions ||= new Set()).add(request.id);
+        if (request.async && current()) void syncCodexLiveHistory(codexSelectedHistoryItem(), getConfig(), { refresh: true });
         return result;
       },
       remove: () => { if (observedCodexQuestion?.id === request.id) observedCodexQuestion = null; },
@@ -6900,7 +6917,7 @@ const AiPanel = (() => {
       renderCodexMedia(event.images, event.label, event.id);
       return;
     }
-    if (event.type === 'codexInputConsumed') { showConsumedInput(run, event.requestId, event.content, event.queued === true); return; }
+    if (event.type === 'codexInputConsumed') { showConsumedInput(run, event.requestId, event.content, event.queued === true || event.answer === true); return; }
     if(event.type==='config'){if(backgroundView||getConfig().engine!==run.engine)return;dshOptionsState='ready';dshConfigOptions=event.configOptions||[];showDshConnectedInfo(dshSessionAccess?.hostId);refreshModelSel();setBusyUI(busy);return;}
     if(event.type==='native'&&event.update?.sessionUpdate==='myide_input_state'){
       const update=event.update;run.inputReady=update.ready===true;run.inputActive=update.active===true;if(update.queue)run.inputQueue=update.queue;

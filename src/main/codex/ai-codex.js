@@ -1,6 +1,7 @@
 const fs=require('fs/promises'),path=require('path'),os=require('os'),crypto=require('crypto');
 const {spawn}=require('child_process'),{Rpc}=require('./codex-rpc'),{resolveRuntime}=require('./codex-runtime');
 const history=require('./codex-history');
+const { readAsyncQuestion, readAsyncAnswers, asyncQuestionInput } = require('./codex-questions');
 const media = require('./codex-media');
 const desktopState=require('./codex-desktop-state');
 const { setTimeout: delay } = require('node:timers/promises');
@@ -49,7 +50,7 @@ function validateChoice(models,model,effort){const selected=models.find(m=>m.mod
 function createService(options={}){
   const runs=new Map(),sessions=new Map(),saved=new Map(),locks=new Map(),pendingChoices=new Map();
   const desktopTransfers = new Set(), queueInsertions = new Map();
-  const questionWatches = new Map();
+  const questionWatches = new Map(), asyncAnswers = new Map();
   let connection=null,starting=null,loaded=false,loading=null,disposed=false,saving=Promise.resolve();
   let stoppingBackend = false;
   let workspaceBindings;
@@ -92,7 +93,8 @@ function createService(options={}){
   function activity(run){
     clearTimeout(run.timer);clearTimeout(run.warningTimer);
     // Codex can schedule retry backoffs longer than the local inactivity deadline.
-    if(run.settled||run.aborted||run.expired||run.retrying||!run.turnId||run.tools.size||run.permissions.size)return;
+    if(run.settled||run.aborted||run.expired||run.retrying||!run.turnId||run.tools.size||run.permissions.size||
+      [...run.asyncQuestions?.values() || []].some(question => question.pending))return;
     const timeout=options.turnTimeoutMs||5*60*1000,warning=options.idleWarningMs??65000;
     if(warning>0&&warning<timeout)run.warningTimer=setTimeout(()=>statusEvent(run,'inactive','Codex 本轮仍未结束，暂未收到新的原生活动；可继续等待或手动停止'),warning);
     // Codex owns the lifecycle of shared turns. Silence alone is not a reason to interrupt them.
@@ -181,6 +183,41 @@ function createService(options={}){
     catch { return false; }
   }
 
+  const asyncAnswerKey = (threadId, id) => JSON.stringify([threadId, id]);
+
+  async function submitAsyncAnswer(threadId, question, answers, send) {
+    const input = asyncQuestionInput(question, answers);
+    const key = asyncAnswerKey(threadId, question.id);
+    if (!input) return { ok: false };
+    if (asyncAnswers.has(key)) return { ok: false, error: '请查看原会话确认回答状态' };
+    if (asyncAnswers.size >= 256) asyncAnswers.delete(asyncAnswers.keys().next().value);
+    asyncAnswers.set(key, false);
+    try {
+      await send(input);
+      asyncAnswers.set(key, true);
+      return { ok: true };
+    } catch (error) {
+      if (error.questionWriteUncertain) return { ok: false, error: '回答待确认，请查看原会话' };
+      asyncAnswers.delete(key);
+      throw error;
+    }
+  }
+
+  async function sendAsyncAnswer(request, threadId, input, turnId) {
+    try {
+      if (turnId) {
+        const result = await request('turn/steer', { threadId, input, expectedTurnId: turnId });
+        if (result?.turnId !== turnId) throw Error('Codex 未确认收到回答');
+      } else {
+        const result = await request('turn/start', { threadId, input });
+        if (typeof result?.turn?.id !== 'string') throw Error('Codex 未确认收到回答');
+      }
+    } catch (error) {
+      if (!error.rpcNotSent && !error.rpcResponseReceived) error.questionWriteUncertain = true;
+      throw error;
+    }
+  }
+
   async function stopQuestionWatch(watch) {
     if (questionWatches.get(watch.threadId) !== watch) return;
     questionWatches.delete(watch.threadId);
@@ -250,12 +287,42 @@ function createService(options={}){
     else if(['item/started','item/completed'].includes(message.method)){
       const item=p.item||{};
       if(item.type==='agentMessage'){
+        if (message.method === 'item/completed') {
+          const question = readAsyncQuestion(item);
+          if (question) {
+            const questions = run.asyncQuestions ||= new Map();
+            if (!questions.has(question.id)) {
+              questions.set(question.id, { ...question, pending: true });
+              emit(run, { type: 'question', ...question });
+              activity(run);
+            }
+            // Completed question items carry a plain-text copy for clients without a form.
+            return;
+          }
+        }
         // Some providers emit only a completed item (or a final suffix). Preserve it once, not a blank successful reply.
         if(message.method==='item/completed'&&typeof item.text==='string'){
           const seen=run.messageText.get(item.id)||'';
           if(!item.text.startsWith(seen)){run.expired=true;resolveRun(run,{status:'failed'});return;}
           const delta=item.text.slice(seen.length);run.messageText.set(item.id,item.text);if(delta){run.text+=delta;emit(run,{type:'text',delta,messageId:item.id});}
         }return;
+      }
+      if (item.type === 'userMessage' && message.method === 'item/completed' && run.asyncQuestions?.size) {
+        const answers = readAsyncAnswers((item.content || []).filter(block => block.type === 'text')
+          .map(block => block.text).join('\n'));
+        const newlyAnswered = [];
+        for (const [id, question] of run.asyncQuestions) {
+          if (question.received || !answers) continue;
+          const values = question.questions.map(field => answers.find(answer => answer.id === id && String(answer.index) === field.id));
+          if (values.some(answer => !answer)) continue;
+          question.received = true;
+          question.pending = false;
+          newlyAnswered.push(...values.map(answer => answer.answer));
+          emit(run, { type: 'questionResolved', id });
+          activity(run);
+        }
+        if (newlyAnswered.length) emit(run, { type: 'codexInputConsumed', answer: true,
+          content: [{ type: 'text', text: newlyAnswered.join('\n') }] });
       }
       if (item.type === 'userMessage' && message.method === 'item/completed' && run.steered?.delete(item.clientId)) {
         const queued = run.queuedSteers?.delete(item.clientId) === true;
@@ -524,7 +591,14 @@ function createService(options={}){
   async function openHistory(cfg, threadId, archived = false) {
     const conn = await connect(cfg), request = historyRequest(conn);
     const thread = await history.readProjectThread(request, threadId, archived);
-    const view = await adoptHistory(request, thread, await projectThreadRoot(thread));
+    const { asyncQuestions, latestQuestionId, ...view } = await adoptHistory(request, thread, await projectThreadRoot(thread));
+    if (!archived) {
+      const pending = asyncQuestions.filter(question => asyncAnswers.get(asyncAnswerKey(threadId, question.id)) !== true);
+      view.asyncQuestions = pending.map(question => ({ ...question, desktopOnly: desktopAvailable() }));
+      const pendingIds = new Set(pending.map(question => question.id));
+      view.waitingForAsyncAnswer = pendingIds.has(latestQuestionId);
+      if (pendingIds.size) view.messages = view.messages.filter(message => !pendingIds.has(message._codexQuestionId));
+    }
     const previous = questionWatches.get(threadId);
     if (previous?.conn === conn && (archived || thread.status?.type !== 'active')) {
       await locked(previous.key, () => stopQuestionWatch(previous));
@@ -656,7 +730,10 @@ function createService(options={}){
       await request('thread/name/set', { threadId: branched.id, name: title });
       branched.name = title;
     } catch {}
-    try { return await adoptHistory(request, branched, rootDir); }
+    try {
+      const { asyncQuestions, latestQuestionId, ...view } = await adoptHistory(request, branched, rootDir);
+      return view;
+    }
     catch { throw Error('分叉已创建，请刷新会话栏后打开。'); }
     finally {
       // Creating a branch loads it and takes a writer even when no message is sent.
@@ -1097,6 +1174,15 @@ function createService(options={}){
   function permissionResult(context,id,optionId){const run=owned(context),pending=run?.permissions.get(id);if(pending?.kind!=='approval'||!pending.choices.some(c=>c.optionId===optionId))return {ok:false};run.permissions.delete(id);activity(run);reply(run.conn,pending.serverId,{decision:optionId==='allow_once'?'accept':'decline'});return {ok:true};}
   function questionResult(context,id,answers){
     const run = owned(context), pending = run?.permissions.get(id);
+    const question = run?.asyncQuestions?.get(id);
+    if (question?.pending && !run.buffering) {
+      return submitAsyncAnswer(run.session.id, question, answers, input =>
+        sendAsyncAnswer(historyRequest(run.conn), run.session.id, input, run.turnId))
+        .then(result => {
+          if (result.ok) { question.pending = false; activity(run); }
+          return result;
+        }).catch(() => ({ ok: false }));
+    }
     if (pending?.kind !== 'question' || !questionReply(run.conn, pending, answers)) return { ok: false };
     run.permissions.delete(id);
     activity(run);
@@ -1174,13 +1260,49 @@ function createService(options={}){
     }
   }
 
+  async function answerObservedAsync(conn, info, thread, target, action) {
+    if (desktopAvailable()) return { ok: false };
+    const request = historyRequest(conn);
+    return locked(info.key, async () => {
+      const session = sessions.get(info.key);
+      if (session?.run || session?.stopping || saved.get(info.key)?.id !== thread.id) return { ok: false };
+      const { asyncQuestions } = await history.readMessages(request, thread, redact);
+      const question = asyncQuestions.find(item => item.id === action.id);
+      if (!question) return { ok: false };
+      const { turn } = await history.readLatestTurn(request, thread);
+      const activeTurnId = turn?.status === 'inProgress' ? turn.id : null;
+      if (activeTurnId && (!conn.shared || target.turnId !== activeTurnId) ||
+          !activeTurnId && target.turnId && target.turnId !== turn?.id) return { ok: false };
+
+      return submitAsyncAnswer(thread.id, question, action.answers, async input => {
+        if (activeTurnId) return sendAsyncAnswer(request, thread.id, input, activeTurnId);
+        const attached = { id: thread.id, conn, attached: false };
+        try {
+          if (thread.status?.type === 'notLoaded') {
+            const { thread: resumed } = await request('thread/resume', { threadId: thread.id, excludeTurns: true });
+            if (resumed?.id !== thread.id) throw Error('Codex 会话身份已变化');
+            attached.attached = true;
+            if (norm(await projectThreadRoot(resumed)) !== norm(info.cwd)) throw Error('Codex 会话目录已变化');
+            history.assertIdle(resumed);
+          }
+          const latest = await history.readLatestTurn(request, thread);
+          if (latest.turn?.id !== turn?.id) throw Error('Codex 当前轮次已变化');
+          history.assertIdle(latest.thread, latest.turn);
+          await sendAsyncAnswer(request, thread.id, input);
+        } finally {
+          if (!session?.attached && questionWatches.get(thread.id)?.conn !== conn) await releaseIdleThread(attached);
+        }
+      });
+    });
+  }
+
   async function changeInput(cfg, context, target, action) {
-    if (!['list', 'queue', 'remove', 'steer', 'steerQueued', 'effort', 'interrupt', 'openDesktop', 'answerQuestion'].includes(action?.kind)) throw Error('Codex 队列操作无效');
+    if (!['list', 'queue', 'remove', 'steer', 'steerQueued', 'effort', 'interrupt', 'openDesktop', 'answerQuestion', 'answerAsyncQuestion'].includes(action?.kind)) throw Error('Codex 队列操作无效');
     const run = target.run ? owned(target.run) : null;
     const inserting = action.kind === 'steer' || action.kind === 'steerQueued';
     let conn, threadId, record, thread, info;
     if (target.run) {
-      if (['openDesktop', 'interrupt', 'answerQuestion'].includes(action.kind)) throw Error('请先在当前视图操作运行中的轮次');
+      if (['openDesktop', 'interrupt', 'answerQuestion', 'answerAsyncQuestion'].includes(action.kind)) throw Error('请先在当前视图操作运行中的轮次');
       if (!run?.turnId || run.buffering) throw Error('Codex 当前轮次尚未确认或已经结束');
       ({ conn } = run);
       info = run.session;
@@ -1194,12 +1316,13 @@ function createService(options={}){
       if (info.scope !== 'project' || !record?.id || record.blocked || record.id !== target.threadId ||
           norm(record.cwd) !== norm(info.cwd)) throw Error('Codex 会话身份已变化');
       const request = historyRequest(conn);
-      thread = action.kind === 'queue'
+      thread = ['queue', 'answerAsyncQuestion'].includes(action.kind)
         ? await history.readProjectThread(request, record.id)
         : await history.findProjectThread(request, record.id);
       if (!thread || norm(await projectThreadRoot(thread)) !== norm(info.cwd)) throw Error('无法核对原 Codex 会话');
       threadId = record.id;
       if (action.kind === 'openDesktop') return { ok: true, desktopThreadId: threadId };
+      if (action.kind === 'answerAsyncQuestion') return answerObservedAsync(conn, info, thread, target, action);
       if (action.kind === 'answerQuestion') {
         const watch = questionWatches.get(threadId);
         if (!watch || watch.conn !== conn || watch.key !== info.key || watch.turnId !== target.turnId || watch.ended) return { ok: false };

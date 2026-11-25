@@ -59,6 +59,7 @@ function fixture(config={}){
      send(c,{id:r.id,result:{thread}});
    }else if(r.method==='thread/items/list'&&config.history){
      assert.equal(p.sortDirection,'desc');
+     if(config.historyItems)return send(c,{id:r.id,result:{data:config.historyItems,nextCursor:null}});
      const data=p.cursor?[{item:{type:'userMessage',content:[{type:'text',text:'旧问题'}]}}]:
        [{item:{type:'agentMessage',text:'旧回答'}},{item:{type:'commandExecution',command:'never-rerun'}}];
      if(!p.cursor&&config.historyOutputBytes)data[1].item.aggregatedOutput='x'.repeat(config.historyOutputBytes);
@@ -742,6 +743,64 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
     await until(()=>f.requests.some(r=>r.method==='thread/unsubscribe'&&r.params.threadId===id));
     assert.equal(f.requests.filter(r=>r.method==='thread/resume').length,1);
     assert(!f.requests.some(r=>r.method==='turn/start'));
+   }finally{await f.service.dispose();}
+  });
+  await test('桌面异步提问按原会话和轮次作答，已答历史只显示文字',async()=>{
+   const id='019caa00-0000-7000-8000-000000000045',turnId='desktop-async-turn',callId='call_async_fixture';
+   const thread={id,cwd:temp,historyMode:'paginated',status:{type:'active',activeFlags:[]}};
+   const question={type:'agentMessage',id:callId,text:'继续吗？\n- 继续\n- 停下',
+    questions:[{title:'继续吗？',options:['继续','停下']}]};
+   const config={sharedLauncher:'codex.exe',history:[thread],latestTurn:{id:turnId,status:'inProgress'},
+    historyItems:[{turnId,item:question}]};
+   const f=fixture(config);
+   try {
+    const view=await f.service.openHistory({},id);
+    assert.equal(view.waitingForAsyncAnswer,true);
+    assert.equal(view.activeTurnId,turnId);
+    assert.equal(view.asyncQuestions[0].questions[0].options[1].label,'停下');
+    assert.deepEqual(view.messages,[]);
+    const c=context(1,{sessionId:view.localId});
+    const target={threadId:id,turnId,sessionId:view.localId};
+    const action={kind:'answerAsyncQuestion',id:callId,answers:[{id:'0',selected:['继续']}]};
+    assert.equal((await f.service.changeInput({},c,{...target,turnId:'stale'},action)).ok,false);
+    assert.equal((await f.service.changeInput({},c,target,{...action,answers:[{id:'0',selected:['未知']}]})).ok,false);
+    assert.equal((await f.service.changeInput({},c,target,action)).ok,true);
+    assert.equal((await f.service.changeInput({},c,target,action)).ok,false);
+    const steer=f.requests.filter(r=>r.method==='turn/steer');
+    assert.equal(steer.length,1);
+    assert.equal(steer[0].params.threadId,id);
+    assert.equal(steer[0].params.expectedTurnId,turnId);
+    const input=steer[0].params.input;
+    const raw=input[0].text.split('\n')[1];
+    assert.deepEqual(JSON.parse(raw),[{questionItemId:JSON.stringify(['request_user_input_async',callId,0]),
+     question:'继续吗？',answer:'继续'}]);
+    config.historyItems.unshift({turnId,item:{type:'userMessage',content:input}});
+    const reopened=await f.service.openHistory({},id);
+    assert.deepEqual(reopened.asyncQuestions,[]);
+    assert.deepEqual(reopened.messages.map(item=>item.content),[question.text,'继续']);
+    assert(!f.requests.some(r=>['thread/resume','thread/start','turn/start'].includes(r.method)));
+   }finally{await f.service.dispose();}
+  });
+  await test('异步提问在轮次结束后保留并可用自定义答案续聊原会话',async()=>{
+   const id='019caa00-0000-7000-8000-000000000046',turnId='completed-ask',callId='call_completed_fixture';
+   const thread={id,cwd:temp,historyMode:'paginated',status:{type:'notLoaded'}};
+   const config={history:[thread],latestTurn:{id:turnId,status:'completed'},historyItems:[{turnId,item:{
+    id:callId,type:'agentMessage',text:'说说你的选择',questions:[{title:'说说你的选择',options:['默认']}],
+   }}]};
+   const f=fixture(config);
+   try {
+    const view=await f.service.openHistory({},id);
+    assert.equal(view.asyncQuestions[0].id,callId);
+    const c=context(1,{sessionId:view.localId});
+    const target={threadId:id,turnId,sessionId:view.localId};
+    const result=await f.service.changeInput({},c,target,{kind:'answerAsyncQuestion',id:callId,
+     answers:[{id:'0',selected:[],custom:' 另一个方案 '}]});
+    assert.equal(result.ok,true);
+    const turns=f.requests.filter(r=>r.method==='turn/start');
+    assert.equal(turns.length,1);
+    assert.equal(turns[0].params.threadId,id);
+    assert.equal(JSON.parse(turns[0].params.input[0].text.split('\n')[1])[0].answer,'另一个方案');
+    assert(!f.requests.some(r=>['thread/start','turn/steer'].includes(r.method)));
    }finally{await f.service.dispose();}
   });
   await test('整轮/会话permissions扩权没有伪装成单次授权，默认明确拒绝',async()=>{const f=fixture({mode:'permissions'});try{assert((await f.service.chat({},user('x'),[],context(),()=>{},()=>{})).ok);assert.deepEqual(f.requests.find(r=>r.id==='server-turn-1').result,{permissions:{},scope:'turn'});}finally{await f.service.dispose();}});
