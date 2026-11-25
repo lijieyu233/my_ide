@@ -90,13 +90,17 @@ function createService(options={}){
   function resolveRun(run,result){if(run.settled)return;run.settled=true;clearTimeout(run.timer);clearTimeout(run.warningTimer);run.resolveDone(result);}
   function activity(run){
     clearTimeout(run.timer);clearTimeout(run.warningTimer);
-    // Waiting for a MyIDE tool or a human decision is not a dead native connection.
-    if(run.settled||run.aborted||run.expired||!run.turnId||run.tools.size||run.permissions.size)return;
+    // Codex can schedule retry backoffs longer than the local inactivity deadline.
+    if(run.settled||run.aborted||run.expired||run.retrying||!run.turnId||run.tools.size||run.permissions.size)return;
     const timeout=options.turnTimeoutMs||5*60*1000,warning=options.idleWarningMs??65000;
     if(warning>0&&warning<timeout)run.warningTimer=setTimeout(()=>statusEvent(run,'inactive','Codex 本轮仍未结束，暂未收到新的原生活动；可继续等待或手动停止'),warning);
-    run.timer=setTimeout(()=>{run.expired=true;interrupt(run);resolveRun(run,{status:'timeout'});},timeout);
+    // Codex owns the lifecycle of shared turns. Silence alone is not a reason to interrupt them.
+    if(!run.conn.shared)run.timer=setTimeout(()=>{run.expired=true;interrupt(run);resolveRun(run,{status:'timeout'});},timeout);
   }
-  function generating(run){if(!run.generating){run.generating=true;statusEvent(run,'generating','已收到 Codex 原生活动，正在生成或执行工具');}}
+  function generating(run){
+    if(run.retrying){run.retrying=false;activity(run);}
+    if(!run.generating){run.generating=true;statusEvent(run,'generating','已收到 Codex 原生活动，正在生成或执行工具');}
+  }
   function collectPreview(run, item) {
     if (!media.isMediaItem(item) || typeof item.id !== 'string') return;
     run.previewIds ||= new Set();
@@ -158,7 +162,12 @@ function createService(options={}){
     if(message.method==='turn/started'){run.nativeStarted=true;statusEvent(run,'accepted','Codex 原生 turn/started 已确认');return;}
     if(message.method==='error'){
       const failure=safeError(p.error);run.lastError=failure;
-      if(p.willRetry===true){run.retryCount=(run.retryCount||0)+1;run.generating=false;}
+      if(p.willRetry===true){
+        run.retryCount=(run.retryCount||0)+1;
+        run.generating=false;
+        run.retrying=true;
+        activity(run);
+      }
       statusEvent(run,p.willRetry===true?'retrying':'error',p.willRetry===true?failure.error.split('；')[0]+'，正在重试连接（第 '+run.retryCount+' 次；当前为通信重试，非新增回复）':failure.error,{errorCode:failure.errorCode,...(failure.httpStatusCode?{httpStatusCode:failure.httpStatusCode}:{}),...(run.retryCount?{retryCount:run.retryCount}:{}),willRetry:p.willRetry===true});
       if(p.willRetry===false){run.session.stopping=run.turnId;resolveRun(run,{status:'failed',...failure});}return;
     }

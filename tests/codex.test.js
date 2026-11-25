@@ -771,6 +771,37 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
   await test('willRetry true明确流中断重试而不结束或伪装生成，legacy弱身份事件不路由',async()=>{
    const f=fixture({hold:true});try{const events=[],p=f.service.chat({},user('retry'),[],context(),e=>events.push(e));await until(()=>events.some(e=>e.phase==='accepted'));f.send({method:'codex/event/agent_message',params:{conversationId:'thread-1',id:'turn-1',msg:{message:'legacy must not leak'}}});f.send({method:'error',params:{threadId:'thread-1',turnId:'turn-1',willRetry:true,error:{message:'sensitive-value',codexErrorInfo:{responseStreamDisconnected:{httpStatusCode:429}}}}});assert(f.service.hasRun(context()));assert(events.some(e=>e.phase==='retrying'&&e.httpStatusCode===429));assert(!events.some(e=>e.phase==='generating'||e.type==='text'));f.complete('thread-1','turn-1','真实新回复');const r=await p;assert(r.ok);assert.equal(r.text,'真实新回复');}finally{await f.service.dispose();}
   });
+  await test('共享会话静默超过本地超时后仍能收取原生完成事件',async()=>{
+    const f=fixture({sharedLauncher:'codex.exe',hold:true,turnTimeoutMs:40,idleWarningMs:10});
+    try{
+      const c=context(),events=[];
+      const result=f.service.chat({},user('shared silent turn'),[],c,e=>events.push(e));
+      await until(()=>events.some(e=>e.phase==='inactive'));
+      await new Promise(resolve=>setTimeout(resolve,80));
+      assert(f.service.hasRun(c));
+      assert(!f.requests.some(r=>r.method==='turn/interrupt'));
+      f.complete('thread-1','turn-1');
+      assert((await result).ok);
+    }finally{await f.service.dispose();}
+  });
+  await test('原生重试超过本地超时后在原轮次恢复生成',async()=>{
+    const f=fixture({hold:true,turnTimeoutMs:40,idleWarningMs:10});
+    try{
+      const c=context(),events=[];
+      const result=f.service.chat({},user('long native backoff'),[],c,e=>events.push(e));
+      await until(()=>events.some(e=>e.phase==='accepted'));
+      f.send({method:'error',params:{threadId:'thread-1',turnId:'turn-1',willRetry:true,error:{codexErrorInfo:{responseStreamDisconnected:{httpStatusCode:429}}}}});
+      assert(events.some(e=>e.phase==='retrying'));
+      await new Promise(resolve=>setTimeout(resolve,80));
+      assert(f.service.hasRun(c));
+      assert(!events.some(e=>['inactive','generating'].includes(e.phase)));
+      assert(!f.requests.some(r=>r.method==='turn/interrupt'));
+      f.complete('thread-1','turn-1','重试恢复');
+      assert.equal((await result).text,'重试恢复');
+      assert(events.some(e=>e.phase==='generating'));
+      assert.equal(f.requests.filter(r=>r.method==='turn/start').length,1);
+    }finally{await f.service.dispose();}
+  });
   await test('terminal turn/start ack直接取正文或安全失败原因，不等待额外通知',async()=>{
    for(const turnResponse of [{status:'completed',items:[{type:'agentMessage',id:'m',text:'终态ack正文'}]},{status:'failed',error:{message:'sensitive-value',codexErrorInfo:'unauthorized'}}]){const f=fixture({turnResponse});try{const r=await f.service.chat({},user('terminal ack'),[],context());if(turnResponse.status==='completed'){assert(r.ok);assert.equal(r.text,'终态ack正文');}else{assert(!r.ok);assert.equal(r.errorCode,'unauthorized');assert(r.error.includes('认证失败'));assert(!r.error.includes('sensitive'));}}finally{await f.service.dispose();}}
   });
