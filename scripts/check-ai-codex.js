@@ -1377,5 +1377,42 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  check('batch archive and restore write exactly once to each original Codex thread',
    batchIds.every(id=>['thread/archive','thread/unarchive'].every(method=>
      fixture.requests.filter(request=>request.method===method&&request.params.threadId===id).length===1)));
+ await chooseHistoryAction('返回会话列表');
+ const selectedProject = 'desktop-shared-root';
+ fixture.projects.push({ id: selectedProject, name: '共享目录项目', roots: [{ path: primaryRoot }] });
+ await js(() => window.dispatchEvent(new Event('focus')));
+ await until(() => js(id => !!document.querySelector('[data-codex-project="' + id + '"]'), selectedProject), 'new project group');
+ const editorBeforeNewChat = await js(() => ({ root: App.root, tab: Viewer.activeTab?.path, chat: AiPanel.aiState().current }));
+ const requestsBeforeNewChat = fixture.requests.length;
+ await js(id => {
+   const head = document.querySelector('[data-codex-project="' + id + '"] .ai-hist-group-head');
+   const rect = head.getBoundingClientRect();
+   head.dispatchEvent(new MouseEvent('contextmenu', {
+     button: 2, bubbles: true, cancelable: true, clientX: rect.left + 24, clientY: rect.top + 8,
+   }));
+ }, selectedProject);
+ await capture('codex-project-new-chat-menu');
+ await js(() => [...document.querySelectorAll('#ctx-menu button')].find(button => button.textContent === '新建会话').click());
+ await until(() => js(() => AiPanel.aiState().dshState === 'ready'), 'project draft is ready');
+ check('Project menu opens a fresh draft under the chosen project and preserves the editor', await js((id, root, before) =>
+   App.root === before.root && Viewer.activeTab?.path === before.tab && AiPanel.aiState().current !== before.chat &&
+   AiPanel.dshView().rootId === root && document.querySelector('[data-codex-project="' + id + '"] .ai-hist-row.cur')?.checkVisibility() &&
+   document.activeElement?.id === 'ai-input', selectedProject, primaryRoot, editorBeforeNewChat) &&
+   !fixture.requests.slice(requestsBeforeNewChat).some(request => request.method === 'thread/start'));
+ const prompt = 'HOLD_CODEX project menu fixture';
+ await js(text => AiPanel.ask(text), prompt);
+ const started = () => fixture.requests.slice(requestsBeforeNewChat).find(request =>
+   request.method === 'turn/start' && request.params.input[0].text === prompt);
+ await until(started, 'first message sent from the project menu draft');
+ const newThread = fixture.threads.get(started().params.threadId);
+ check('First send creates the native thread in the exact project even when its folder is shared',
+   newThread.projectId === selectedProject && newThread.cwd === primaryRoot &&
+   fixture.requests.slice(requestsBeforeNewChat).filter(request => request.method === 'thread/start').length === 1 &&
+   !fixture.requests.slice(requestsBeforeNewChat).some(request => request.method === 'project/create'));
+ await js(() => document.querySelector('[data-hist-refresh]').click());
+ await until(() => js(id => document.querySelector('[data-codex-project="' + id + '"] .ai-hist-row.cur.running'), selectedProject),
+   'sent chat is listed under its native project');
+ await js(() => document.getElementById('ai-send').click());
+ await until(() => !newThread.running, 'project menu fixture turn stopped');
  const gap=await js(()=>Math.max(...window.__codexGaps));check('renderer stays responsive in native tool flow',gap<250,{maxHeartbeatMs:gap});check('isolated fixture remained hidden and offline',!network.length&&BrowserWindow.getAllWindows().every(w=>!w.isVisible()));await finish(0);
 })().catch(async error=>{console.error(error.stack);if(win&&!win.isDestroyed())try{console.error('CODEX_UI_STATE '+JSON.stringify(await js(()=>({state:AiPanel.aiState(),info:document.getElementById('ai-dsh-info')?.title,fixtureText:document.getElementById('ai-msgs')?.textContent.slice(-700)}))));}catch{}await finish(1,error.message);});

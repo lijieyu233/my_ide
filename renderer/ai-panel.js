@@ -242,8 +242,11 @@ const AiPanel = (() => {
   const workspaceRoot = () => conversationRoot ?? editorRoot();
   const sessionRoot = () => dshSessionAccess?.foreign ? dshSessionAccess.rootDir : workspaceRoot();
   function dshView() {
-    return { rootId: sessionRoot(), page: currentPage(), sessionId: curSessionId, engine: getConfig().engine, scope: dshScope(),
-      ...(dshSessionAccess?.foreign ? { foreignHostId: dshSessionAccess.hostId, access: dshSessionAccess.state } : {}) };
+    const engine = getConfig().engine;
+    const codexProjectId = engine === 'codex' && !dshSessionAccess?.foreign ? codexDraftProjectId() : null;
+    return { rootId: sessionRoot(), page: currentPage(), sessionId: curSessionId, engine, scope: dshScope(),
+      ...(dshSessionAccess?.foreign ? { foreignHostId: dshSessionAccess.hostId, access: dshSessionAccess.state } : {}),
+      ...(codexProjectId ? { codexProjectId } : {}) };
   }
   let dshWatch = null, dshWatchGeneration = 0;
   const dshScope = () => ['reader','bookshelf'].includes(currentPage().id) ? 'reader' : 'project';
@@ -3533,6 +3536,13 @@ const AiPanel = (() => {
   const sessionCache = new Map();
   const codexProjectSessionKey = root => LS_SESS + ':' + root + ':codex';
   const codexHistoryKey = root => pathKey(root) === pathKey(workspaceRoot()) ? sessKey() : codexProjectSessionKey(root);
+  function codexDraftProjectId() {
+    if (!curSessionId) return null;
+    try {
+      const draft = JSON.parse(localStorage.getItem(sessKey() + ':draft-project'));
+      return draft?.id === curSessionId ? draft.projectId : null;
+    } catch { return null; }
+  }
   function loadSessions(key = sessKey()) {
     try {
       const raw=localStorage.getItem(key)||'[]';let entry=sessionCache.get(key);
@@ -3567,7 +3577,10 @@ const AiPanel = (() => {
     if (!curSessionId) curSessionId = 's' + Date.now().toString(36);
     const all = loadSessions(), previous = all.find(x => x.id === curSessionId);
     const rest = all.filter((x) => x.id !== curSessionId);
-    rest.unshift({ ...previous, id: curSessionId, ts: Date.now(), title: ((previous?.renamed || nativeEngine()) && previous?.title) || sessTitle(msgs), msgs: msgs.slice(), usage: { ...usageSum } });
+    const codexProjectId = getConfig().engine === 'codex' && codexDraftProjectId();
+    rest.unshift({ ...previous, ...(codexProjectId ? { codexProjectId } : {}), id: curSessionId,
+      ts: Date.now(), title: ((previous?.renamed || nativeEngine()) && previous?.title) || sessTitle(msgs),
+      msgs: msgs.slice(), usage: { ...usageSum } });
     saveSessions(rest);
     if (!backgroundView) { renderCurrentSessionTitle(); refreshHistInPlace(); }
     rememberSession();
@@ -4614,6 +4627,7 @@ const AiPanel = (() => {
         if (!result?.ok) MI.toast(result?.error || '无法打开 Codex 项目', 'err');
       } });
       const project = currentCodexCatalog()?.projects.find(item => item.id === projectId);
+      if (project?.roots[0]) actions.unshift({ label: '新建会话', run: () => startNewSession(project) });
       if (project) actions.push({ label: '重命名', run: async anchor => {
         const title = (await editHistoryName(anchor, '项目名称', project.title))?.trim();
         if (!title || title === project.title || !sameScope()) return;
@@ -4692,7 +4706,9 @@ const AiPanel = (() => {
     const catalog = currentCodexCatalog();
     const bindings = new Map((catalog?.bindings || []).map(entry => [pathKey(entry.rootDir), entry]));
     const currentBinding = (catalog?.workspaceRoot === root ? catalog.activeBinding : null) || bindings.get(root);
-    const currentProject = currentBinding ? codexProjectKey(currentBinding.projectId) : null;
+    const draftProjectId = codex && codexDraftProjectId();
+    const currentProjectId = draftProjectId || currentBinding?.projectId;
+    const currentProject = currentProjectId ? codexProjectKey(currentProjectId) : null;
     const editorBinding = (catalog?.workspaceRoot === editor ? catalog.activeBinding : null) || bindings.get(editor);
     const editorProject = editorBinding ? codexProjectKey(editorBinding.projectId) : null;
     const expandCurrent = currentProject && expandedCodexBinding !== currentProject;
@@ -4704,7 +4720,8 @@ const AiPanel = (() => {
     for (const session of all) {
       let key = flat ? flatHistoryKey : session.unknownRoot ? null : pathKey(session.rootDir);
       if (codex) {
-        const projectKey = codexProjectKey(session.codexProjectId);
+        const projectKey = codexProjectKey(session.codexProjectId ||
+          (!session.codexThreadId && session.id === curSessionId ? draftProjectId : null));
         key = registered.has(projectKey) ? projectKey : codexRecentKey;
         // A local draft has a workspace before it has a native thread or persisted project assignment.
         if (key === codexRecentKey && !session.codexThreadId && session.rootDir) {
@@ -6968,23 +6985,33 @@ const AiPanel = (() => {
     try{const receipt=await nativeCall(run.engine,'ToolResult',event.context,call.id,result);if(!receipt?.ok)throw Error('DSH未接收工具结果');await aiDrainTransitions(run);}catch{for(const entry of run.aiTransitions?.splice(0)||[])entry.reject(Error('工具结果未确认回送，未执行会话切换'));if(runIsLive(run))stopRun();}
   }
 
-  function startNewSession() {
+  function startNewSession(project = null) {
+    const root = project ? project.roots[0] : editorRoot();
     resetDshWatch();
     sessionLoadTicket++;
     // 2026-11-01：新建对话也是「切换会话」，同样不能掐断正在跑的 DSH 任务。
     // 挂起后它会出现在输入框上方的后台状态条里，点一下即可回去接着看。
     releaseSessionPermissions(detachRun());
     persistSession();          // 先把当前这轮存进历史，再开新的
-    const changingRoot = pathKey(sessionRoot()) !== pathKey(editorRoot());
-    switchSessionDraft(null, editorRoot(), changingRoot);
-    conversationRoot = null;
-    conversationPage = null;
+    const changingRoot = pathKey(sessionRoot()) !== pathKey(root);
+    switchSessionDraft(null, root, !!project || changingRoot);
+    conversationRoot = project ? root : null;
+    conversationPage = project ? { id: 'project', name: project.title, projectContext: false } : null;
     curSessionId = nativeEngine()?'s-'+window.crypto.randomUUID():null;
     dshSessionAccess=null;dshOptionsTicket++;dshOptionsState='idle';
     loadedSessionKey = sessKey();
     refreshModelSel();setBusyUI(false);
     rememberSession();
-    if(nativeEngine())localStorage.setItem(sessKey()+':draft',curSessionId);
+    if (nativeEngine()) localStorage.setItem(sessKey()+':draft', curSessionId);
+    if (getConfig().engine === 'codex') {
+      const draftKey = sessKey() + ':draft-project';
+      if (project) {
+        localStorage.setItem(draftKey, JSON.stringify({ id: curSessionId, projectId: project.id }));
+        codexArchiveOnly = false;
+        const group = historyWorkspaces.get(codexProjectKey(project.id));
+        if (group) group.expanded = true;
+      } else localStorage.removeItem(draftKey);
+    }
     lastUserAt = null;
     pendingImages = [];
     renderImages();
@@ -6999,7 +7026,10 @@ const AiPanel = (() => {
     renderFollow();
     clearMessageView();
     showWelcome();
-    MI.toast('已开始新对话', 'ok');
+    if (project) {
+      App.showAi();
+      inputEl.focus({ preventScroll: true });
+    } else MI.toast('已开始新对话', 'ok');
     refreshDshOptions();
     refreshHistInPlace();
   }
@@ -7126,7 +7156,7 @@ const AiPanel = (() => {
     document.getElementById('ai-steer-submit')?.addEventListener('click',()=>submitRunningInput('steer'));
     renderImages();
     const newBtn = document.getElementById('ai-new');
-    if (newBtn) newBtn.onclick = startNewSession;
+    if (newBtn) newBtn.onclick = () => startNewSession();
     const undoBtn = document.getElementById('ai-undo');
     if (undoBtn) undoBtn.onclick = undoCheckpoint;
     const permBtn = document.getElementById('ai-perm');

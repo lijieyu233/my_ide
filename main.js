@@ -906,11 +906,11 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
     finally{if(dshAdmission)dshChatAdmissions.delete(dshAdmission);}
   }else if(cfg?.engine==='codex'){
     try{
-      const { page, foreignHostId: expectedThreadId } = codexView;
+      const { page, foreignHostId: expectedThreadId, codexProjectId } = codexView;
       assertCodexRun(e,context);
       record.nativePage = page;
       // Codex 回包核验包含页面；aiRuns 的规范化身份不含页面，事件必须保留这份原生身份。
-      context={...context,page,...(expectedThreadId ? {expectedThreadId} : {})};
+      context = { ...context, page, ...(expectedThreadId ? { expectedThreadId } : {}), ...(codexProjectId ? { codexProjectId } : {}) };
       r=await CODEX.chat({...cfg,codexPermission:aiPermissionsBridge.codexPermission()},messages,expectedThreadId ? [] : tools||[],context,event=>{
         try{assertCodexRun(e,context);}catch{return;}
         if(event.type==='text')send('ai:chunk',{delta:event.delta,messageId:event.messageId,context});else send('ai:codex-event',{...event,context});

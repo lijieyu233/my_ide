@@ -689,8 +689,15 @@ function createService(options={}){
       const [nativeProjects, desktop] = await Promise.all([history.listProjects(request), desktopState.readDesktopState(codexHome())]);
       const pending = desktopState.pendingProjectIds(desktop);
       const projects = nativeProjects.filter(project => !pending.has(project.id));
-      const registered = desktopState.registeredProjectIds(desktop);
       const threadSource = 'user';
+      if (run.context.codexProjectId) {
+        // The user picked a project even if another project shares its primary folder.
+        const project = projects.find(item => item.id === run.context.codexProjectId);
+        const primary = project?.roots[0] && await canonical(project.roots[0]);
+        if (!primary || norm(primary) !== rootKey) throw Error('Codex 项目目录已变化，请重新选择项目');
+        return { threadSource, projectId: project.id };
+      }
+      const registered = desktopState.registeredProjectIds(desktop);
       const existing = await matchWorkspace(info.root, projects, registered);
       if (existing) return { threadSource, projectId: existing };
       if (pending.size) {
