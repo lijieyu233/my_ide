@@ -456,6 +456,7 @@ const Viewer = (() => {
 
   function openFile(path, options = {}) {return navigateTo({path},options);}
   async function navigateTo(location,options={}) {
+    window.App?.setEditorCollapsed?.(false);
     if(location.hit)return navigateToHit(location.hit,options);
     if(location.saved)return restoreLocation(location.saved,options.isCurrent,options.origin,options.source);
     const path=location.path;
@@ -1254,6 +1255,7 @@ const Viewer = (() => {
   }
 
   function focusEditor(){
+    window.App?.setEditorCollapsed?.(false);
     if(cmApi?.__tab===currentTab()&&cmApi.view?.dom.isConnected)cmApi.focus();
     else if(currentTab()?.ta?.isConnected)currentTab().ta.focus({preventScroll:true});
     else if(currentTab()?.diagramView?.focusEditor)currentTab().diagramView.focusEditor();

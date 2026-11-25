@@ -14,6 +14,39 @@ app.whenReady().then(async()=>{try{
 
  await until('!!window.Viewer&&!!document.getElementById("btn-open").onclick');await js('App.openProject('+JSON.stringify(project)+')');await js('Viewer.openFile('+JSON.stringify(a)+')');
  await js('window.__doc=Viewer.activeTab;window.__left=Viewer.cm;Viewer.cm.view.dispatch({changes:{from:Viewer.cm.view.state.doc.length,insert:"拆分前输入"},userEvent:"input"});');
+ if (process.argv.includes("--sidebar-layout-only")) {
+   await js('App.showAi();window.__editorState=Viewer.cm.view.state;void 0;');
+   const button='#btn-editor-collapse';
+   const widths=()=>js('["sidebar","content","ai-panel"].map(id=>document.getElementById(id).getBoundingClientRect().width)');
+   const normal=await widths();
+   await click(button);
+   const split=await widths();
+   assert(split[0]>normal[0]&&split[1]===0&&split[2]>normal[2]);
+   assert(await js('document.getElementById("btn-editor-collapse").getAttribute("aria-expanded")==="false"'));
+   const divider=await center('#sidebar-resizer');
+   await drag('#sidebar-resizer',{x:divider.x+120,y:divider.y});
+   const resized=await widths();
+   assert(Math.abs(resized[0]-split[0]-120)<5&&Math.abs(resized[2]-split[2]+120)<5);
+   await js('App.toggleSidebar(true)');
+   const rightOnly=await widths();
+   assert(rightOnly[0]===0&&rightOnly[1]===0&&rightOnly[2]>resized[2]);
+   await js('App.toggleSidebar(false);App.setAiOpen(false)');
+   const leftOnly=await widths();
+   assert(leftOnly[0]>resized[0]&&leftOnly[1]===0&&leftOnly[2]===0);
+   await js('App.showAi()');
+   await click(button);
+   assert.deepEqual(await widths(),normal);
+   assert(await js('Viewer.activeTab===__doc && Viewer.cm===__left && Viewer.cm.view.state.doc===__editorState.doc && Viewer.activeTab.dirty'));
+   pass('收起编辑区让两栏或单栏占满，拖动只调整收起时的比例，展开后原宽度和未保存正文保留');
+   await click(button);
+   await js('Viewer.openFile('+JSON.stringify(a)+')');
+   assert.deepEqual(await widths(),normal);
+   await click(button);
+   await js('App.showTool("clipboard")');
+   assert((await widths())[1]>0);
+   pass('打开文件或主区工具会恢复编辑区');
+   clearTimeout(timer);app.exit(0);return;
+ }
  await click('[aria-label="向右拆分"]');await until('document.querySelectorAll(".editor-pane .cm-editor").length===2');
  assert(await js('Viewer.paneState().panes.every(p=>p.path===__doc.path)&&Viewer.openTabs.length===1'));assert.equal(await js('Viewer.paneState().active'),1);assert(await js('Viewer.cm!==__left&&Viewer.cm.getValue()===__left.getValue()'));pass('向右拆分复制同一文档视图，左栏非空且只有一份文档身份');
  await js('window.__right=Viewer.cm;Viewer.cm.view.dispatch({changes:{from:Viewer.cm.view.state.doc.length,insert:"右边输入"},userEvent:"input"})');assert(await js('__left.getValue()===__right.getValue()&&__doc.content.endsWith("右边输入")'));pass('右栏编辑实时同步左栏与共用正文');

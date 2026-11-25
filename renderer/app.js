@@ -126,6 +126,7 @@ const App = (() => {
   let sideCollapsed = false; // 侧栏面板是否收起（project/outline 再点收起时置位）
   let aiOpen = false;        // AI 右侧面板是否展开（全局记忆，不按项目）
   let browserReturn = null;
+  let editorCollapsed = false;
 
   // 主区工具窗口的实际开/关（browser/log 各自管理内部状态与按钮高亮）
   function applyToolChange(prev, next) {
@@ -216,6 +217,7 @@ const App = (() => {
 
   // 打开文件/显示编辑区内容时，占据主区的工具窗口让位（PyCharm 式：编辑器优先）
   function backToEditor() {
+    setEditorCollapsed(false);
     if (activeTool === 'browser' || activeTool === 'log' || activeTool === 'quick-launch' || activeTool === 'bookshelf' || activeTool === 'remote' || activeTool === 'clipboard') {
       applyToolChange(activeTool, null);
       activeTool = null;
@@ -295,6 +297,7 @@ const App = (() => {
     }
     const aiEl = document.getElementById('ai-panel');
     if (aiEl) aiEl.classList.toggle('hidden', !aiVisible);
+    syncEditorLayout();
     if (window.AiPanel) AiPanel.syncVisible(aiVisible);
     // browser / log 面板显隐由 applyToolChange 调用模块 show/hide 完成
     if (activeTool === 'outline') {
@@ -370,6 +373,32 @@ const App = (() => {
   function toggleRightSidebar(force) {
     setRightSidebarCollapsed(typeof force === 'boolean' ? force : !isRightSidebarCollapsed());
     renderToolStrip();
+  }
+
+  function syncEditorLayout() {
+    const body = document.body;
+    const left = !sideCollapsed && !body.classList.contains('sidebar-collapsed');
+    const right = isAiVisible();
+    const centerTool = ['browser', 'db', 'remote', 'clipboard', 'launch', 'log', 'quick-launch', 'bookshelf'].includes(activeTool) ||
+      (activeTool === 'tasks' && window.Tasks?.view === 'dag');
+    const canCollapse = (left || right) && !centerTool;
+    if (!canCollapse) editorCollapsed = false;
+    body.classList.toggle('editor-collapsed', editorCollapsed);
+    body.classList.toggle('editor-sidebars-split', editorCollapsed && left && right);
+    body.classList.toggle('editor-left-empty', editorCollapsed && !left);
+    const button = document.getElementById('btn-editor-collapse');
+    if (button) {
+      button.disabled = !canCollapse;
+      button.setAttribute('aria-expanded', String(!editorCollapsed));
+      button.title = editorCollapsed ? '展开编辑区' : '收起编辑区';
+      button.setAttribute('aria-label', button.title);
+    }
+  }
+
+  function setEditorCollapsed(collapsed) {
+    if (editorCollapsed === collapsed) return;
+    editorCollapsed = collapsed;
+    syncEditorLayout();
   }
 
   function getTool() { return activeTool; }
@@ -1131,6 +1160,17 @@ const App = (() => {
     if (!Number.isFinite(requested)) return;
     const target = document.getElementById(id), other = document.getElementById(id === 'sidebar' ? 'ai-panel' : 'sidebar');
     if (!target) return;
+    if (editorCollapsed) {
+      if (id !== 'sidebar' || !document.body.classList.contains('editor-sidebars-split')) return;
+      const total = target.getBoundingClientRect().width + other.getBoundingClientRect().width;
+      if (total <= 0) return;
+      const left = Math.max(0, Math.min(requested, total));
+      const main = document.getElementById('main');
+      // 收起时拖动只改左右比例，普通布局仍使用各自保存的宽度。
+      main.style.setProperty('--editor-sidebar-left', String(left));
+      main.style.setProperty('--editor-sidebar-right', String(total - left));
+      return;
+    }
     // 窗口缩小后 flex 会按比例收缩。开始拖动时以当前实际宽度为准，避免旧的宽度偏好让分隔线偏离鼠标。
     if (other && getComputedStyle(other).display !== 'none') other.style.width = other.getBoundingClientRect().width + 'px';
     const fixed = ['tool-strip', 'tool-strip-right', 'sidebar-resizer'].reduce((sum, key) => sum + (document.getElementById(key)?.getBoundingClientRect().width || 0), 0);
@@ -1138,6 +1178,7 @@ const App = (() => {
     target.style.width = Math.max(0, Math.min(requested, available)) + 'px';
   }
   function saveColumnWidths() {
+    if (editorCollapsed) return;
     for (const [id, key] of [['sidebar', 'myide-sidebar-width:v2'], ['ai-panel', 'myide-ai-width:v2']]) {
       const el = document.getElementById(id), width = parseFloat(el?.style.width);
       if (el && getComputedStyle(el).display !== 'none' && Number.isFinite(width)) {
@@ -1159,6 +1200,12 @@ const App = (() => {
     } catch {}
     // 双击分隔线恢复默认宽度（VS Code / PyCharm 同款习惯：拖歪了有个确定性的退路）
     resizer.addEventListener('dblclick', () => {
+      if (editorCollapsed) {
+        const main = document.getElementById('main');
+        main.style.removeProperty('--editor-sidebar-left');
+        main.style.removeProperty('--editor-sidebar-right');
+        return;
+      }
       sidebar.style.width = LAYOUT.sidebar.def + 'px';
       try { localStorage.setItem(SIDEBAR_KEY, String(LAYOUT.sidebar.def)); } catch {}
     });
@@ -1253,6 +1300,7 @@ const App = (() => {
       const aiClose = document.getElementById('ai-close');
       if (aiClose) aiClose.onclick = () => setAiOpen(false);
     }
+    document.getElementById('btn-editor-collapse')?.addEventListener('click', () => setEditorCollapsed(!editorCollapsed));
     document.getElementById('tool-sidebar').onclick = () => toggleSidebar();
     document.getElementById('tool-sidebar-r').onclick = () => toggleRightSidebar();
     // 长任务进度浮层（删除/复制/恢复）已在 path-progress.js 加载时自行订阅，这里只兜一次
@@ -1293,7 +1341,7 @@ const App = (() => {
 
   return {
     init, openFolder, setRoot, openProject, removeProject, refreshAll, refreshGit, refreshOutline,
-    switchTool, showTool, hideSideTool, closeBrowser, getTool, getPageContext, setTool, backToEditor, updateStatusbar, getProjects, knownProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip, showProjMenu, openProject, LAYOUT, resizeColumn, saveColumnWidths,
+    switchTool, showTool, hideSideTool, closeBrowser, getTool, getPageContext, setTool, backToEditor, setEditorCollapsed, updateStatusbar, getProjects, knownProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip, showProjMenu, openProject, LAYOUT, resizeColumn, saveColumnWidths,
     get root() { return root; },
     fitName, ftIcon, dirIcon,
     get gitRefreshDelay() { return gitRefreshDelay; },

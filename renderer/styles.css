@@ -292,6 +292,16 @@ body.sidebar-collapsed #sidebar-resizer { display: none; }
 }
 #sidebar-resizer:hover, #sidebar-resizer.dragging { background: var(--accent); }
 
+body.editor-collapsed #content,
+body.editor-collapsed #ai-resize,
+body.editor-collapsed.editor-left-empty #sidebar,
+body.editor-collapsed:not(.editor-sidebars-split) #sidebar-resizer { display: none; }
+body.editor-collapsed #sidebar, body.editor-collapsed #ai-panel { flex: 1 1 0; }
+body.editor-collapsed #ai-panel { border-left: 0; }
+body.editor-sidebars-split #sidebar { flex-grow: var(--editor-sidebar-left, 1); }
+body.editor-sidebars-split #ai-panel { flex-grow: var(--editor-sidebar-right, 1); }
+#btn-editor-collapse[aria-expanded="false"] { color: var(--accent); background: var(--bg-selected); }
+
 /* 右侧工具窗口条（镜像左侧：AI 助手等右侧停靠工具） */
 #tool-strip-right {
   width: 38px; flex-shrink: 0;
