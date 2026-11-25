@@ -1396,11 +1396,28 @@ const AiPanel = (() => {
     button.setAttribute('aria-haspopup', 'menu');
     status.append(button);
 
+    let statusRequest, statusSnapshot;
+    function rememberStatus(result) {
+      if (!result?.ok || !result.supported) throw Error(result?.error || '当前系统不支持管理 Codex 进程');
+      statusSnapshot = { result, expiresAt: performance.now() + 2000 };
+      return result;
+    }
+    function readStatus() {
+      if (statusSnapshot?.expiresAt > performance.now()) return Promise.resolve(statusSnapshot.result);
+      if (!statusRequest) {
+        statusRequest = window.myIDE.ai.codexLifecycle('status').then(rememberStatus).finally(() => { statusRequest = null; });
+      }
+      return statusRequest;
+    }
+    button.addEventListener('pointerenter', () => {
+      if (!button.disabled) readStatus().catch(() => {});
+    });
+
     async function perform(action, label) {
       button.disabled = true;
+      statusSnapshot = null;
       try {
-        const result = await window.myIDE.ai.codexLifecycle(action);
-        if (!result?.ok || !result.supported) throw Error(result?.error || '当前系统不支持管理 Codex 进程');
+        rememberStatus(await window.myIDE.ai.codexLifecycle(action));
         MI.toast(label + '成功', 'ok');
         if (action.endsWith('-backend') && getConfig().engine === 'codex') {
           await refreshCodexOptions();
@@ -1409,27 +1426,37 @@ const AiPanel = (() => {
       } finally { button.disabled = false; }
     }
 
-    button.onclick = async () => {
-      button.disabled = true;
-      try {
-        const result = await window.myIDE.ai.codexLifecycle('status');
-        if (!result?.ok || !result.supported) throw Error(result?.error || '当前系统不支持管理 Codex 进程');
-        const isCurrent = () => button.isConnected && getConfig().engine === 'codex' && !panel?.classList.contains('hidden');
-        if (!isCurrent()) return;
-        button.disabled = false;
-        const action = (running, target, name) => {
-          const verb = running ? '关闭' : '启动';
-          const label = verb + name;
-          const operation = (running ? 'stop-' : 'start-') + target;
-          return { key: 'codex-' + operation, label, run: () => perform(operation, label) };
-        };
-        const rect = button.getBoundingClientRect();
-        showAiContextMenu(button, rect.right, rect.bottom, {
-          kind: 'codex-lifecycle', label: '管理 Codex', alignEnd: true, isCurrent,
-          actions: [action(result.backendRunning, 'backend', '共享后台'), action(result.desktopRunning, 'desktop', ' Codex 桌面端')],
-        });
-      } catch (error) { MI.toast(error.message, 'err'); }
-      finally { button.disabled = false; }
+    const targets = [
+      { id: 'backend', name: '共享后台', state: 'backendRunning' },
+      { id: 'desktop', name: 'Codex 桌面端', state: 'desktopRunning' },
+    ];
+    function actionsFor(result) {
+      return targets.map(({ id, name, state }) => {
+        const running = result[state];
+        const label = (running ? '关闭' : '启动') + (id === 'desktop' ? ' ' : '') + name;
+        const operation = (running ? 'stop-' : 'start-') + id;
+        return { key: 'codex-' + operation, label, run: () => perform(operation, label) };
+      });
+    }
+    button.onclick = async event => {
+      event.stopPropagation();
+      const isCurrent = () => button.isConnected && getConfig().engine === 'codex' && !panel?.classList.contains('hidden');
+      if (button.disabled || !isCurrent()) return;
+      const cached = statusSnapshot?.expiresAt > performance.now() ? statusSnapshot.result : null;
+      const rect = button.getBoundingClientRect();
+      const menu = showAiContextMenu(button, rect.right, rect.bottom, {
+        kind: 'codex-lifecycle', label: '管理 Codex', alignEnd: true, isCurrent,
+        actions: cached ? actionsFor(cached) : targets.map(({ name }) => ({ label: name, disabled: true })),
+        busy: !cached,
+      });
+      if (cached || !menu) return;
+      try { menu.update(actionsFor(await readStatus())); }
+      catch (error) {
+        if (menu.isOpen()) {
+          menu.close(true);
+          MI.toast(error.message, 'err');
+        }
+      }
     };
   }
 
@@ -1591,13 +1618,15 @@ const AiPanel = (() => {
     menu.style.top = Math.max(0, Math.min(y, innerHeight - menu.offsetHeight - 8)) + 'px';
   }
 
-  function showAiContextMenu(anchor, x, y, { kind, label, isCurrent, actions, alignEnd }) {
+  function showAiContextMenu(anchor, x, y, { kind, label, isCurrent, actions, alignEnd, busy = false }) {
     aiContextMenu?.close();
     const menu = document.getElementById('ctx-menu');
     if (!menu) return;
     const group = document.createElement('div');
     group.setAttribute('role', 'menu');
     group.setAttribute('aria-label', label);
+    group.tabIndex = -1;
+    if (busy) group.setAttribute('aria-busy', 'true');
     const events = new AbortController();
     const close = (restore = false) => {
       events.abort();
@@ -1627,6 +1656,7 @@ const AiPanel = (() => {
         button.type = 'button';
         button.className = 'ctx-item';
         button.tabIndex = -1;
+        button.disabled = item.disabled === true;
         button.setAttribute('role', item.checked === undefined ? 'menuitem' : 'menuitemradio');
         if (item.key) button.dataset.act = item.key;
         if (item.children) button.setAttribute('aria-haspopup', 'menu');
@@ -1645,6 +1675,7 @@ const AiPanel = (() => {
         button.onclick = async event => {
           // 切换子菜单会移除旧按钮，避免全局点击监听将这次操作当作点在菜单外。
           event.stopPropagation();
+          if (button.disabled) return;
           if (!canSelect()) { close(true); return; }
           if (item.back) { back(); return; }
           if (item.children) { parentAction = item; renderActions(item.children); return; }
@@ -1652,11 +1683,11 @@ const AiPanel = (() => {
           try { await item.run(); } catch (error) { MI.toast(error.message || String(error), 'err'); }
         };
         group.append(button);
-        if (item === focusAction || item.checked) nextFocus = button;
+        if (!button.disabled && (item === focusAction || item.checked)) nextFocus = button;
       }
       positionAiContextMenu(menu, x, y, alignEnd);
       menu.scrollTop = 0;
-      (nextFocus || group.querySelector('button')).focus({ preventScroll: true });
+      (nextFocus || group.querySelector('button:not(:disabled)') || group).focus({ preventScroll: true });
     }
     group.onkeydown = event => {
       if (parentAction && (event.key === 'ArrowLeft' || event.key === 'Escape')) {
@@ -1674,8 +1705,8 @@ const AiPanel = (() => {
       } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
         event.preventDefault();
         event.stopPropagation();
-        const items = [...group.querySelectorAll('button')], index = items.indexOf(document.activeElement);
-        items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].focus();
+        const items = [...group.querySelectorAll('button:not(:disabled)')], index = items.indexOf(document.activeElement);
+        if (items.length) items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].focus();
       } else if (event.key === 'Enter' || event.key === ' ') event.stopPropagation();
     };
     menu.replaceChildren(group);
@@ -1683,6 +1714,12 @@ const AiPanel = (() => {
     renderActions(actions);
     document.addEventListener('pointerdown', event => { if (!group.contains(event.target)) close(); }, { capture: true, signal: events.signal });
     window.addEventListener('blur', () => close(), { signal: events.signal });
+    return { close, isOpen: canSelect, update(nextActions) {
+      if (!canSelect()) return;
+      actions = nextActions;
+      group.removeAttribute('aria-busy');
+      renderActions(actions);
+    } };
   }
 
   function showReplyLinkMenu(anchor, x, y) {

@@ -13,7 +13,12 @@ for(const name of ['readText','readHTML','readRTF','readFindText'])clipboard[nam
 const fixture=require('./codex-test-server').createServer(),codex=require('../src/main/codex/ai-codex'),create=codex.createService;let service, desktopOwnsProjectThreads=false;
 codex.createService=options=>(service=create({...options,desktopOwnsProjectThreads:()=>desktopOwnsProjectThreads,resolveRuntime:async()=>({executable:process.execPath,args:[],launcher:'offline-fixture'}),spawn:fixture.spawn}));
 const lifecycle={backendRunning:false,desktopRunning:false}, lifecycleCalls=[];
+let statusReads = 0, statusGate;
 function fixtureLifecycle(action){
+ if (action === 'status') {
+   statusReads++;
+   if (statusGate) return statusGate;
+ }
  if(action!=='status')lifecycleCalls.push(action);
  if(action==='start-backend')lifecycle.backendRunning=true;
  if(action==='stop-backend')lifecycle.backendRunning=false;
@@ -31,6 +36,51 @@ async function finish(code,error){if(done)return;done=true;clearTimeout(watchdog
 const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
 (async()=>{await app.whenReady();await until(()=>{win=BrowserWindow.getAllWindows().find(w=>!w.webContents.isLoading()&&w.webContents.getURL().includes('renderer/index.html'));return win;},'window');await until(()=>js(()=>!!window.App&&!!window.AiPanel&&!!document.getElementById('btn-open').onclick),'app init');win.setContentSize(1440,900);
  await js(async root=>{Object.defineProperty(document,'hidden',{value:false,configurable:true});await App.setRoot(root);App.showAi();await AiPanel.setConfig({engine:'codex',autoIdeContext:false,injectMyideRules:false});return true;},roots[0]);await until(()=>js(()=>AiPanel.aiState().dshState==='ready'),'Codex options');check('Codex connects in existing mode selector and shows native model',await js(()=>document.getElementById('ai-engine').value==='codex'&&document.getElementById('ai-model').textContent.includes('Codex offline fixture')));check('inspect never creates a thread or starts a turn',!fixture.requests.some(r=>['thread/start','turn/start'].includes(r.method)));
+ let releaseStatus;
+ statusGate = new Promise(resolve => { releaseStatus = resolve; });
+ const pendingMenu = await js(()=>{
+   const button = document.getElementById('ai-codex-manage');
+   button.click();
+   const menu = document.querySelector('#ctx-menu:not(.hidden) [aria-label="管理 Codex"]');
+   return menu?.getAttribute('aria-busy') === 'true' && !button.disabled &&
+     menu === document.activeElement && menu.querySelectorAll('button:disabled').length === 2;
+ });
+ check('Manage opens immediately with unavailable commands while Windows status is still pending', pendingMenu);
+ await until(()=>statusReads===1, 'process status request started');
+ await js(()=>{
+   const menu = document.activeElement;
+   menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+   menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+ });
+ check('Escape closes the pending menu and restores the button focus', await js(()=>
+   document.getElementById('ctx-menu').classList.contains('hidden') &&
+   document.activeElement === document.getElementById('ai-codex-manage')));
+ await js(()=>{
+   const button = document.getElementById('ai-codex-manage');
+   button.dispatchEvent(new PointerEvent('pointerenter'));
+   button.click();
+   window.__pendingLifecycleMenu = document.activeElement;
+ });
+ releaseStatus({ ok: true, supported: true, ...lifecycle });
+ statusGate = null;
+ await until(()=>js(()=>!!document.querySelector('#ctx-menu:not(.hidden) [data-act="codex-start-backend"]')), 'live actions replace pending status');
+ check('Hover and reopen use one status request and update only the active menu', statusReads===1 && lifecycleCalls.length===0 &&
+   await js(()=>document.activeElement?.dataset.act==='codex-start-backend' &&
+     document.activeElement.parentElement === window.__pendingLifecycleMenu &&
+     !document.activeElement.parentElement.hasAttribute('aria-busy')));
+ await js(()=>document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+ if (process.argv.includes('--codex-lifecycle-only')) {
+   await js(()=>document.getElementById('ai-codex-manage').click());
+   await until(()=>js(()=>!!document.querySelector('#ctx-menu:not(.hidden) [data-act="codex-start-backend"]')), 'available backend command');
+   await js(()=>document.querySelector('[data-act="codex-start-backend"]').click());
+   await until(()=>js(()=>!document.getElementById('ai-codex-manage').disabled), 'backend action complete');
+   await js(()=>document.getElementById('ai-codex-manage').click());
+   await until(()=>js(()=>!!document.querySelector('#ctx-menu:not(.hidden) [data-act="codex-stop-backend"]')), 'menu reflects operation result');
+   check('Managing the backend changes its command label and still sends the original IPC', lifecycle.backendRunning &&
+     lifecycleCalls.join(',')==='start-backend');
+   await finish(0);
+   return;
+ }
  if (process.argv.includes('--codex-goal-only')) {
    const view = '#ai-codex-goal';
    const shown = () => js(selector => document.querySelector(selector)?.checkVisibility(), view);
