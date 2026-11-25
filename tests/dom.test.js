@@ -1214,8 +1214,13 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       await tick();
       assert.equal(fileDeletes, 0);
       const fileRow = $$(d, '#tree .tree-row').find(row => row.dataset.path === file);
-      fileRow.focus();
-      fileRow.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }));
+      fileRow.click();
+      await tick();
+      assert.equal(w.document.activeElement, fileRow);
+      await w.Tree.render();
+      assert(!fileRow.isConnected, '目录树确实重建了原文件行');
+      assert.equal(w.document.activeElement.dataset.path, file, '刷新后同一文件行保留键盘焦点');
+      w.document.activeElement.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }));
       for (let i = 0; i < 20 && !fileDeletes; i++) await tick();
       assert.equal(fileDeletes, 1);
       w.myIDE.fs.deletePrepare = deletePrepare;

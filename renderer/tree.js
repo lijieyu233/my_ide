@@ -348,6 +348,11 @@ const Tree = (() => {
     renderChain = renderChain.then(doRender).catch(() => {});
     return renderChain;
   }
+  function focusedTreeRowPath() {
+    const active = document.activeElement;
+    return el.contains(active) && active.matches('.tree-row') ? active.dataset.path : null;
+  }
+
   async function doRender() {
     if (isOpenView()) return;
     // 搜索态：平铺显示匹配行（忽略展开态）—— renderSearch 自己会清空并重画
@@ -364,6 +369,8 @@ const Tree = (() => {
     for (const d of expandedDirs) { await loadDir(d); if (rootPath !== renderingRoot || searchState || isOpenView()) return; }
     const rows = buildRows();
     visibleRows = rows; // 键盘导航用（↑↓ 移动选中）
+    // 重画会移除获得焦点的旧行，须按路径恢复，以免 Delete 落到页面正文。
+    const focusedPath = focusedTreeRowPath();
     el.innerHTML = '';
     el.onscroll = null;
     // 「只看 Git 文件」下连根行都没有子项 → 明说一句，别让用户对着空面板猜
@@ -380,6 +387,7 @@ const Tree = (() => {
         hint.textContent = noneHere ? '此文件夹不在 Git 跟踪范围内' : '没有 Git 跟踪的文件';
         el.appendChild(hint);
       }
+      if (focusedPath) rowElOf(focusedPath)?.focus({ preventScroll: true });
       return;
     }
     const RH = rowH();
@@ -387,7 +395,7 @@ const Tree = (() => {
     spacer.style.position = 'relative';
     spacer.style.height = rows.length * RH + 'px';
     el.appendChild(spacer);
-    const paint = () => {
+    const paint = (path = focusedTreeRowPath()) => {
       spacer.querySelectorAll('.tree-row').forEach((x) => x.remove());
       const top = el.scrollTop || 0;
       const viewH = el.clientHeight || RH * 20;
@@ -401,9 +409,10 @@ const Tree = (() => {
         rowEl.style.right = '0';
         spacer.appendChild(rowEl);
       }
+      if (path) rowElOf(path)?.focus({ preventScroll: true });
     };
-    el.onscroll = paint;
-    paint();
+    el.onscroll = () => paint();
+    paint(focusedPath);
   }
 
   function makeFileResult(file, selected, tag = 'div') {
