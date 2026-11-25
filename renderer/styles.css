@@ -2070,11 +2070,7 @@ body.has-bg #tabbar { background: color-mix(in srgb, var(--bg-tabbar) 86%, trans
 body.has-bg textarea.editor { background: color-mix(in srgb, var(--bg) 88%, transparent); }
 body.has-bg .editor-cm-wrap .cm-editor { background: color-mix(in srgb, var(--bg) 88%, transparent); }
 body.has-bg .editor-cm-wrap .cm-scroller { background: transparent; }
-body.has-bg :is(#viewer,.editor-pane-view) > .md-view {
-  --md-reading-bg: color-mix(in srgb, var(--bg) 88%, transparent);
-  background: linear-gradient(var(--md-reading-bg), var(--md-reading-bg))
-    center / min(100%, var(--md-reading-width, 820px)) 100% no-repeat;
-}
+body.has-bg :is(#viewer,.editor-pane-view) > .md-view,
 body.has-bg .md-split .md-split-preview { background: color-mix(in srgb, var(--bg) 88%, transparent); }
 body.has-bg .editor-gutter { background: color-mix(in srgb, var(--bg-panel) 80%, transparent); }
 body.has-bg #empty-state { background: color-mix(in srgb, var(--bg) 94%, transparent); }
