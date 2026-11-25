@@ -95,7 +95,7 @@ function createServer(){
    }
    if(message.method==='thread/read'){
     const t=threads.get(p.threadId);
-    return reply(message.id,{thread:{...t,status:{type:t.running?'active':'notLoaded'}}});
+    return reply(message.id,{thread:{...t,status:{type:t.running||t.desktopRunning?'active':'notLoaded'}}});
    }
    if(message.method==='thread/items/list'){
     const t=threads.get(p.threadId);

@@ -54,7 +54,8 @@ function fixture(config={}){
      thread.name=p.name;
      send(c,{id:r.id,result:{}});
    }else if(r.method==='thread/read'&&config.history){
-     const thread=config.history.find(t=>t.id===p.threadId);
+     const entry=config.history.find(t=>t.id===p.threadId);
+     const thread=entry && config.readStatus ? {...entry,status:{type:config.readStatus}} : entry;
      send(c,{id:r.id,result:{thread}});
    }else if(r.method==='thread/items/list'&&config.history){
      assert.equal(p.sortDirection,'desc');
@@ -84,7 +85,8 @@ function fixture(config={}){
    }else if(r.method==='thread/unsubscribe'){
     send(c,{id:r.id,result:{status:'unsubscribed'}});
    }else if(r.method==='thread/start'||r.method==='thread/resume'){
-    if(r.method==='thread/resume'&&config.writerLocked){
+    if(r.method==='thread/resume'&&(config.writerLocked||config.writerConflictOnce)){
+      config.writerConflictOnce=false;
      if(config.turnOnConflict)config.latestTurn=config.turnOnConflict;
      send(c,{id:r.id,error:{code:-32600,message:'thread '+p.threadId+' already has an active writer'}});
      continue;
@@ -425,6 +427,31 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
     r.method,r.params.threadId,r.params.turnId||r.params.expectedTurnId,
    ]),['turn/steer','turn/settings/update','turn/interrupt'].map(method=>[method,id,turnId]));
   }finally{await f.service.dispose();}
+ });
+ await test('目录状态滞后或上一轮正在释放写入权时，空闲的共享会话立即续聊', async()=>{
+   const id='019caa00-0000-7000-8000-000000000042';
+   const config={
+     sharedLauncher:'codex.exe', desktopInstalled:true, readStatus:'idle', writerConflictOnce:true, queue:[],
+     history:[{id,cwd:temp,historyMode:'paginated',status:{type:'active'}}],
+   };
+   const f=fixture(config);
+   try {
+     const view=await f.service.openHistory({},id);
+     assert.equal((await f.service.listHistory({})).items[0].running,true);
+     const c=context(1,{sessionId:view.localId});
+     const target={threadId:id,sessionId:view.localId};
+     const message=user('直接续聊')[0];
+     const queueInput={kind:'queue',requestId:'myide-input-019caa00-0000-7000-8000-000000000043',message};
+     assert.deepEqual(await f.service.changeInput({},c,target,queueInput),{ok:true,idle:true});
+     const sent=await f.service.chat({codexQueueOnConflict:true},[message],[],c);
+     assert.equal(sent.status,'completed');
+     assert.deepEqual(f.requests.filter(r=>['thread/resume','thread/start','turn/start','thread/queue/add'].includes(r.method))
+       .map(r=>[r.method,r.params.threadId]),[['thread/resume',id],['thread/resume',id],['turn/start',id]]);
+     config.readStatus='active';
+     config.latestTurn={id:'still-running',status:'inProgress'};
+     assert.equal((await f.service.changeInput({},c,target,queueInput)).itemId,'queued-fixture');
+     assert.equal(f.requests.filter(r=>r.method==='thread/queue/add').length,1);
+   } finally { await f.service.dispose(); }
  });
  await test('将待发消息插入原轮次，轮次拒绝时保留队列，清理重试不重复发送', async()=>{
   const id = '019caa00-0000-7000-8000-000000000010', turnId = 'desktop-current-turn';

@@ -869,12 +869,20 @@ function createService(options={}){
         live(run);
       };
       if (continuation) await readContinuation();
+      const isWriterConflict = error => error.kind === 'threadInUse' && error.rpcMethod === 'thread/resume' &&
+        error.rpcResponseReceived === true;
+      const attachThread = () => attach(conn,cfg,context,tools,run,data,info,permission.thread);
       let attached;
-      try { attached = await attach(conn,cfg,context,tools,run,data,info,permission.thread); }
-      catch (error) {
+      try {
+        attached = await attachThread().catch(async error => {
+          if (!conn.shared || !isWriterConflict(error)) throw error;
+          // The preceding turn may have ended while its writer is still being released.
+          await delay(150);
+          return attachThread();
+        });
+      } catch (error) {
         // Desktop can retain the writer while idle. Its durable queue preserves input without taking ownership.
-        const writerConflict = error.kind === 'threadInUse' && error.rpcMethod === 'thread/resume' &&
-          error.rpcResponseReceived === true;
+        const writerConflict = isWriterConflict(error);
         const queueAllowed = cfg.codexQueueOnConflict === true || permission.thread.sandbox === 'danger-full-access';
         if ((!writerConflict && (continuation || error.kind !== 'threadBusy')) || info.scope !== 'project' ||
             !binding?.id || binding.blocked || saved.get(info.key) !== binding) throw error;
@@ -1058,15 +1066,16 @@ function createService(options={}){
       record = saved.get(info.key);
       if (info.scope !== 'project' || !record?.id || record.blocked || record.id !== target.threadId ||
           norm(record.cwd) !== norm(info.cwd)) throw Error('Codex 会话身份已变化');
-      const listed = await history.findProjectThread(historyRequest(conn), record.id);
-      if (!listed || norm(await projectThreadRoot(listed)) !== norm(info.cwd)) throw Error('无法核对原 Codex 会话');
-      thread = listed;
+      const request = historyRequest(conn);
+      thread = action.kind === 'queue'
+        ? await history.readProjectThread(request, record.id)
+        : await history.findProjectThread(request, record.id);
+      if (!thread || norm(await projectThreadRoot(thread)) !== norm(info.cwd)) throw Error('无法核对原 Codex 会话');
       threadId = record.id;
       if (action.kind === 'openDesktop') return { ok: true, desktopThreadId: threadId };
       if (action.kind === 'queue') {
-        const request = historyRequest(conn);
         try {
-          await history.assertThreadIdle(request, listed);
+          await history.assertThreadIdle(request, thread);
           // The renderer may be holding an older "running" state. No input has been enqueued yet.
           return { ok: true, idle: true };
         } catch (error) {
