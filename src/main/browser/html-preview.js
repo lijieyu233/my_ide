@@ -9,21 +9,16 @@ const WIDGET_LIMIT=2*1024*1024;
 const SCHEME = 'myide-preview';
 const MIME = {html:'text/html',htm:'text/html',css:'text/css',js:'text/javascript',mjs:'text/javascript',json:'application/json',svg:'image/svg+xml',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',ico:'image/x-icon',woff:'font/woff',woff2:'font/woff2',ttf:'font/ttf',mp4:'video/mp4',webm:'video/webm',wasm:'application/wasm',txt:'text/plain'};
 const inside = (root,file) => {const relative=path.relative(root,file);return !path.isAbsolute(relative)&&relative!=='..'&&!relative.startsWith('..'+path.sep);};
-async function visualizationAllowed(file, visualizationRoot, getProjectRoot) {
-  const globalRoot = visualizationRoot && await fs.realpath(visualizationRoot).catch(() => '');
-  if (globalRoot && inside(globalRoot, file)) return true;
-
-  // Only the active Codex conversation can supply a workspace, never the preview request.
-  const workspace = await getProjectRoot?.();
-  if (!workspace || !path.isAbsolute(workspace)) return false;
-  return inside(await fs.realpath(workspace), file);
-}
+// A chat marker must not initiate a direct Windows network share or device path lookup.
+const localVisualizationPath = file => process.platform !== 'win32' || /^[a-z]:[\\/][^:\0]*$/i.test(file);
 function createService() {
   const entries=new Map();
-  async function open(owner,request,visualizationRoot,getProjectRoot) {
+  async function open(owner,request) {
     if(!request||typeof request.path!=='string'||!path.isAbsolute(request.path)||(request.disk!==true&&typeof request.content!=='string')||! /\.html?$/i.test(request.path))throw Error('HTML 预览参数无效');
-    const file=await fs.realpath(request.path),visualization=request.visualization===true;
-    if(visualization&&(request.disk!==true||! /\.html?$/i.test(file)||!await visualizationAllowed(file,visualizationRoot,getProjectRoot)))throw Error('可视化文件路径无效');
+    const visualization=request.visualization===true;
+    if(visualization&&(request.disk!==true||!localVisualizationPath(request.path)))throw Error('可视化文件路径无效');
+    const file=await fs.realpath(request.path);
+    if(visualization&&(!localVisualizationPath(file)||! /\.html?$/i.test(file)))throw Error('可视化文件路径无效');
     const requestedRoot=!visualization&&typeof request.root==='string'&&path.isAbsolute(request.root)?await fs.realpath(request.root):path.dirname(file);
     const root=inside(requestedRoot,file)?requestedRoot:path.dirname(file),id=randomBytes(16).toString('hex');
     if(request.disk===true){

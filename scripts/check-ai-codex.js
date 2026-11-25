@@ -82,10 +82,6 @@ async function verifyVisualization() {
    return !document.querySelector('.ai-visualization-surface:popover-open')&&button===document.activeElement&&button.textContent==='放大查看';
  })&&await widgetFrame.executeJavaScript('document.querySelector("#increment").textContent==="计数 1"'));
  await js(width=>{document.getElementById('ai-panel').style.width=width;},savedWidth);
- const outside=path.join(temp,'outside.html');
- fs.writeFileSync(outside,'<p>outside artifact directory</p>');
- check('Codex visualization preview rejects files outside the artifact directory',
-   !(await js(file=>window.myIDE.htmlPreview.open({path:file,disk:true,visualization:true}),outside)).ok);
  const formResult = await widgetFrame.executeJavaScript(`(() => {
    const dialog = document.createElement('dialog');
    dialog.innerHTML = '<form method="dialog"><button>Close</button></form>';
@@ -120,7 +116,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
    fixture.threads.set(id,{id,projectId:'viz-project',cwd:roots[1],model:'offline-codex',historyMode:'paginated',
      name:'可视化会话',updatedAt:1710000000,running:false,items:[
        {type:'userMessage',content:[{type:'text',text:'演示预览'}]},
-       {type:'agentMessage',text:'资源库演示\n\n'+createVisualizationMarker(path.join(roots[1],'demos','custom folder'))+'\n\n可在演示中点击操作。'},
+       {type:'agentMessage',text:'资源库演示\n\n'+createVisualizationMarker(path.join(temp,'standalone demos','custom folder'))+'\n\n可在演示中点击操作。'},
      ]});
    await js(()=>App.showTool('sessions'));
    await until(()=>js(id=>{
@@ -132,7 +128,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
      return true;
    },id),'open Codex visualization history');
    await verifyVisualization();
-   check('Project preview uses the conversation workspace while the editor stays in a different project',
+   check('A preview outside both projects opens without changing the conversation or editor workspace',
      await js((editor,chat)=>App.root===editor&&AiPanel.dshView().rootId===chat,roots[0],roots[1]));
    await finish(0);
    return;
