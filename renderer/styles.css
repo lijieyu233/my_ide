@@ -2534,7 +2534,7 @@ body.theme-light #set-box, body.theme-pink #set-box { color-scheme: light; }
 }
 .set-theme-swatch[data-theme-base="dark"] { --swatch-bg: #212121; --swatch-accent: #4f9cd6; }
 .set-theme-swatch[data-theme-base="codex"] { --swatch-bg: #191d1f; --swatch-accent: #68bb78; }
-.set-theme-swatch[data-theme-base="antigravity"] { --swatch-bg: #141417; --swatch-accent: #79adff; }
+.set-theme-swatch[data-theme-base="antigravity"] { --swatch-bg: #121214; --swatch-accent: #79adff; }
 .set-theme-swatch[data-theme-base="light"] { --swatch-bg: #f5f5f5; --swatch-accent: #007acc; }
 .set-theme-swatch[data-theme-base="pink"] { --swatch-bg: #fff0f5; --swatch-accent: #d66b93; }
 .set-theme-swatch[data-theme-base="crimson"] { --swatch-bg: #2a171d; --swatch-accent: #f06292; }
@@ -2708,18 +2708,18 @@ body.theme-codex {
 
 /* ---------- 反重力深色：近黑画布、冷灰侧栏、蓝色强调 ---------- */
 body.theme-antigravity {
-  --bg: #0c0c0e;
-  --bg-title: #101012;
-  --bg-panel: #141417;
-  --bg-tabbar: #18181b;
-  --bg-hover: #1d1d22;
-  --bg-selected: #24242c;
+  --bg: #09090a;
+  --bg-title: #111113;
+  --bg-panel: #121214;
+  --bg-tabbar: #151517;
+  --bg-hover: #1e1e20;
+  --bg-selected: #262628;
   --bg-input: #18181d;
   --border: #232328;
-  --border-mid: #393942;
-  --text: #d9dae2;
-  --text-bright: #f4f4f7;
-  --text-dim: #9899a5;
+  --border-mid: #3b3b3f;
+  --text: #d9d9dc;
+  --text-bright: #f3f3f4;
+  --text-dim: #96969b;
   --accent: #79adff;
   --on-accent: #101722;
   --green: #83c7a2;
@@ -2736,6 +2736,43 @@ body.theme-antigravity {
   --md-table-head: #1c1c20;
   --code-bg: #17171b;
   --code-text: #a2bdf0;
+  --ui-focus: var(--bg-selected);
+}
+
+/* 导航靠灰色明度区分悬停和选中，蓝色留给链接和主要操作。 */
+body.theme-antigravity #sidebar {
+  --sidebar-tree-branch: var(--text);
+  --sidebar-tree-branch-hover: var(--text-bright);
+  --sidebar-tree-selected: var(--bg-selected);
+}
+body.theme-antigravity #sidebar :is(.ai-hist-group-head, .ai-hist-row, .tree-row, .outline-item) {
+  margin-inline: 4px;
+  border-radius: 5px;
+}
+body.theme-antigravity .ai-hist-row[data-batch-selected] {
+  background: color-mix(in srgb, var(--text) 6%, var(--bg-selected));
+}
+body.theme-antigravity .proj-btn:not(.active, :hover) { border-color: transparent; }
+body.theme-antigravity :is(.proj-btn, .tab).active {
+  background: var(--bg-selected);
+  border-color: var(--border-mid);
+}
+body.theme-antigravity .tab.active .tic { color: var(--text); }
+body.theme-antigravity :is(#tool-strip, #tool-strip-right) .tool-btn.active {
+  background: var(--bg-selected);
+  color: var(--text-bright);
+  border-color: transparent;
+}
+body.theme-antigravity #tree-head .tree-views .active {
+  background: var(--bg-selected);
+  color: var(--text-bright);
+  box-shadow: none;
+}
+body.theme-antigravity :is(.tree-row.selected, .outline-item.key-nav-sel)::before { content: none; }
+body.theme-antigravity .tree-row:focus { box-shadow: none; }
+body.theme-antigravity :is(.ai-hist-group-title, .ai-hist-open, .ai-hist-other-toggle, .proj-btn, .tab, .tool-btn, .tree-row, .outline-item):focus-visible {
+  outline: 1px solid var(--text-dim);
+  outline-offset: -1px;
 }
 
 /* ---------- 浅色主题（PyCharm Light 风格） ---------- */
