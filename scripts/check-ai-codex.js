@@ -294,6 +294,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  fs.writeFileSync(path.join(process.env.CODEX_HOME,'.codex-global-state.json'),JSON.stringify({
    'local-projects':{'desktop-legacy-b':{id:'desktop-legacy-b'}},
    'app-server-project-id-by-legacy-project-id-by-host':{['local:'+process.env.CODEX_HOME]:{'desktop-legacy-b':'desktop-b'}},
+   'sidebar-project-expanded-v1-codex:desktop-legacy-b':true,
    'projectless-thread-ids':[recentId],
    'thread-project-assignments':{[externalId]:{projectKind:'local',projectId:'desktop-legacy-b'}},
    'thread-project-membership-host-ids':{[externalId]:'local'},
@@ -335,6 +336,8 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
    return toggle?.getAttribute('aria-current')==='location'&&toggle.getAttribute('aria-expanded')==='true';
  },firstProject.id),'bound Codex project expanded');
  check('the selected MyIDE workspace expands its bound Codex project',true);
+ check('a project expanded in Codex Desktop starts collapsed in MyIDE',await js(()=>
+   document.querySelector('[data-codex-project="desktop-b"] [data-hist-toggle]')?.getAttribute('aria-expanded')==='false'));
  await capture('codex-project-binding');
  check('Codex sidebar follows Desktop moves, primary roots, and explicit removal from a project',await js(firstProjectName=>{
    const groups=[...document.querySelectorAll('.ai-hist-rows > .ai-hist-group')];
@@ -454,6 +457,11 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
    changeDesktopOrder([externalId,implicitId]);
    await refresh();
    check('directory refresh retains custom order', JSON.stringify(await order()) === JSON.stringify(sorted));
+   await js(id=>document.querySelector('[data-codex-project="'+id+'"] [data-hist-toggle][aria-expanded="true"]').click(),firstProject.id);
+   const desktopBeforeReload=JSON.parse(fs.readFileSync(sidebarFile,'utf8'));
+   desktopBeforeReload['sidebar-project-expanded-v1-codex:desktop-legacy-b']=false;
+   desktopBeforeReload['sidebar-project-expanded-v1-codex:'+firstProject.id]=true;
+   fs.writeFileSync(sidebarFile,JSON.stringify(desktopBeforeReload));
    await js(() => localStorage.setItem('myide-codex-sidebar-sort','desktop'));
 
    const reloaded = new Promise(resolve => win.webContents.once('did-finish-load', resolve));
@@ -469,6 +477,13 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
    }, roots[0]);
    await until(() => js(() => !!document.querySelector('#panel-sessions [data-codex-project="desktop-b"] .ai-hist-row')), 'reloaded catalog');
    const restored = await order();
+   check('explicit MyIDE expand and collapse choices survive reload, including a collapsed current project',
+     await js(id=>{
+       const toggle=project=>document.querySelector('[data-codex-project="'+project+'"] [data-hist-toggle]');
+       return toggle(id)?.getAttribute('aria-current')==='location'&&toggle(id)?.getAttribute('aria-expanded')==='false'&&
+         toggle('desktop-b')?.getAttribute('aria-expanded')==='true';
+     },firstProject.id));
+   await capture('codex-project-expansion-restored');
    check('custom order survives reloading the renderer with the legacy follow preference', JSON.stringify(restored.projects) === JSON.stringify(sorted.projects) &&
      JSON.stringify(restored.sessions) === JSON.stringify(sorted.sessions) && restored.recentLast);
    const newest='019caa00-0000-7000-8000-000000000110';

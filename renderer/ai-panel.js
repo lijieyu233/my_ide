@@ -4171,6 +4171,15 @@ const AiPanel = (() => {
   const historyRowsMarkup = new WeakMap();
   const otherWorkspacesKey = Symbol(), flatHistoryKey = Symbol(), codexRecentKey = Symbol();
   const codexProjectKey = id => 'codex-project:' + id;
+  const codexExpansionKey = 'myide-codex-sidebar-expansion';
+  const codexExpansionId = key => key === codexRecentKey ? 'recent' : key;
+  const codexExpansion = new Map();
+  try {
+    const saved = JSON.parse(localStorage.getItem(codexExpansionKey));
+    for (const [id, expanded] of Object.entries(saved || {})) {
+      if (typeof expanded === 'boolean') codexExpansion.set(id, expanded);
+    }
+  } catch {}
   const codexOrderKey = 'myide-codex-sidebar-order';
   const codexSortType = 'application/x-myide-codex-sidebar';
   const codexOrderTarget = '[data-codex-order-scope]';
@@ -4694,11 +4703,12 @@ const AiPanel = (() => {
         ? boundRoots.get(workspace?.id) || workspace?.roots[0] || ''
         : unassigned ? '' : items[0]?.rootDir || opened.get(key) || workspace?.rootDir || '';
       const current = codex ? key === currentProject : !unassigned && key === root;
+      const savedExpansion = codex ? codexExpansion.get(codexExpansionId(key)) : undefined;
       if (!historyWorkspaces.has(key)) historyWorkspaces.set(key, {
         index: historyWorkspaces.size,
-        expanded: (codex ? workspace?.expanded : null) ?? defaultHistoryExpanded(key, items, current ? key : root, running),
+        expanded: codex ? savedExpansion ?? current : defaultHistoryExpanded(key, items, root, running),
       });
-      if (current && expandCurrent) historyWorkspaces.get(key).expanded = true;
+      if (current && expandCurrent && savedExpansion === undefined) historyWorkspaces.get(key).expanded = true;
       const { index, expanded: wasExpanded } = historyWorkspaces.get(key);
       const expanded = (items.length > 0 || hasChildren) && (flat || narrow || wasExpanded);
       const sessionOrder = flat ? flatOrder : workspace?.sessionIds || [];
@@ -4940,7 +4950,16 @@ const AiPanel = (() => {
         }
         items.hidden = !items.hidden;
         toggle.setAttribute('aria-expanded', String(!items.hidden));
-        historyWorkspaces.get(historyGroupKey(group)).expanded = !items.hidden;
+        const key = historyGroupKey(group);
+        const codex = codexProjectHistory();
+        if (!codex || !historySearch && !codexArchiveOnly) {
+          historyWorkspaces.get(key).expanded = !items.hidden;
+          if (codex) {
+            codexExpansion.set(codexExpansionId(key), !items.hidden);
+            try { localStorage.setItem(codexExpansionKey, JSON.stringify(Object.fromEntries(codexExpansion))); }
+            catch { MI.toast('保存会话展开状态失败', 'err'); }
+          }
+        }
         toggle.querySelector('.ai-hist-workspace-icon path').setAttribute('d', historyGroupIcon(!items.hidden, group.hasAttribute('data-codex-recent')));
         historyRowsMarkup.delete(sidebar.querySelector('.ai-hist-rows'));
         return;
