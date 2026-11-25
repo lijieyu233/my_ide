@@ -450,6 +450,7 @@ body.rsb-collapsed #ai-panel { display: none !important; }
    滚动改为滚轮（见 viewer.js）+ 右端「▾ N 全部标签」下拉做提示 */
 #tab-scroll { flex: 1; min-width: 0; display: flex; overflow-x: auto; scrollbar-width: none; }
 #tab-scroll::-webkit-scrollbar { display: none; }
+#tab-scroll, .editor-pane-tabs { padding-inline-start: 6px; }
 #tab-common-actions {
   display: flex; align-items: center; gap: 6px;
   padding: 0 8px; border-left: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
@@ -475,9 +476,9 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 }
 .tab {
   display: flex; align-items: center; gap: 6px;
-  padding: 0 10px; font-size: 12px; color: var(--text-dim);
-  border-right: 1px solid color-mix(in srgb, var(--text) 8%, transparent); cursor: default;
-  height: 100%; box-sizing: border-box;
+  margin: 3px 3px 3px 0; padding: 0 6px 0 8px;
+  font-size: 12px; color: var(--text-dim); cursor: default;
+  border: 1px solid transparent; border-radius: var(--ui-radius); box-sizing: border-box;
   /* 统一宽度：宽度跟着文件名走的话，一排 tab 参差不齐，看着就"乱" */
   flex: 0 0 164px; min-width: 0; white-space: nowrap;
 }
@@ -491,10 +492,7 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .tab-retention { flex-shrink: 0; font-size: .85em; color: var(--text-dim); }
 .preview-staging { position: fixed; left: -100000px; top: 0; height: 700px; visibility: hidden; pointer-events: none; }
 #preview-tab-status { display: inline-block; max-width: 22em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); align-self: center; }
-.tab.pinned { border-right-color: var(--accent); }
 .tab-select:focus-visible, .tab .tclose:focus-visible, .tab-all:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
-.tab .tclose { appearance: none; background: none; border: none; flex-shrink: 0; font-family: inherit; cursor: pointer; }
-.tab-all { border-top: none; border-bottom: none; border-right: none; font-family: inherit; }
 .tab:focus-within .tclose { visibility: visible; }
 #tab-picker { width: min(700px, calc(100vw - 48px)); max-height: calc(100vh - 48px); display: flex; flex-direction: column; }
 #tab-picker .m-head { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
@@ -509,9 +507,9 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 #tab-picker-path { flex: 1 1 100%; min-width: 0; padding: .5em; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); font: inherit; }
 #tab-picker-status, .tp-foot { padding: .4em 1em; color: var(--text-dim); font-size: .9em; flex-shrink: 0; }
 .tab-all {
-  flex-shrink: 0; margin-left: auto; padding: 0 12px; font-size: 12px;
+  flex: none; margin: 3px 3px 3px auto; padding: 0 8px; font: inherit; font-size: 12px;
   display: flex; align-items: center;
-  color: var(--text-dim); cursor: pointer; border-left: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text-dim); cursor: pointer; border: 1px solid transparent; border-radius: var(--ui-radius);
   position: sticky; right: 0; background: var(--bg-tabbar);
 }
 .tab-all:hover { color: var(--text-bright); background: var(--bg-hover); }
@@ -520,9 +518,11 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .tab .tic .ic { width: 13px; height: 13px; }
 .tab.active .tic { opacity: 1; color: var(--accent); }
 .tab:hover .tic { opacity: .95; }
-.tab .tclose { visibility: hidden; color: var(--text-dim); font-size: 11px; padding: 0 2px; }
-/* 标签栏右端：全部标签下拉 + 在资源管理器中显示 */
-.tab-all { margin-left: auto; }
+.tab .tclose {
+  display: grid; place-items: center; flex: none; width: 20px; height: 20px;
+  visibility: hidden; padding: 0; color: var(--text-dim); font: inherit; font-size: 11px;
+  appearance: none; background: transparent; border: 0; border-radius: 4px; cursor: pointer;
+}
 .tab-locate {
   flex-shrink: 0;
   display: inline-flex; align-items: center; justify-content: center;
@@ -535,8 +535,13 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 .tab:hover .tclose { visibility: visible; }
 /* 当前标签常驻关闭按钮：想关的多半就是眼前这个，不该非得先把鼠标移上去 */
 .tab.active .tclose { visibility: visible; }
-.tab .tclose:hover { color: var(--red); }
-.tab.active { background: var(--bg); color: var(--text-bright); border-top: 2px solid color-mix(in srgb, var(--accent) 65%, transparent); }
+.tab .tclose:hover { color: var(--text-bright); background: var(--btn-hover); }
+.tab:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.tab.active {
+  background: color-mix(in srgb, var(--text) 10%, var(--bg-tabbar));
+  color: var(--text-bright);
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+}
 .tab.dragging { opacity: .45; }
 .tab .dirty-dot { color: var(--accent); }
 :is(#viewer,.editor-pane-view) { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; min-height: 0; }
@@ -4737,9 +4742,6 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 #tool-strip .tool-btn.active, #tool-strip-right .tool-btn.active { background: var(--ui-focus); }
 #tree-search, #tasks-filter, #gl-author, #gl-search, #bw-url { border-radius: var(--ui-radius); }
 #tree-search:focus, #tasks-filter:focus, #gl-author:focus, #gl-search:focus, #bw-url:focus { box-shadow: inset 0 0 0 1px var(--accent); }
-.tab.active { border-top-color: var(--accent); }
-.tab .tclose { border-radius: 4px; width: 20px; height: 20px; }
-.tab .tclose:hover { background: color-mix(in srgb, var(--red) 12%, transparent); }
 #ctx-menu { padding: 4px; border-radius: 8px; border-color: var(--ui-line); box-shadow: 0 8px 28px rgba(0,0,0,.28); }
 .ctx-item { border-radius: 4px; }
 .ctx-item:hover { background: var(--bg-selected); color: var(--text-bright); }
