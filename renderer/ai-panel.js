@@ -1990,7 +1990,7 @@ const AiPanel = (() => {
       // 长回复尚未完成时仅显示原文；反复全量Markdown解析和自动识别代码是秒级卡顿源。
       const raw=state.plain||!final&&state.text.length>LIVE_TEXT_LIMIT;
       if(raw){if(!md.classList.contains('ai-stream-plain'))md.replaceChildren();md.classList.add('ai-stream-plain');if(!md.firstChild)md.appendChild(document.createTextNode(state.text));else md.firstChild.textContent=state.text;}
-      else{md.classList.remove('ai-stream-plain');md.innerHTML=renderMd(state.text);}
+      else{md.classList.remove('ai-stream-plain');md.innerHTML=renderMd(state.text);renderMarkdownImages(md);}
       md.querySelector('.ai-cursor')?.remove();if(state.cursor&&!final){const dot=document.createElement('span');dot.className='ai-cursor';md.appendChild(dot);}
       if(final&&!plain){
         decorateCodeBlocks(row);
@@ -2108,6 +2108,10 @@ const AiPanel = (() => {
     const img = document.createElement('img');
     img.src = source;
     img.alt = label;
+    return wrapImagePreview(img, label);
+  }
+
+  function wrapImagePreview(img, label) {
     img.draggable = false;
     const preview = document.createElement('button');
     preview.type = 'button';
@@ -2145,6 +2149,17 @@ const AiPanel = (() => {
     return preview;
   }
 
+  function renderMarkdownImages(container) {
+    for (const img of container.querySelectorAll('p > img:only-child')) {
+      const paragraph = img.parentElement;
+      if (paragraph.textContent.trim()) continue;
+      img.classList.add('ai-msg-img');
+      const preview = wrapImagePreview(img, img.alt || '图片');
+      preview.classList.add('ai-markdown-image');
+      paragraph.appendChild(preview);
+    }
+  }
+
   function appendMessageImages(container, images, label) {
     for (const source of images || []) {
       const preview = createImagePreview(source, label);
@@ -2164,6 +2179,7 @@ const AiPanel = (() => {
       pre.innerHTML = '<p>' + esc(text).replace(/\n/g, '<br>') + '</p>';
     } else {
       pre.innerHTML = renderMd(text);
+      renderMarkdownImages(pre);
     }
     appendMessageImages(pre, opts?.imgs, opts?.imageLabel || '发送的图片');
     row.appendChild(pre);

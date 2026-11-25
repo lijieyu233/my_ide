@@ -310,6 +310,9 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  fs.writeFileSync(picture,nativeImage.createFromBitmap(pixels,{width:240,height:320}).toPNG());
  const secondPicture=path.join(roots[1],'native-preview-second.png');
  fs.writeFileSync(secondPicture,nativeImage.createFromPath(picture).resize({width:120}).toPNG());
+ const widePicture=path.join(roots[1],'wide-preview.png');
+ fs.writeFileSync(widePicture,nativeImage.createFromBitmap(Buffer.alloc(1280*720*4,255),{width:1280,height:720}).toPNG());
+ const markdownPicture='![Wide preview]('+widePicture.replace(/\\/g,'/')+')';
  const mixedMessage='带图片的历史消息\n保留 <标签> 和 & 符号';
  const visualizationDir=path.join(process.env.CODEX_HOME,'visualizations','fixture');
  fs.mkdirSync(visualizationDir,{recursive:true});
@@ -319,7 +322,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  fixture.threads.set(externalId,{id:externalId,projectId:'desktop-empty',cwd:roots[1],model:'offline-codex',historyMode:'paginated',name:'桌面 Codex 外部会话',updatedAt:1710000000,running:false,queueListUnavailable:true,
   items:[{type:'userMessage',content:[{type:'text',text:'CODEX_PREVIOUS_QUESTION'}]},
    {type:'imageGeneration',id:'generated-cover',status:'completed',savedPath:picture},
-   {type:'agentMessage',text:'CODEX_PREVIOUS_ANSWER\n\n'+visualizationMarker},
+   {type:'agentMessage',text:'CODEX_PREVIOUS_ANSWER\n\n'+markdownPicture+'\n\n'+visualizationMarker},
    {type:'userMessage',content:[{type:'text',text:mixedMessage},{type:'localImage',path:picture},{type:'localImage',path:secondPicture}]}]});
  const earlierTurns=fixture.requests.filter(r=>r.method==='turn/start').length;
  await js(()=>App.showTool('sessions'));
@@ -575,6 +578,25 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
    }));
  await js(()=>document.querySelector('#ai-msgs > .ai-generated-image .ai-image-preview').scrollIntoView({block:'center'}));
  await capture('codex-generated-cover');
+ const thumbnail = '#ai-msgs .ai-markdown-image';
+ await until(()=>js(selector=>document.querySelector(selector+' img')?.naturalWidth===1280,thumbnail),'wide Markdown image loaded');
+ check('A wide Markdown image fits the transcript as a proportional thumbnail',
+   await js(selector=>{
+     const preview=document.querySelector(selector);
+     const img=preview.querySelector('img');
+     const bounds=img.getBoundingClientRect();
+     return bounds.width===256&&bounds.height===144&&preview.closest('.ai-md').scrollWidth<=preview.closest('.ai-md').clientWidth;
+   },thumbnail));
+ await js(selector=>{ const preview=document.querySelector(selector); preview.scrollIntoView({block:'center'}); preview.focus(); preview.click(); },thumbnail);
+ await until(()=>js(()=>document.querySelector('.img-lightbox[open] img')?.getBoundingClientRect().width>256),'wide Markdown image expanded');
+ check('Opening the Markdown thumbnail preserves the original image and returns focus on Escape',await js(selector=>{
+   const preview=document.querySelector(selector);
+   const lightbox=document.querySelector('.img-lightbox[open]');
+   const sameSource=lightbox.querySelector('img').currentSrc===preview.querySelector('img').currentSrc;
+   lightbox.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+   return sameSource&&!document.querySelector('.img-lightbox')&&document.activeElement===preview;
+ },thumbnail));
+ await capture('codex-markdown-thumbnail');
  await until(()=>js(()=>!!document.querySelector('.ai-visualization iframe[src^="myide-preview:"]')),'visualization preview lease');
  await js(()=>document.querySelector('.ai-visualization iframe').scrollIntoView());
  let widgetFrame;
