@@ -10,7 +10,10 @@ ipcMain.handle('html-preview:open',async(event,request)=>{
   try{
     if(event.sender!==mainWindow?.webContents||event.senderFrame!==event.sender.mainFrame)throw Error('无效的预览来源');
     const visualizationRoot=path.join(process.env.CODEX_HOME||path.join(os.homedir(),'.codex'),'visualizations');
-    return {ok:true,...await htmlPreview.open(event.sender.id,request,visualizationRoot)};
+    return {ok:true,...await htmlPreview.open(event.sender.id,request,visualizationRoot,async()=>{
+      const view=await event.sender.executeJavaScript('AiPanel.dshView()');
+      return view?.engine==='codex'&&view.scope==='project'&&view.sessionId ? view.rootId : '';
+    })};
   }
   catch(error){return {ok:false,error:error.message};}
 });
