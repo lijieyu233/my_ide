@@ -393,9 +393,10 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  const widePicture=path.join(roots[1],'wide-preview.png');
  fs.writeFileSync(widePicture,nativeImage.createFromBitmap(Buffer.alloc(1280*720*4,255),{width:1280,height:720}).toPNG());
  const markdownPicture='![Wide preview]('+widePicture.replace(/\\/g,'/')+')';
- const buildDirectory=path.join(roots[1],'历史 输出');
- fs.mkdirSync(buildDirectory);
- const directoryLink='[历史输出目录](历史%20输出/)';
+ const buildDirectory=path.join(emptyRoot,'nested','历史 输出');
+ fs.mkdirSync(buildDirectory,{recursive:true});
+ fs.writeFileSync(path.join(buildDirectory,'report.txt'),'directory child');
+ const directoryLink='[历史输出目录]('+encodeURI(buildDirectory.replace(/\\/g,'/'))+')';
  const mixedMessage='带图片的历史消息\n保留 <标签> 和 & 符号';
  const visualizationMarker=createVisualizationMarker();
  fixture.threads.set(externalId,{id:externalId,projectId:'desktop-empty',cwd:roots[1],model:'offline-codex',historyMode:'paginated',name:'桌面 Codex 外部会话',updatedAt:1710000000,running:false,queueListUnavailable:true,
@@ -664,12 +665,11 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
    fixture.requests.filter(r=>r.method==='turn/start').length===earlierTurns&&!fixture.requests.some(r=>r.method==='thread/resume'&&r.params.threadId===externalId));
  check('opening another project’s session keeps the Codex session catalog available',await js(()=>!document.querySelector('[data-hist-refresh]').disabled&&!!document.querySelector('[data-codex-project="desktop-b"]')));
  await js(()=>[...document.querySelectorAll('#ai-msgs .ai-md a')].find(a=>a.textContent==='历史输出目录').click());
- await until(()=>openedDirectories.length===1,'reply directory opened');
- check('A reply directory link resolves from its conversation and opens in the file manager without switching the IDE',
-   openedDirectories[0]===fs.realpathSync(buildDirectory)&&await js(root=>App.root===root&&Viewer.activeTab?.path.endsWith('open-in-editor.txt'),emptyRoot));
- check('Directory IPC rejects regular files and missing paths before invoking the OS',
-   await js(async (file,missing)=>!(await myIDE.shell.openDirectory(file)).ok&&!(await myIDE.shell.openDirectory(missing)).ok,
-     editorFile, path.join(roots[1],'missing'))&&openedDirectories.length===1);
+ await until(()=>js(dir=>[...document.querySelectorAll('#tree .tree-row.selected')].some(row=>DocumentPaths.key(row.dataset.path)===DocumentPaths.key(dir)),buildDirectory),'reply directory selected in project tree');
+ check('A reply directory link expands and selects its folder in the IDE without opening the system file manager',
+   openedDirectories.length===0&&await js(root=>App.root===root&&App.getTool()==='project'&&Viewer.activeTab?.path.endsWith('open-in-editor.txt')&&
+     [...document.querySelectorAll('#tree .tree-row .nm')].some(node=>node.textContent==='report.txt'),emptyRoot));
+ await js(()=>{App.showTool('sessions');return true;});
  await until(()=>js(()=>document.querySelector('#ai-msgs > .ai-generated-image img')?.naturalWidth>0),'generated cover loaded');
  check('Codex generated images are visible inline in the original history without opening a tool group',
    await js(()=>{

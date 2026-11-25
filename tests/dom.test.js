@@ -169,11 +169,13 @@ function makeDom() {
       setRecent: async () => ({ ok: true }),
       inspectDirectory: async () => ({ ok: true }),
       locateFileProject: async (path, roots) => {
-        if (FAKE_FS[path]?.type === 'dir') return { ok: true, directory: true, path };
-        if (FAKE_FS[path]?.type !== 'file') return { ok: false, error: '链接目标不存在' };
-        const root = roots.filter(root => path.startsWith(root.replace(/\/$/, '') + '/'))
-          .sort((a, b) => b.length - a.length)[0] || '';
-        return { ok: true, root, path };
+        path = path.replace(/\/$/, '');
+        const directory = FAKE_FS[path]?.type === 'dir';
+        if (!directory && FAKE_FS[path]?.type !== 'file') return { ok: false, error: '链接目标不存在' };
+        const matches = roots.filter(root => path === root || path.startsWith(root.replace(/\/$/, '') + '/'));
+        const root = directory && matches[0] === roots[0] ? roots[0]
+          : matches.sort((a, b) => b.length - a.length)[0] || (directory ? path : '');
+        return { ok: true, directory, root, path };
       },
       readDir: async (p) => (FAKE_FS[p] ? FAKE_FS[p].children.map((c) => ({ name: c.split('/').pop(), type: FAKE_FS[c].type, path: c, mtime: FAKE_FS[c].mtime, ctime: FAKE_FS[c].ctime, size: FAKE_FS[c].size })) : []),
       listAll: async (root) => ({ files: Object.keys(FAKE_FS).filter((f) => FAKE_FS[f].type === 'file'), truncated: false }),
@@ -6039,7 +6041,7 @@ assert_(panel, 'CM6 搜索面板出现');
     click($(dom, '#ai-close'));
   });
 
-  await okAsync('AI 回复链接可右键打开本地文件和网页，或复制地址', async () => {
+  await okAsync('AI 回复链接可右键打开文件、定位项目树目录、打开网页或复制地址', async () => {
     const d = makeDom(), w = d.window;
     const local = P + '/docs/咨询记录 重设计.html';
     const web = 'https://example.com/record?id=42';
@@ -6079,11 +6081,16 @@ assert_(panel, 'CM6 搜索面板出现');
       rightClick(webLink);
       click(action('打开链接'));
       assert.deepEqual(opened, [web]);
-      w.myIDE.shell.openDirectory = async path => { opened.push(path); return { ok: true }; };
+      click($(d, '[data-tree-view="open"]'));
       rightClick(directoryLink);
       click(action('打开链接'));
-      await tick();
-      assert.deepEqual(opened, [web, P + '/src']);
+      for (let i = 0; i < 20 && w.Tree.selectedPath !== P + '/src'; i++) await tick();
+      assert.equal(w.App.getTool(), 'project');
+      assert.equal(w.App.root, P);
+      assert.equal(w.Tree.selectedPath, P + '/src');
+      assert.equal(w.Tree.selectedType, 'dir');
+      assert(w.Tree.getExpandedPaths().includes(P + '/src'));
+      assert.deepEqual(opened, [web]);
       assert.equal(w.Viewer.activeTab?.path, local);
       const unsafe = w.document.createElement('a');
       unsafe.href = 'javascript:123';

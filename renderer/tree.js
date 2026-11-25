@@ -283,7 +283,9 @@ const Tree = (() => {
 
   async function loadDir(p) {
     if (!nodeCache[p]) {
-      let items = await window.myIDE.fs.readDir(p, showHidden || hideMode === 'all');
+      const includeHidden = showHidden || hideMode === 'all';
+      let items = await window.myIDE.fs.readDir(p, includeHidden);
+      if (includeHidden !== (showHidden || hideMode === 'all')) return loadDir(p);
       // 应用内隐藏过滤：
       //   normal → 去掉隐藏项（含被隐藏目录的子孙）
       //   hidden → 只留隐藏项 + 其祖先目录链（保证层级可读）
@@ -1669,7 +1671,10 @@ const Tree = (() => {
   }
   function scrollRowIntoView(path) {
     const rowEl = rowElOf(path);
-    if (rowEl) rowEl.scrollIntoView({ block: 'nearest' });
+    if (rowEl) { rowEl.scrollIntoView?.({ block: 'nearest' }); return; }
+    if (visibleRows.length <= VIRTUAL_THRESHOLD) return;
+    const index = visibleRows.findIndex(row => row.item.path === path);
+    if (index >= 0) el.scrollTop = index * rowH();
   }
   function moveSelection(delta) {
     if (!visibleRows.length) return;
@@ -1918,13 +1923,38 @@ const Tree = (() => {
     __testCtx: (x, y, item) => showCtxMenu(x, y, item),
     async refreshDirectories(){invalidateAll();await render();},
     async controlDirectory(target,value,verify){verify();if(value){await loadDir(target);verify();expanded.add(target);}else if(target!==rootPath)expanded.delete(target);await render();verify();persistExpanded();},
-    async revealTarget(target,verify){
-      const norm=p=>String(p).replace(/\\/g,'/'),base=norm(rootPath),relative=norm(target).slice(base.length+1),parts=relative.split('/');
-      if(norm(target)!==base&&!norm(target).startsWith(base+'/'))throw Error('目标不在当前项目');
-      let at=rootPath;await loadDir(at);verify();
-      for(const part of parts.slice(0,-1)){const dir=(nodeCache[at]||[]).find(item=>item.type==='dir'&&item.name===part);if(!dir)throw Error('父目录不在当前文件树');at=dir.path;await loadDir(at);verify();expanded.add(at);}
-      const item=(nodeCache[at]||[]).find(item=>norm(item.path)===norm(target));if(norm(target)!==base&&!item)throw Error('目标被当前文件树过滤，未能定位');
-      select(target,item?.type||'dir');await render();verify();scrollRowIntoView(target);persistExpanded();
+    async revealTarget(target, verify, { openDirectory = false } = {}) {
+      verify();
+      if (!rootPath || !DocumentPaths.contains(rootPath, target)) throw Error('目标不在当前项目');
+      const relative = DocumentPaths.normalize(target).slice(DocumentPaths.normalize(rootPath).length + 1);
+      const parts = relative ? relative.split('/') : [];
+      if (openDirectory) {
+        if (searchState || document.getElementById('tree-search')?.value) endSearch();
+        setFileView('project');
+        if (hideMode === 'hidden' || isHiddenTree(target) || parts.some(part => part.startsWith('.'))) setHideMode('all');
+      }
+      let item = { path: rootPath, type: 'dir' };
+      const parents = [];
+      for (const part of parts) {
+        if (item.type !== 'dir') throw Error('父目录不在当前文件树');
+        const children = await loadDir(item.path);
+        verify();
+        parents.push(item.path);
+        item = children.find(child => DocumentPaths.key(child.name) === DocumentPaths.key(part));
+        if (!item) throw Error('目标在当前文件树中不可见');
+      }
+      if (openDirectory) {
+        if (item.type !== 'dir') throw Error('链接目标已不是目录');
+        await loadDir(item.path);
+        verify();
+        parents.push(item.path);
+      }
+      for (const parent of parents) expanded.add(parent);
+      select(item.path, item.type);
+      await render();
+      verify();
+      scrollRowIntoView(item.path);
+      persistExpanded();
     },
     getExpandedPaths, setExpandedPaths, undo,
     get selectedPath() { return selectedPath; },

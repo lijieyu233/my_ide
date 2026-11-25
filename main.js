@@ -610,23 +610,26 @@ ipcMain.handle('fs:locateFileProject', async (event, file, roots) => {
   }
   const absolute = value => typeof value === 'string' && value.length <= 4096 && path.isAbsolute(value);
   if (!absolute(file) || !Array.isArray(roots) || roots.length > 256) return { ok: false, error: '文件路径无效' };
-  const containsFile = (root, file) => {
-    const relative = path.relative(root, file);
-    return relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+  const containsTarget = (root, target) => {
+    const relative = path.relative(root, target);
+    return relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
   };
   try {
     const realFile = await fs.promises.realpath(file);
     const stat = await fs.promises.stat(realFile);
-    if (stat.isDirectory()) return { ok: true, directory: true, path: realFile };
-    if (!stat.isFile()) return { ok: false, error: '链接目标不是文件或目录' };
+    const directory = stat.isDirectory();
+    if (!directory && !stat.isFile()) return { ok: false, error: '链接目标不是文件或目录' };
     const known = await Promise.all([...new Set(roots.filter(absolute))].map(async root =>
       ({ root, real: await fs.promises.realpath(root).catch(() => null) })));
-    const matches = known.filter(project => project.real && containsFile(project.real, realFile));
-    const repo = await G.findRoot(path.dirname(realFile)).catch(() => null);
-    if (repo) matches.push({ root: repo, real: repo });
+    const matches = known.filter(project => project.real && containsTarget(project.real, realFile));
+    const active = directory && matches.find(project => project.root === roots[0]);
+    if (!active && (!directory || !matches.length)) {
+      const repo = await G.findRoot(directory ? realFile : path.dirname(realFile)).catch(() => null);
+      if (repo) matches.push({ root: repo, real: repo });
+    }
     matches.sort((a, b) => b.real.length - a.real.length);
-    const project = matches[0];
-    return { ok: true, root: project?.root || '', path: project
+    const project = active || matches[0];
+    return { ok: true, directory, root: project?.root || (directory ? realFile : ''), path: project
       ? path.join(project.root, path.relative(project.real, realFile)) : realFile };
   } catch (error) {
     const missing = error.code === 'ENOENT' || error.code === 'ENOTDIR';
@@ -1424,17 +1427,6 @@ ipcMain.handle('fs:remove', (_e, p) => {
 });
 
 ipcMain.handle('shell:showInFolder', (_e, p) => { shell.showItemInFolder(p); });
-ipcMain.handle('shell:openDirectory', async (event, p) => {
-  if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame) {
-    return { ok: false, error: '无效的链接来源' };
-  }
-  const directory = await inspectProjectDirectory(p);
-  if (!directory.ok) return directory;
-  try {
-    const error = await shell.openPath(p);
-    return error ? { ok: false, error } : { ok: true };
-  } catch (error) { return { ok: false, error: error.message }; }
-});
 // 右键运行：按扩展名选解释器，独立进程启动（不阻塞编辑器）
 const { spawn, exec } = require('child_process');
 ipcMain.handle('run:file', (_e, p) => {

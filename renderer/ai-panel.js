@@ -1626,14 +1626,19 @@ const AiPanel = (() => {
       const file = await window.myIDE.fs.locateFileProject(target.path, roots);
       if (intent !== replyLinkIntent || DocumentPaths.key(App.root) !== origin) return;
       if (!file?.ok) throw Error(file?.error || '无法定位链接目标');
-      if (file.directory) {
-        const result = await window.myIDE.shell.openDirectory(file.path);
-        if (!result?.ok && intent === replyLinkIntent) throw Error('无法打开目录：' + (result?.error || '未知错误'));
-        return;
-      }
       const destination = DocumentPaths.key(file.root);
       if (destination && destination !== origin) {
         if (!await App.openProject(file.root) || intent !== replyLinkIntent || DocumentPaths.key(App.root) !== destination) return;
+      }
+      if (file.directory) {
+        const current = () => intent === replyLinkIntent && DocumentPaths.key(App.root) === destination;
+        App.showTool('project');
+        try {
+          await Tree.revealTarget(file.path, () => {
+            if (!current()) throw Error('目录跳转已取消');
+          }, { openDirectory: true });
+        } catch (error) { if (current()) throw error; }
+        return;
       }
       const result = await Viewer.openFile(file.path);
       if (result?.ok && intent === replyLinkIntent && Number.isSafeInteger(target.line) && target.line > 0 &&
