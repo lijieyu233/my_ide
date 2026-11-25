@@ -1184,6 +1184,12 @@ const AiPanel = (() => {
     return row;
   }
   function renderCodexMedia(images, label, id) {
+    if (label === '生成的图片') {
+      sealActivityGroup();
+      const row = addMsg('assistant', '', { imgs: images, imageLabel: label });
+      row.classList.add('ai-generated-image');
+      return row;
+    }
     const row = createActivityRow('ai-tool', label, '', activityKey('codexMedia', id), 'readImage');
     const { body, group } = toolRows.get(row);
     row.dataset.toolName = 'codexMedia';
@@ -2130,7 +2136,7 @@ const AiPanel = (() => {
     } else {
       pre.innerHTML = renderMd(text);
     }
-    appendMessageImages(pre, opts?.imgs, '发送的图片');
+    appendMessageImages(pre, opts?.imgs, opts?.imageLabel || '发送的图片');
     row.appendChild(pre);
     // 复制按钮（PyCharm AI Assistant 式悬停出现；文本可选中 + 一键复制双通道）
     const cp = document.createElement('button');

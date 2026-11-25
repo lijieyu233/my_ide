@@ -269,7 +269,10 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  fs.writeFileSync(visualizationFile,'<style>body{color:#e5edf6;background:#121923;font:22px system-ui;padding:32px}</style><h2>互动预览</h2><button id="increment">计数 0</button><script>const button=document.querySelector("button");button.onclick=()=>{window.openai.setWidgetState(1);button.textContent="计数 "+window.openai.widgetState;};</script>');
  const visualizationMarker='\uE200visualize\uE202'+JSON.stringify({path:visualizationFile,mode:'wide'})+'\uE201';
  fixture.threads.set(externalId,{id:externalId,projectId:'desktop-empty',cwd:roots[1],model:'offline-codex',historyMode:'paginated',name:'桌面 Codex 外部会话',updatedAt:1710000000,running:false,queueListUnavailable:true,
-  items:[{type:'userMessage',content:[{type:'text',text:'CODEX_PREVIOUS_QUESTION'}]},{type:'agentMessage',text:'CODEX_PREVIOUS_ANSWER\n\n'+visualizationMarker},{type:'userMessage',content:[{type:'text',text:mixedMessage},{type:'localImage',path:picture},{type:'localImage',path:secondPicture}]}]});
+  items:[{type:'userMessage',content:[{type:'text',text:'CODEX_PREVIOUS_QUESTION'}]},
+   {type:'imageGeneration',id:'generated-cover',status:'completed',savedPath:picture},
+   {type:'agentMessage',text:'CODEX_PREVIOUS_ANSWER\n\n'+visualizationMarker},
+   {type:'userMessage',content:[{type:'text',text:mixedMessage},{type:'localImage',path:picture},{type:'localImage',path:secondPicture}]}]});
  const earlierTurns=fixture.requests.filter(r=>r.method==='turn/start').length;
  await js(()=>App.showTool('sessions'));
  await until(()=>js(()=>[...document.querySelectorAll('.ai-hist-nm')].some(node=>node.textContent==='桌面 Codex 外部会话')),'external catalog');
@@ -498,6 +501,14 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
      Viewer.activeTab?.path.split(/[\\/]/).at(-1)==='open-in-editor.txt'&&!!document.querySelector('[data-id="codex:'+id+'"][aria-current="true"]'),emptyRoot,externalId)&&
    fixture.requests.filter(r=>r.method==='turn/start').length===earlierTurns&&!fixture.requests.some(r=>r.method==='thread/resume'&&r.params.threadId===externalId));
  check('opening another project’s session keeps the Codex session catalog available',await js(()=>!document.querySelector('[data-hist-refresh]').disabled&&!!document.querySelector('[data-codex-project="desktop-b"]')));
+ await until(()=>js(()=>document.querySelector('#ai-msgs > .ai-generated-image img')?.naturalWidth>0),'generated cover loaded');
+ check('Codex generated images are visible inline in the original history without opening a tool group',
+   await js(()=>{
+     const image=document.querySelector('#ai-msgs > .ai-generated-image img');
+     return image.alt==='生成的图片'&&image.checkVisibility()&&!image.closest('details');
+   }));
+ await js(()=>document.querySelector('#ai-msgs > .ai-generated-image .ai-image-preview').scrollIntoView({block:'center'}));
+ await capture('codex-generated-cover');
  await until(()=>js(()=>!!document.querySelector('.ai-visualization iframe[src^="myide-preview:"]')),'visualization preview lease');
  await js(()=>document.querySelector('.ai-visualization iframe').scrollIntoView());
  let widgetFrame;
