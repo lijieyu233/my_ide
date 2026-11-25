@@ -36,6 +36,39 @@ async function finish(code,error){if(done)return;done=true;clearTimeout(watchdog
 const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
 (async()=>{await app.whenReady();await until(()=>{win=BrowserWindow.getAllWindows().find(w=>!w.webContents.isLoading()&&w.webContents.getURL().includes('renderer/index.html'));return win;},'window');await until(()=>js(()=>!!window.App&&!!window.AiPanel&&!!document.getElementById('btn-open').onclick),'app init');win.setContentSize(1440,900);
  await js(async root=>{Object.defineProperty(document,'hidden',{value:false,configurable:true});await App.setRoot(root);App.showAi();await AiPanel.setConfig({engine:'codex',autoIdeContext:false,injectMyideRules:false});return true;},roots[0]);await until(()=>js(()=>AiPanel.aiState().dshState==='ready'),'Codex options');check('Codex connects in existing mode selector and shows native model',await js(()=>document.getElementById('ai-engine').value==='codex'&&document.getElementById('ai-model').textContent.includes('Codex offline fixture')));check('inspect never creates a thread or starts a turn',!fixture.requests.some(r=>['thread/start','turn/start'].includes(r.method)));
+ if (process.argv.includes('--codex-questions-only')) {
+  for (const skip of [false, true]) {
+   await js(()=>AiPanel.ask('ASK_USER_CODEX'));
+   await until(()=>js(()=>!!document.querySelector('.ai-codex-question input')),'question appears in chat');
+   if (!skip) {
+    check('Question shows the options and disables answer until input exists', await js(()=>{
+     const form=document.querySelector('.ai-codex-question');
+     return form.textContent.includes('保留已有内容') && form.querySelector('textarea') &&
+      form.querySelector('button[type="submit"]').disabled;
+    }));
+    await capture('codex-question');
+   }
+   await js(skip=>{
+    const form=document.querySelector('.ai-codex-question');
+    if(skip){form.querySelector('button[type="button"]').click();return;}
+    form.querySelector('input').click();
+    const custom=form.querySelector('textarea');
+    custom.value='先保留正文';
+    custom.dispatchEvent(new Event('input',{bubbles:true}));
+    form.requestSubmit();
+   },skip);
+   await until(()=>js(()=>!document.querySelector('.ai-codex-question')&&
+    !AiPanel.aiState().tasks.some(task=>task.status==='active')),'question closed and original turn continued');
+  }
+  const received=fixture.receipts.filter(receipt=>receipt.kind==='question');
+  check('Answer and skip each finish their original turn once',
+   received.length===2 && fixture.requests.filter(r=>r.method==='turn/start').length===2 &&
+   JSON.stringify(received.map(entry=>entry.result))===JSON.stringify([
+    {answers:{path:{answers:['继续当前方案','user_note: 先保留正文']}}}, {answers:{}},
+   ]) && network.length===0);
+  await finish(0);
+  return;
+ }
  let releaseStatus;
  statusGate = new Promise(resolve => { releaseStatus = resolve; });
  const pendingMenu = await js(()=>{
@@ -368,6 +401,21 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
    const nativeWrites = () => fixture.requests.filter(request => /^(turn\/start|project\/|thread\/(?:start|settings\/update))/.test(request.method) &&
      !request.method.endsWith('/list')).length;
    const before = nativeWrites();
+   const sidebarFile=path.join(process.env.CODEX_HOME,'.codex-global-state.json');
+   const desktopState=JSON.parse(fs.readFileSync(sidebarFile,'utf8'));
+   const changeDesktopOrder = nativeOrder => fs.writeFileSync(sidebarFile,JSON.stringify({...desktopState,
+     'unified-sidebar-project-order-v1':['codex:project:desktop-empty','codex:project:desktop-b'],
+     'flat-project-sidebar-preferences-v1':{projectSortMode:'manual'},
+     'sidebar-project-thread-orders':{'desktop-legacy-b':{threadIds:nativeOrder}}
+   }));
+   const refresh = async () => {
+     await js(() => document.querySelector('#panel-sessions [data-hist-refresh]').click());
+     await until(() => js(() => !document.querySelector('#panel-sessions [data-hist-refresh]').disabled), 'refresh finishes');
+   };
+   changeDesktopOrder([implicitId,externalId]);
+   await refresh();
+   check('Desktop order changes leave the initial MyIDE order intact before the first drag',
+     JSON.stringify(await order()) === JSON.stringify(initial));
    await fireDrag(head('desktop-b'), head('desktop-empty'), 'hover');
    check('drag preview marks the exact insertion side', await js(selector =>
      document.querySelector(selector).dataset.codexDrop === 'before', head('desktop-empty')));
@@ -385,9 +433,10 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
    check('cancelled and cross-project drags keep the order and selected workspace', !invalid &&
      JSON.stringify(await order()) === JSON.stringify(sorted) && sorted.root === initial.root && sorted.active === initial.active &&
      await js(() => !document.querySelector('[data-codex-drop], .ai-hist-dragging')) && nativeWrites() === before);
-   await js(() => document.querySelector('#panel-sessions [data-hist-refresh]').click());
-   await until(() => js(() => !document.querySelector('#panel-sessions [data-hist-refresh]').disabled), 'refresh finishes');
+   changeDesktopOrder([externalId,implicitId]);
+   await refresh();
    check('directory refresh retains custom order', JSON.stringify(await order()) === JSON.stringify(sorted));
+   await js(() => localStorage.setItem('myide-codex-sidebar-sort','desktop'));
 
    const reloaded = new Promise(resolve => win.webContents.once('did-finish-load', resolve));
    win.webContents.reload();
@@ -402,47 +451,33 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
    }, roots[0]);
    await until(() => js(() => !!document.querySelector('#panel-sessions [data-codex-project="desktop-b"] .ai-hist-row')), 'reloaded catalog');
    const restored = await order();
-   check('custom order survives reloading the renderer', JSON.stringify(restored.projects) === JSON.stringify(sorted.projects) &&
+   check('custom order survives reloading the renderer with the legacy follow preference', JSON.stringify(restored.projects) === JSON.stringify(sorted.projects) &&
      JSON.stringify(restored.sessions) === JSON.stringify(sorted.sessions) && restored.recentLast);
    const newest='019caa00-0000-7000-8000-000000000110';
    fixture.threads.set(newest,{ ...fixture.threads.get(implicitId),id:newest,name:'会话排序目标',updatedAt:Date.now()/1000 });
    await js(()=>document.querySelector('#panel-sessions [data-hist-refresh]').click());
    await until(()=>js(selector=>!!document.querySelector(selector),row('desktop-b',newest)),'batch drag target available');
+   check('new conversations append after the stored order',
+     JSON.stringify((await order()).sessions) === JSON.stringify([...sorted.sessions,newest]));
    await js(({first,second})=>{
      const toggle=document.querySelector('[data-codex-project="desktop-b"] [data-hist-toggle]');
      if(toggle.getAttribute('aria-expanded')==='false')toggle.click();
      for(const selector of [first,second])document.querySelector(selector+' .ai-hist-open')
        .dispatchEvent(new MouseEvent('click',{bubbles:true,ctrlKey:true}));
    },{first:row('desktop-b',implicitId),second:row('desktop-b',externalId)});
-   await fireDrag(row('desktop-b',implicitId),row('desktop-b',newest),'move');
+   await fireDrag(row('desktop-b',implicitId),row('desktop-b',newest),'move',true);
    const movedTogether=(await order()).sessions;
    const selectedInProject=await js(()=>document.querySelectorAll('[data-codex-project="desktop-b"] .ai-hist-row[data-batch-selected]').length);
    check('dragging selected sessions moves them together and preserves their relative order',
-     JSON.stringify(movedTogether)===JSON.stringify([implicitId,externalId,newest]) && selectedInProject===2,
+     JSON.stringify(movedTogether)===JSON.stringify([newest,implicitId,externalId]) && selectedInProject===2,
      {movedTogether,selectedInProject});
-   const sidebarFile=path.join(process.env.CODEX_HOME,'.codex-global-state.json');
-   const desktopState=JSON.parse(fs.readFileSync(sidebarFile,'utf8'));
-   const nativeOrder=[externalId,newest,implicitId];
-   fs.writeFileSync(sidebarFile,JSON.stringify({...desktopState,
-     'unified-sidebar-project-order-v1':['codex:project:desktop-empty','codex:project:desktop-b'],
-     'flat-project-sidebar-preferences-v1':{projectSortMode:'manual'},
-     'sidebar-project-thread-orders':{'desktop-legacy-b':{threadIds:nativeOrder}}
-   }));
-   await js(()=>{
-     document.querySelector('#panel-sessions [data-hist-options]').click();
-     const command=name=>[...document.querySelectorAll('#ctx-menu button')].find(button=>
-       (button.querySelector('span')?.textContent || button.textContent) === name);
-     command('排序方式').click();
-     command('跟随 Codex').click();
-     document.querySelector('#panel-sessions [data-hist-refresh]').click();
-   });
-   await until(async()=>{
-     const synced=await order();
-     return JSON.stringify(synced.projects)===JSON.stringify(['desktop-empty','desktop-b',firstProject.id]) &&
-       JSON.stringify(synced.sessions)===JSON.stringify(nativeOrder);
-   },'Codex sidebar follows new Desktop order');
-   check('following Codex uses desktop project and session ranks instead of the saved local order',nativeWrites()===before);
-   await capture('codex-follow-desktop-order');
+   changeDesktopOrder([externalId,newest,implicitId]);
+   await refresh();
+   const unchanged = await order();
+   check('MyIDE keeps its project and session order without writing to Codex',
+     JSON.stringify(unchanged.projects) === JSON.stringify(sorted.projects) &&
+     JSON.stringify(unchanged.sessions) === JSON.stringify(movedTogether) && nativeWrites() === before);
+   await capture('codex-local-order');
    await finish(0);
    return;
  }

@@ -4068,28 +4068,35 @@ const AiPanel = (() => {
   const otherWorkspacesKey = Symbol(), flatHistoryKey = Symbol(), codexRecentKey = Symbol();
   const codexProjectKey = id => 'codex-project:' + id;
   const codexOrderKey = 'myide-codex-sidebar-order';
-  const codexSortPreference = 'myide-codex-sidebar-sort';
-  let codexManualOrder = false;
   const codexSortType = 'application/x-myide-codex-sidebar';
   const codexOrderTarget = '[data-codex-order-scope]';
   const codexOrders = new Map();
   let codexHistoryDrag = null;
   try {
-    codexManualOrder = localStorage.getItem(codexSortPreference) === 'manual';
     const saved = JSON.parse(localStorage.getItem(codexOrderKey));
     for (const [scope, ids] of Object.entries(saved || {})) {
-      if (Array.isArray(ids)) codexOrders.set(scope, ids.filter(id => typeof id === 'string'));
+      if (Array.isArray(ids)) codexOrders.set(scope, [...new Set(ids.filter(id => typeof id === 'string'))]);
     }
   } catch {}
 
-  function applyCodexOrder(items, scope, idOf) {
-    const order = codexOrders.get(scope);
-    if (!order?.length) return items;
+  function saveCodexOrders(changes) {
+    for (const [scope, ids] of changes) codexOrders.set(scope, ids);
+    localStorage.setItem(codexOrderKey, JSON.stringify(Object.fromEntries(codexOrders)));
+  }
+
+  function applyCodexOrder(items, scope, idOf, additions) {
+    const order = codexOrders.get(scope) || [];
     const ranks = new Map(order.map((id, index) => [id, index]));
-    const ranked = items.filter(item => ranks.has(idOf(item))).sort((a, b) => ranks.get(idOf(a)) - ranks.get(idOf(b)));
-    let index = 0;
-    // Keep new entries in their normal positions, while honoring the relative order of known entries.
-    return items.map(item => ranks.has(idOf(item)) ? ranked[index++] : item);
+    if (additions) {
+      // Remember new entries at the end so later catalog refreshes cannot move them.
+      for (const item of items) {
+        const id = idOf(item);
+        if (typeof id === 'string' && !ranks.has(id)) ranks.set(id, ranks.size);
+      }
+      if (ranks.size > order.length) additions.set(scope, [...ranks.keys()]);
+    }
+    const rank = item => ranks.get(idOf(item)) ?? ranks.size;
+    return items.slice().sort((a, b) => rank(a) - rank(b));
   }
 
   function clearCodexDragTarget() {
@@ -4159,11 +4166,12 @@ const AiPanel = (() => {
         reordered.splice(index + Number(placement(anchor, event) === 'after'), 0, ...moved);
         if (reordered.some((id, at) => id !== ids[at])) {
           try {
-            const next = new Map(codexOrders).set(scope, reordered);
-            localStorage.setItem(codexOrderKey, JSON.stringify(Object.fromEntries(next)));
-            localStorage.setItem(codexSortPreference, 'manual');
-            codexOrders.set(scope, reordered);
-            codexManualOrder = true;
+            // Catalog omissions and archived rows must keep their positions through a drag.
+            const visible = new Set(ids);
+            const saved = new Set([...(codexOrders.get(scope) || []), ...ids]);
+            let index = 0;
+            const order = [...saved].map(id => visible.has(id) ? reordered[index++] : id);
+            saveCodexOrders([[scope, order]]);
           } catch { MI.toast('保存会话排序失败', 'err'); }
         }
       }
@@ -4397,20 +4405,9 @@ const AiPanel = (() => {
     });
   }
 
-  function setCodexSort(manual) {
-    localStorage.setItem(codexSortPreference, manual ? 'manual' : 'desktop');
-    codexManualOrder = manual;
-    refreshHistInPlace();
-  }
-
   function showHistoryOptions(anchor) {
     const options = [{ label: '搜索会话', run: startHistorySearch }];
     if (codexProjectHistory()) options.push({
-      label: '排序方式', children: [
-        { label: '跟随 Codex', checked: !codexManualOrder, run: () => setCodexSort(false) },
-        { label: 'MyIDE 手动排序', checked: codexManualOrder, run: () => setCodexSort(true) },
-      ],
-    }, {
       label: codexArchiveOnly ? '返回会话列表' : '查看已归档',
       run: () => {
         codexArchiveOnly = !codexArchiveOnly;
@@ -4577,7 +4574,8 @@ const AiPanel = (() => {
     const rank = (ranks, key) => ranks.get(key) ?? ranks.size;
     const defaultOrder = [...groups].sort(([a], [b]) => (manual || codex ? rank(workspaceRanks, a) - rank(workspaceRanks, b) : 0)
       || order(a) - order(b) || Number(b === root) - Number(a === root));
-    const ordered = codex && codexManualOrder ? applyCodexOrder(defaultOrder, 'projects', ([key]) => key) : defaultOrder;
+    const orderAdditions = codex && catalog && !narrow ? new Map() : null;
+    const ordered = codex ? applyCodexOrder(defaultOrder, 'projects', ([key]) => key, orderAdditions) : defaultOrder;
     const isOtherWorkspace = key => dsh && !flat && !tree && key !== root && !opened.has(key) && !registered.has(key);
     const showOther = narrow || (otherWorkspacesExpanded ?? ordered.every(([key]) => isOtherWorkspace(key)));
     const entries = tree ? historyTree(ordered, root, running) : ordered;
@@ -4594,8 +4592,7 @@ const AiPanel = (() => {
       const current = codex ? key === currentProject : !unassigned && key === root;
       if (!historyWorkspaces.has(key)) historyWorkspaces.set(key, {
         index: historyWorkspaces.size,
-        expanded: (codex && !codexManualOrder && workspace?.expanded != null)
-          ? workspace.expanded : defaultHistoryExpanded(key, items, current ? key : root, running),
+        expanded: (codex ? workspace?.expanded : null) ?? defaultHistoryExpanded(key, items, current ? key : root, running),
       });
       if (current && expandCurrent) historyWorkspaces.get(key).expanded = true;
       const { index, expanded: wasExpanded } = historyWorkspaces.get(key);
@@ -4608,7 +4605,7 @@ const AiPanel = (() => {
       const codexSessionId = session => session.codexThreadId || session.id;
       const desktopItems = codex && sessionRanks.size ? items.slice().sort((a, b) =>
         rank(sessionRanks, a.codexThreadId) - rank(sessionRanks, b.codexThreadId)) : items;
-      const orderedItems = codex && codexManualOrder ? applyCodexOrder(desktopItems, codexSessionScope, codexSessionId) : desktopItems;
+      const orderedItems = codex ? applyCodexOrder(desktopItems, codexSessionScope, codexSessionId, orderAdditions) : desktopItems;
       const groupName = recent ? '最近' : unassigned ? '未分组' : workspace?.title || sessionRootLabel(groupRoot);
       const childId = 'ai-hist-items-' + index;
       const groupId = 'ai-hist-workspace-' + index;
@@ -4663,6 +4660,9 @@ const AiPanel = (() => {
         historyStatusIcon(otherRunning, otherUnread) + '</button>' + otherHtml;
     }
     if (!groups.size && !histLoading) html = '<div class="ai-hist-empty">' + (codex && codexArchiveOnly ? '暂无已归档会话' : '暂无会话') + '</div>';
+    if (orderAdditions?.size) {
+      try { saveCodexOrders(orderAdditions); } catch {}
+    }
     if (historyRowsMarkup.get(rows) === html) return;
     replaceHistoryRows(rows, html);
     historyRowsMarkup.set(rows, html);
