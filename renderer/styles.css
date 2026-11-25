@@ -4779,6 +4779,20 @@ body.theme-codex #ai-send:not(:disabled):hover {
 #ai-dsh-info { min-width: 0; max-width: 8em; font-size: 1em; color: var(--ai-process-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #ai-dsh-reconnect { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: 0; border-radius: 5px; padding: 0; color: var(--ai-process-text); background: transparent; }
 #ai-dsh-reconnect:hover { background: var(--btn-hover); color: var(--ai-body-text); }
+.ai-codex-lifecycle { display: inline-flex; flex: none; align-items: center; gap: 4px; margin-left: 2px; }
+.ai-codex-lifecycle .vt-btn { position: relative; min-height: 22px; padding: 1px 5px; font-size: inherit; white-space: nowrap; }
+.ai-codex-lifecycle button[aria-busy="true"] span { visibility: hidden; }
+.ai-codex-lifecycle button[aria-busy="true"]::after {
+  content: ""; position: absolute; inset: 0; margin: auto; width: 10px; height: 10px;
+  border: 1px solid var(--border-pane); border-top-color: currentColor; border-radius: 50%;
+  animation: ai-hist-spin .85s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-codex-lifecycle button[aria-busy="true"]::after { animation: none; }
+}
+@container (max-width: 400px) {
+  .ai-session-controls:has(.ai-codex-lifecycle:not(.hidden)) { flex-wrap: wrap; }
+}
 .ai-transcript { flex: 1; min-height: 0; min-width: 0; display: flex; position: relative; }
 #ai-msgs {
   position: relative; min-width: 0;

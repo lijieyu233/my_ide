@@ -1390,81 +1390,101 @@ const AiPanel = (() => {
     }
   }
 
-  function initCodexLifecycleMenu() {
+  let syncCodexLifecycle = () => {};
+
+  function initCodexLifecycleButtons() {
     const status = document.querySelector('.ai-dsh-status');
-    if (!status || !window.myIDE.ai.codexLifecycle || document.getElementById('ai-codex-manage')) return;
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.id = 'ai-codex-manage';
-    button.className = 'vt-btn hidden';
-    button.textContent = '管理';
-    button.title = '管理 Codex';
-    button.setAttribute('aria-label', '管理 Codex');
-    button.setAttribute('aria-haspopup', 'menu');
-    status.append(button);
+    const lifecycle = window.myIDE.ai.codexLifecycle;
+    if (!status || !lifecycle) return;
 
-    let statusRequest, statusSnapshot;
-    function rememberStatus(result) {
-      if (!result?.ok || !result.supported) throw Error(result?.error || '当前系统不支持管理 Codex 进程');
-      statusSnapshot = { result, expiresAt: performance.now() + 2000 };
-      return result;
-    }
-    function readStatus() {
-      if (statusSnapshot?.expiresAt > performance.now()) return Promise.resolve(statusSnapshot.result);
-      if (!statusRequest) {
-        statusRequest = window.myIDE.ai.codexLifecycle('status').then(rememberStatus).finally(() => { statusRequest = null; });
-      }
-      return statusRequest;
-    }
-    button.addEventListener('pointerenter', () => {
-      if (!button.disabled) readStatus().catch(() => {});
-    });
-
-    async function perform(action, label) {
-      button.disabled = true;
-      statusSnapshot = null;
-      try {
-        rememberStatus(await window.myIDE.ai.codexLifecycle(action));
-        MI.toast(label + '成功', 'ok');
-        if (action.endsWith('-backend') && getConfig().engine === 'codex') {
-          await refreshCodexOptions();
-          await refreshCodexCatalog();
-        }
-      } finally { button.disabled = false; }
-    }
-
+    const group = document.createElement('div');
+    group.className = 'ai-codex-lifecycle hidden';
     const targets = [
-      { id: 'backend', name: '共享后台', state: 'backendRunning' },
-      { id: 'desktop', name: 'Codex 桌面端', state: 'desktopRunning' },
+      { id: 'backend', state: 'backendRunning', start: '启动后台', stop: '停止后台' },
+      { id: 'desktop', state: 'desktopRunning', start: '打开桌面端', stop: '退出桌面端' },
     ];
-    function actionsFor(result) {
-      return targets.map(({ id, name, state }) => {
-        const running = result[state];
-        const label = (running ? '关闭' : '启动') + (id === 'desktop' ? ' ' : '') + name;
-        const operation = (running ? 'stop-' : 'start-') + id;
-        return { key: 'codex-' + operation, label, run: () => perform(operation, label) };
+    let visible = false, snapshot, statusPending = false;
+    let revision = 0, commands = Promise.resolve();
+
+    function render() {
+      group.classList.toggle('hidden', !visible || snapshot?.supported === false);
+      for (const target of targets) {
+        const { button, text, pending } = target;
+        const running = snapshot?.[target.state] === true;
+        const label = running ? target.stop : target.start;
+        const missingDesktop = target.id === 'desktop' && snapshot?.desktopAvailable === false && !running;
+        button.dataset.action = (running ? 'stop-' : 'start-') + target.id;
+        button.disabled = !!pending || missingDesktop;
+        button.setAttribute('aria-busy', String(!!pending));
+        button.setAttribute('aria-label', label);
+        button.title = missingDesktop ? '未安装 Codex 桌面端' : label;
+        text.textContent = label;
+      }
+    }
+
+    async function refreshStatus() {
+      if (!visible || statusPending || targets.some(target => target.pending)) return;
+      const observed = revision;
+      statusPending = true;
+      try {
+        const result = await lifecycle('status');
+        // 同步窗口状态的回执可能比用户刚执行的启停操作更晚到达。
+        if (observed === revision && result?.ok) { snapshot = result; render(); }
+      } catch {
+        // 读取失败时保留已有状态，仍可通过按钮发起操作。
+      } finally { statusPending = false; }
+    }
+
+    function submit(target) {
+      if (target.button.disabled || !visible) return;
+      const action = target.button.dataset.action;
+      target.pending = true;
+      revision++;
+      render();
+      // 两个按钮独立接收点击，按点击顺序执行，避免先打开依赖后台的桌面端。
+      commands = commands.then(async () => {
+        let failed = false;
+        try {
+          const result = await lifecycle(action);
+          if (!result?.ok || !result.supported) throw Error(result?.error || '当前系统不支持管理 Codex 进程');
+          snapshot = result;
+        } catch (error) {
+          failed = true;
+          MI.toast(error.message || String(error), 'err');
+        } finally {
+          target.pending = false;
+          render();
+        }
+        if (failed) { void refreshStatus(); return; }
+        if (target.id === 'backend' && getConfig().engine === 'codex') {
+          void refreshCodexOptions().then(() => refreshCodexCatalog()).catch(error => MI.toast(error.message, 'err'));
+        }
       });
     }
-    button.onclick = async event => {
-      event.stopPropagation();
-      const isCurrent = () => button.isConnected && getConfig().engine === 'codex' && !panel?.classList.contains('hidden');
-      if (button.disabled || !isCurrent()) return;
-      const cached = statusSnapshot?.expiresAt > performance.now() ? statusSnapshot.result : null;
-      const rect = button.getBoundingClientRect();
-      const menu = showAiContextMenu(button, rect.right, rect.bottom, {
-        kind: 'codex-lifecycle', label: '管理 Codex', alignEnd: true, isCurrent,
-        actions: cached ? actionsFor(cached) : targets.map(({ name }) => ({ label: name, disabled: true })),
-        busy: !cached,
-      });
-      if (cached || !menu) return;
-      try { menu.update(actionsFor(await readStatus())); }
-      catch (error) {
-        if (menu.isOpen()) {
-          menu.close(true);
-          MI.toast(error.message, 'err');
-        }
+
+    for (const target of targets) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.id = 'ai-codex-' + target.id;
+      button.className = 'vt-btn';
+      button.onclick = () => submit(target);
+      const text = document.createElement('span');
+      button.append(text);
+      target.button = button;
+      target.text = text;
+      group.append(button);
+    }
+    status.append(group);
+    syncCodexLifecycle = (refresh = false) => {
+      const shown = getConfig().engine === 'codex' && !panel?.classList.contains('hidden');
+      const entering = shown && !visible;
+      if (shown !== visible) {
+        visible = shown;
+        render();
       }
+      if (entering || refresh && shown) void refreshStatus();
     };
+    render();
   }
 
   async function refreshCodexOptions(apply=false){
@@ -1527,7 +1547,7 @@ const AiPanel = (() => {
     const engine=document.getElementById('ai-engine');if(engine)engine.value=nativeEngine(cfg.engine)?cfg.engine:'standard';
     document.getElementById('ai-dsh-options')?.classList.toggle('hidden',!nativeEngine(cfg.engine));
     document.querySelector('.ai-dsh-status')?.classList.toggle('hidden',!nativeEngine(cfg.engine));
-    document.getElementById('ai-codex-manage')?.classList.toggle('hidden',cfg.engine!=='codex');
+    syncCodexLifecycle();
     if(nativeEngine(cfg.engine)){
       const model=dshConfigOptions.find(option=>option.id==='model'),choices=(model?.options||[]).flatMap(option=>option.options||[option]);
       const ready=dshOptionsState==='ready'&&!dshScopeMismatch()&&(cfg.engine!=='codex'||!busy&&!codexDesktopOwnsCurrentSession());sel.disabled=!ready;
@@ -1559,6 +1579,7 @@ const AiPanel = (() => {
 
   function syncVisible(v) {
     if (panel) panel.classList.toggle('hidden', !v);
+    syncCodexLifecycle();
     // 2026-10-28：收起 AI 面板不再中断 DSH 会话。
     // 2026-11-01 用户明确「只有点停止按钮才中断」，这里的 stopRun 回退一并去掉。
     if (!v) {
@@ -1625,7 +1646,7 @@ const AiPanel = (() => {
     menu.style.top = Math.max(0, Math.min(y, innerHeight - menu.offsetHeight - 8)) + 'px';
   }
 
-  function showAiContextMenu(anchor, x, y, { kind, label, isCurrent, actions, alignEnd, busy = false }) {
+  function showAiContextMenu(anchor, x, y, { kind, label, isCurrent, actions, alignEnd }) {
     aiContextMenu?.close();
     const menu = document.getElementById('ctx-menu');
     if (!menu) return;
@@ -1633,7 +1654,6 @@ const AiPanel = (() => {
     group.setAttribute('role', 'menu');
     group.setAttribute('aria-label', label);
     group.tabIndex = -1;
-    if (busy) group.setAttribute('aria-busy', 'true');
     const events = new AbortController();
     const lookup = kind === 'session' ? historyAnchorLookup(anchor) : null;
     const originalRect = lookup && anchor.getBoundingClientRect();
@@ -1735,12 +1755,6 @@ const AiPanel = (() => {
     renderActions(actions);
     document.addEventListener('pointerdown', event => { if (!group.contains(event.target)) close(); }, { capture: true, signal: events.signal });
     if (!lookup) window.addEventListener('blur', () => close(), { signal: events.signal });
-    return { close, isOpen: canSelect, update(nextActions) {
-      if (!canSelect()) return;
-      actions = nextActions;
-      group.removeAttribute('aria-busy');
-      renderActions(actions);
-    } };
   }
 
   function showReplyLinkMenu(anchor, x, y) {
@@ -6813,10 +6827,14 @@ const AiPanel = (() => {
   function init() {
     const engine=document.getElementById('ai-engine');if(engine)engine.onchange=async()=>{await setConfig({engine:engine.value});};
     document.getElementById('ai-dsh-reasoning')?.addEventListener('change', event => { void changeNativeEffort(event.target.value); });
-    document.getElementById('ai-dsh-reconnect')?.addEventListener('click',()=>{if(!busy)refreshDshOptions(false,true);});
-    initCodexLifecycleMenu();
+    document.getElementById('ai-dsh-reconnect')?.addEventListener('click',()=>{
+      syncCodexLifecycle(true);
+      if(!busy)refreshDshOptions(false,true);
+    });
+    initCodexLifecycleButtons();
     const refreshVisibleCodex = () => {
       if (document.hidden) return;
+      syncCodexLifecycle(true);
       refreshHistInPlace();
       if (visibleHistoryRefresh() === refreshCodexCatalog) void refreshCodexCatalog({ background: true, forceHistory: true });
     };
