@@ -335,6 +335,29 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
    check('dragging selected sessions moves them together and preserves their relative order',
      JSON.stringify(movedTogether)===JSON.stringify([implicitId,externalId,newest]) && selectedInProject===2,
      {movedTogether,selectedInProject});
+   const sidebarFile=path.join(process.env.CODEX_HOME,'.codex-global-state.json');
+   const desktopState=JSON.parse(fs.readFileSync(sidebarFile,'utf8'));
+   const nativeOrder=[externalId,newest,implicitId];
+   fs.writeFileSync(sidebarFile,JSON.stringify({...desktopState,
+     'unified-sidebar-project-order-v1':['codex:project:desktop-empty','codex:project:desktop-b'],
+     'flat-project-sidebar-preferences-v1':{projectSortMode:'manual'},
+     'sidebar-project-thread-orders':{'desktop-legacy-b':{threadIds:nativeOrder}}
+   }));
+   await js(()=>{
+     document.querySelector('#panel-sessions [data-hist-options]').click();
+     const command=name=>[...document.querySelectorAll('#ctx-menu button')].find(button=>
+       (button.querySelector('span')?.textContent || button.textContent) === name);
+     command('排序方式').click();
+     command('跟随 Codex').click();
+     document.querySelector('#panel-sessions [data-hist-refresh]').click();
+   });
+   await until(async()=>{
+     const synced=await order();
+     return JSON.stringify(synced.projects)===JSON.stringify(['desktop-empty','desktop-b',firstProject.id]) &&
+       JSON.stringify(synced.sessions)===JSON.stringify(nativeOrder);
+   },'Codex sidebar follows new Desktop order');
+   check('following Codex uses desktop project and session ranks instead of the saved local order',nativeWrites()===before);
+   await capture('codex-follow-desktop-order');
    await finish(0);
    return;
  }

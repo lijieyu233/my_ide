@@ -324,6 +324,29 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
    }finally{await f.service.dispose();}
   }
  });
+ await test('会话栏采用当前桌面账号的项目顺序、手动会话顺序和展开状态',async()=>{
+  const desktop = require('../src/main/codex/codex-desktop-state');
+  const SQL = await require('sql.js')();
+  const dir = fs.mkdtempSync(path.join(temp, 'desktop-order-'));
+  const db = new SQL.Database();
+  db.run('CREATE TABLE settings(scope TEXT, key TEXT, value TEXT)');
+  const insert = (scope, key, value) => db.run('INSERT INTO settings VALUES (?, ?, ?)',[scope,key,JSON.stringify(value)]);
+  insert('global','electron-renderer-content-owner','current');
+  insert('global','project-order',['legacy-a','legacy-b']);
+  insert('global','app-server-project-id-by-legacy-project-id-by-host',{local:{'legacy-a':'a','legacy-b':'b'}});
+  insert('global','sidebar-project-thread-orders',{'legacy-b':{threadIds:['second','first']}});
+  insert('electron-owner-atoms:other','unified-sidebar-project-order-v1',['codex:project:legacy-a']);
+  insert('electron-owner-atoms:current','unified-sidebar-project-order-v1',['chatgpt:ignored','codex:project:legacy-b']);
+  insert('electron-owner-atoms:current','flat-project-sidebar-preferences-v1',{projectSortMode:'manual'});
+  insert('electron-owner-atoms:current','sidebar-project-expanded-v1-codex:legacy-b',true);
+  fs.writeFileSync(path.join(dir, '.codex-global-state.sqlite'),db.export());
+  db.close();
+  const state = await desktop.readDesktopState(dir);
+  const projects = [{id:'a'},{id:'b'},{id:'c'}];
+  assert.deepEqual(desktop.sidebarProjects(projects,state),[{id:'b',expanded:true,sessionIds:['second','first']},{id:'a'},{id:'c'}]);
+  state['flat-project-sidebar-preferences-v1'] = {projectSortMode:'updated_at'};
+  assert.deepEqual(desktop.sidebarProjects(projects,state),[{id:'b',expanded:true},{id:'a'},{id:'c'}]);
+ });
  await test('按桌面端本地项目归属补齐会话，滚动读取外部轮次开始和结束',async()=>{
   const desktop=require('../src/main/codex/codex-desktop-state');
   const id='019caa00-0000-7000-8000-000000000010',home=path.join(temp,'desktop-status'),logs=path.join(home,'sessions');

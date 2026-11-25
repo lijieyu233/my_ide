@@ -383,6 +383,7 @@ function createService(options={}){
     const projects = nativeProjects.filter(project => !pending.has(project.id));
     const archivedIds = new Set(archived.map(item => item.threadId));
     const assignments = desktopState.projectAssignments(projects, desktop);
+    const aliases = desktopState.projectAliases(projects, desktop);
     const registeredIds = desktopState.registeredProjectIds(desktop);
     const activeRoot = await canonical(rootDir).catch(() => '');
     if (activeRoot) await matchWorkspace(activeRoot, projects, registeredIds);
@@ -399,7 +400,7 @@ function createService(options={}){
     const items = [...active.filter(item => !archivedIds.has(item.threadId)), ...archived].map(item => ({
       ...item,
       projectId: projectless.has(item.threadId) ? null
-        : assignments.get(item.threadId) || item.projectId || primaryProjects.get(norm(item.rootDir)) || null,
+        : assignments.get(item.threadId) || aliases.get(item.projectId) || item.projectId || primaryProjects.get(norm(item.rootDir)) || null,
     }));
     const detachedRoot = norm(await canonical(workspace()));
     const projectBindings = new Map();
@@ -412,7 +413,8 @@ function createService(options={}){
     const visible = items.map(item => ({ ...item, localId: 'codex:' + item.threadId, external: true, ...projectBindings.get(item.threadId) }))
       .filter(item => norm(item.rootDir) !== detachedRoot);
     const boundIds = new Set(bindings.map(binding => binding.projectId));
-    const shownProjects = projects.filter(project => !project.provisional || registeredIds.has(project.id) || boundIds.has(project.id));
+    const shownProjects = desktopState.sidebarProjects(projects.filter(project =>
+      !project.provisional || registeredIds.has(project.id) || boundIds.has(project.id)), desktop);
     const desktopOwned = desktopAvailable();
     return { projects: shownProjects, bindings, activeBinding: bindings.find(binding => activeRoot && norm(binding.rootDir) === norm(activeRoot)), items: await Promise.all(visible.map(async item => {
       const desktop = item.archived || locallyRunning.has(item.threadId)

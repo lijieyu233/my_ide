@@ -19,10 +19,18 @@ const overlapSize = Math.max(...lifecycle.map(({ code }) => code.length)) - 1;
 
 const pendingDeletionsKey = 'app-server-pending-project-deletions-by-host';
 const projectAliasesKey = 'app-server-project-id-by-legacy-project-id-by-host';
+const sidebarOrderKey = 'unified-sidebar-project-order-v1';
+const sidebarPreferencesKey = 'flat-project-sidebar-preferences-v1';
+const projectThreadOrderKey = 'sidebar-project-thread-orders';
+const expandedProjectPrefix = 'sidebar-project-expanded-v1-codex:';
+const sidebarProjectPrefix = 'codex:project:';
 const desktopKeys = ['local-projects', projectAliasesKey, pendingDeletionsKey,
-  'thread-project-assignments', 'thread-project-membership-host-ids', 'projectless-thread-ids'];
-const stateQuery = "SELECT key, value FROM settings WHERE scope = 'global' AND key IN (" +
-  desktopKeys.map(key => "'" + key + "'").join(', ') + ')';
+  'thread-project-assignments', 'thread-project-membership-host-ids', 'projectless-thread-ids', 'project-order', projectThreadOrderKey];
+const ownerScope = "'electron-owner-atoms:' || coalesce((SELECT CASE WHEN json_valid(value) THEN json_extract(value, '$') END " +
+  "FROM settings WHERE scope = 'global' AND key = 'electron-renderer-content-owner'), 'signed-out')";
+const stateQuery = "SELECT key, value FROM settings WHERE (scope = 'global' AND key IN (" +
+  desktopKeys.map(key => "'" + key + "'").join(', ') + ")) OR (scope = (" + ownerScope +
+  ") AND (key IN ('" + sidebarOrderKey + "', '" + sidebarPreferencesKey + "') OR key LIKE '" + expandedProjectPrefix + "%'))";
 let sqlite;
 const desktopSnapshots = new Map();
 
@@ -101,7 +109,7 @@ function registeredProjectIds(state) {
   return ids;
 }
 
-function projectAssignments(projects, state) {
+function projectAliases(projects, state) {
   const projectIds = new Set(projects.map(project => project.id));
   const aliases = new Map();
   for (const map of Object.values(state['app-server-project-id-by-legacy-project-id-by-host'] || {})) {
@@ -109,6 +117,40 @@ function projectAssignments(projects, state) {
       if (projectIds.has(nativeId)) aliases.set(desktopId, nativeId);
     }
   }
+  return aliases;
+}
+
+function sidebarProjects(projects, state) {
+  const aliases = projectAliases(projects, state);
+  const order = Array.isArray(state[sidebarOrderKey])
+    ? state[sidebarOrderKey].filter(key => typeof key === 'string' && key.startsWith(sidebarProjectPrefix)).map(key => key.slice(sidebarProjectPrefix.length)) : [];
+  const fallback = Array.isArray(state['project-order']) ? state['project-order'] : [];
+  const byId = new Map(projects.map(project => [project.id, project]));
+  const positions = new Set([...order, ...fallback, ...byId.keys()].map(id => aliases.get(id) || id));
+  const manual = state[sidebarPreferencesKey]?.projectSortMode === 'manual';
+  const sorted = [...positions].map(id => byId.get(id)).filter(Boolean);
+  const threadOrders = manual ? state[projectThreadOrderKey] || {} : {};
+  const byProject = new Map(Object.entries(threadOrders).map(([key, order]) => {
+    const id = key.startsWith(sidebarProjectPrefix) ? key.slice(sidebarProjectPrefix.length) : key;
+    return [aliases.get(id) || id, order?.threadIds];
+  }));
+  const expanded = new Map();
+  for (const [key, value] of Object.entries(state)) {
+    if (!key.startsWith(expandedProjectPrefix) || typeof value !== 'boolean') continue;
+    const id = key.slice(expandedProjectPrefix.length);
+    expanded.set(aliases.get(id) || id, value);
+  }
+  return sorted.map(project => {
+    const order = byProject.get(project.id);
+    const open = expanded.get(project.id);
+    return { ...project, ...(typeof open === 'boolean' ? { expanded: open } : {}),
+      ...(Array.isArray(order) ? { sessionIds: order.filter(id => typeof id === 'string') } : {}) };
+  });
+}
+
+function projectAssignments(projects, state) {
+  const projectIds = new Set(projects.map(project => project.id));
+  const aliases = projectAliases(projects, state);
   const projectsByThread = new Map();
   for (const [id, assignment] of Object.entries(state['thread-project-assignments'] || {})) {
     if (assignment?.projectKind !== 'local' || state['thread-project-membership-host-ids']?.[id] !== 'local') continue;
@@ -199,4 +241,4 @@ function createDesktopStatusReader({ liveOwner = hasLiveOwner } = {}) {
   return observe;
 }
 
-module.exports = { readDesktopState, pendingProjectIds, registeredProjectIds, projectAssignments, createDesktopStatusReader };
+module.exports = { readDesktopState, pendingProjectIds, registeredProjectIds, projectAliases, projectAssignments, sidebarProjects, createDesktopStatusReader };
