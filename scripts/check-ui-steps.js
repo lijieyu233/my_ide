@@ -137,16 +137,17 @@ module.exports = {
         + ' toolbar=' + getComputedStyle(q('#toolbar')).borderBottomStyle
         + ' sidebar=' + getComputedStyle(q('#sidebar')).borderRightStyle);
 
-    // ---------- 整体视觉的「结构」层面（不是某个图标，是分层的骨架） ----------
-    // ① 顶栏以下只该有「标签栏 → 内容」两段。原来还夹了一条编辑器工具条
-    //    （左边 500px 全空、只为右侧摆 4 个小按钮），chrome 一共占掉 99px。
-    add('编辑区没有独立的工具条行（chrome 4 行 → 3 行）', !q('.viewer-toolbar'),
-      q('.viewer-toolbar') ? '仍有独立工具条行' : '无 ✓');
+    // 标签行与文件操作行各自布局，标题只与标签行对齐。
+    const fileActions = q('#tab-actions');
+    const tabBounds = q('#tab-scroll').getBoundingClientRect();
+    add('文件操作位于标签下方，空操作行自动收起', fileActions.childElementCount
+      ? fileActions.getBoundingClientRect().top >= tabBounds.bottom
+      : getComputedStyle(fileActions).display === 'none');
     // ② 标题行等高 —— 原来侧栏 32 / 标签栏 28 / AI 助手 30 三种，交界处的底线对不齐。
     //    AI 面板在这一步可能收着（高度 0），三处齐平留到 aiAssistant 步骤测。
     const hOf = (sel) => { const e = q(sel); return e ? Math.round(e.getBoundingClientRect().height) : -1; };
     const visTitle = qa('#sidebar .panel-title').find((e) => e.getBoundingClientRect().height > 0);
-    const hs = [hOf('#tabbar'), visTitle ? Math.round(visTitle.getBoundingClientRect().height) : -1];
+    const hs = [hOf('#tab-scroll'), visTitle ? Math.round(visTitle.getBoundingClientRect().height) : -1];
     add('侧栏标题与标签栏等高（三处齐平在 AI 面板展开时测）', hs.every((x) => x > 0) && new Set(hs).size === 1, hs.join(' / '));
     // ③ 明度阶梯：内容最亮、越靠外越暗。分层该靠明度而不是 1px 黑线画格子
     const L = (v) => parseInt(getComputedStyle(document.documentElement).getPropertyValue(v).trim().slice(1, 3), 16);
@@ -198,8 +199,9 @@ module.exports = {
     add('左侧工具条选中态只有一个 accent 指示', after === 'none' || after === '',
       'active::after content=' + after);
     // ⑤ 标签区与操作区分离：文件多了操作按钮不跟着滚走
-    add('标签栏拆成「滚动区 + 操作区」且是兄弟节点',
-      !!q('#tab-scroll') && !!q('#tab-actions') && q('#tab-actions').parentElement.id === 'tabbar');
+    add('标签滚动区与通用操作位于顶行',
+      q('#tab-scroll').nextElementSibling === q('#tab-common-actions') &&
+      !q('#tab-common-actions .ed-actions'));
     return { R };
   },
 
@@ -1851,9 +1853,8 @@ module.exports = {
     await sleep(300);
     add('放大后容器可滚动（可上下滑动看画面）', stageEl.scrollHeight > stageEl.clientHeight + 1 || stageEl.scrollWidth > stageEl.clientWidth + 1,
       'scroll=' + stageEl.scrollWidth + 'x' + stageEl.scrollHeight + ' client=' + stageEl.clientWidth + 'x' + stageEl.clientHeight);
-    // 编辑器操作区挂在标签栏右端：图片这类文件只剩「定位」，不该有视图按钮
-    add('图片文件在标签栏右端没有多余视图按钮（只剩「定位」）', !q('#tab-actions .ed-actions .vt-btn'),
-      q('#tab-actions .ed-actions .vt-btn') ? '仍有视图按钮' : '无 ✓');
+    add('图片文件的第二行收起，定位仍在顶行',
+      getComputedStyle(q('#tab-actions')).display === 'none' && !!q('#tab-common-actions .tab-locate'));
     add('标签页左侧有文件类型图标（SVG，不是 emoji）', !!q('.tab.active .tic svg'));
     add('标签栏右端「在资源管理器显示」只有 1 个', document.querySelectorAll('.tab-locate').length === 1,
       document.querySelectorAll('.tab-locate').length + ' 个');
@@ -2475,7 +2476,7 @@ module.exports = {
       return { n: rs.length, w: rs.length ? Math.round(rs[0].width) : 0 };
     };
     const rowH = () => Math.round(title.getBoundingClientRect().height);
-    const tabH = Math.round(q('#tabbar').getBoundingClientRect().height);
+    const tabH = Math.round(q('#tab-scroll').getBoundingClientRect().height);
     const clipped = () => title.scrollHeight - title.clientHeight;
 
     sb.style.width = window.App.LAYOUT.sidebar.def + 'px';
@@ -2909,7 +2910,7 @@ module.exports = {
     // AI 头部已合并成两行，不再要求它与侧栏/标签栏的单行标题等高。
     const hh = (sel) => { const e = q(sel); return e ? Math.round(e.getBoundingClientRect().height) : -1; };
     const vt = qa('#sidebar .panel-title').find((e) => e.getBoundingClientRect().height > 0);
-    const singleHeads = [hh('#tabbar'), vt ? Math.round(vt.getBoundingClientRect().height) : -1];
+    const singleHeads = [hh('#tab-scroll'), vt ? Math.round(vt.getBoundingClientRect().height) : -1];
     add('侧栏标题 / 标签栏 单行等高', singleHeads.every((x) => x > 0) && new Set(singleHeads).size === 1, singleHeads.join(' / '));
     const aiHeader = q('.ai-panel-header'), aiToolbar = q('.ai-head'), aiControls = q('.ai-session-controls');
     const headRect = aiHeader?.getBoundingClientRect(), toolbarRect = aiToolbar?.getBoundingClientRect(), controlsRect = aiControls?.getBoundingClientRect();

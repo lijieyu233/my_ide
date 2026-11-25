@@ -12,7 +12,9 @@ window.EditorPanes = (() => {
       const strip=document.createElement('div');strip.className='editor-pane-tabs';strip.setAttribute('role','tablist');strip.setAttribute('aria-label',label(group)+'的标签');group.strip=strip;
       strip.addEventListener('wheel',e=>{if(strip.scrollWidth>strip.clientWidth){e.preventDefault();strip.scrollLeft+=Math.abs(e.deltaY)>Math.abs(e.deltaX)?e.deltaY:e.deltaX;}},{passive:false});
       const close=document.createElement('button');close.className='vt-btn';close.title='关闭此编辑组（保留全部标签和未保存内容）';close.setAttribute('aria-label','关闭此编辑组');close.innerHTML=icon('close');close.onclick=()=>adapter.collapse(groups.find(g=>g!==group));
-      const actions=document.createElement('div');actions.className='pane-tab-actions';group.actions=actions;head.append(strip,actions,close);section.append(head,view);view.classList.add('editor-pane-view');groups.push(group);
+      const actions=document.createElement('div');actions.className='pane-tab-actions';group.actions=actions;
+      const fileActions=document.createElement('div');fileActions.className='file-actions';fileActions.setAttribute('role','group');fileActions.setAttribute('aria-label','当前文件操作');group.fileActions=fileActions;
+      head.append(strip,actions,close);section.append(head,fileActions,view);view.classList.add('editor-pane-view');groups.push(group);
       const activate=e=>{if((!e.target.closest('.editor-pane-head')||e.target.closest('.pane-tab-actions'))&&!window.Modal?.stack?.length&&!host.inert)adapter.focus(group,e);};
       section.addEventListener('pointerdown',activate,true);section.addEventListener('focusin',activate,true);
       return group;

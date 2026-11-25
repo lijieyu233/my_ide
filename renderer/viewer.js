@@ -2,8 +2,8 @@
 const Viewer = (() => {
   const tabbar = document.getElementById('tabbar');
   const tabScroll = document.getElementById('tab-scroll');
-  const mainTabActions = document.getElementById('tab-actions');
-  let tabActions=mainTabActions;
+  const mainTabActions = document.getElementById('tab-common-actions');
+  const mainFileActions = document.getElementById('tab-actions');
   // 标签栏隐藏了原生滚动条（CSS），滚动交给滚轮：鼠标在标签上上下滚 = 左右滚。
   // IDE 惯例；一条灰滚动条比它下面的几个标签还抢眼（用户截图反馈）。
   if (tabScroll) {
@@ -36,7 +36,7 @@ const Viewer = (() => {
   function usePane(group){
     if(group===activePane)return;
     storePane();viewer.removeAttribute('id');activePane=group;viewer=group.view;viewer.id='viewer';
-    activeTabId=group.tabId;tabActions=group.actions||mainTabActions;if(group.modes.has(activeTabId)&&currentTab()?.mode!=null&&currentTab().mode!=='error')currentTab().mode=group.modes.get(activeTabId);cmApi=group.cm;viewGeneration=group.generation;blameOn=group.blame;
+    activeTabId=group.tabId;if(group.modes.has(activeTabId)&&currentTab()?.mode!=null&&currentTab().mode!=='error')currentTab().mode=group.modes.get(activeTabId);cmApi=group.cm;viewGeneration=group.generation;blameOn=group.blame;
     if(currentTab())currentTab().ta=viewer.querySelector('textarea.editor');
     const ctx=cmApi?.__mdContext;if(ctx)Object.assign(MdEditor,{__baseDir:ctx.baseDir,__openLink:ctx.openLink,__onPasteImage:ctx.onPasteImage});
   }
@@ -47,7 +47,7 @@ const Viewer = (() => {
     for(const group of paneLayout.groups)group.tabIds=[...new Set(group.tabIds)].filter(id=>tabs.some(t=>t.id===id)&&assigned.add(id));
     for(const tab of tabs)if(!assigned.has(tab.id))activePane.tabIds.push(tab.id);
   }
-  function refreshPanes(){paneLayout?.refresh(activePane);if(!paneLayout?.visible&&tabActions!==mainTabActions)tabActions=mainTabActions;}
+  function refreshPanes(){paneLayout?.refresh(activePane);}
   function closePaneTab(group,tab){
     if(!paneLayout?.visible||!group)return requestClose([tab]);
     const other=paneLayout.groups.find(g=>g!==group&&g.tabIds.includes(tab.id));
@@ -84,7 +84,7 @@ const Viewer = (() => {
     App.backToEditor();keepTab(tab);
     if(!paneLayout?.visible){
       storePane();paneLayout=EditorPanes.create(viewer,{focus:focusPane,collapse:collapsePanes});
-      const groups=paneLayout.ensure();Object.assign(groups[0],{tabIds:tabs.map(t=>t.id),tabId:activeTabId,cm:cmApi,generation:viewGeneration,blame:blameOn,states:activePane.states,modes:activePane.modes});activePane=groups[0];tabActions=activePane.actions;
+      const groups=paneLayout.ensure();Object.assign(groups[0],{tabIds:tabs.map(t=>t.id),tabId:activeTabId,cm:cmApi,generation:viewGeneration,blame:blameOn,states:activePane.states,modes:activePane.modes});activePane=groups[0];
       // 同一图表只有一个写入画布，避免两个跨域编辑器各自提交完整 XML。
       const secondTab = isDrawio(tab.name) ? null : tab;
       paneLayout.setOrientation(orientation);groups[1].tabIds=secondTab?[tab.id]:[];groups[1].modes.set(tab.id,tab.mode);
@@ -120,7 +120,7 @@ const Viewer = (() => {
       if(tab?.ta&&group.view.contains(tab.ta))tab.ta=null;
       group.generation++;
     }
-    paneLayout.destroy(keep);paneLayout=null;tabActions=mainTabActions;tabbar.classList.remove('split-layout');storePane();
+    paneLayout.destroy(keep);paneLayout=null;tabbar.classList.remove('split-layout');storePane();
     if(!quiet){renderTabs();refreshSelectionStatus();App.refreshOutline(currentTab());focusEditor();}
     return true;
   }
@@ -150,7 +150,7 @@ const Viewer = (() => {
     for(let i=0;i<2;i++)renderPane(paneLayout.groups[i],ids[i]||null);
     focusPane(paneLayout.groups[state.active]);renderTabs();
   }
-  function renderPaneActions(){
+  function renderPaneActions(tabActions){
     if(!window.EditorPanes)return;
     const controls=document.createElement('div');controls.className='editor-pane-actions';
     for(const [direction,title]of [['horizontal',paneLayout?.visible?'左右排列':'向右拆分'],['vertical',paneLayout?.visible?'上下排列':'向下拆分']]){
@@ -1097,29 +1097,29 @@ const Viewer = (() => {
     export: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v7.2M5.2 6.6L8 9.4l2.8-2.8"/><path d="M2.8 10.6v2.2a1 1 0 0 0 1 1h8.4a1 1 0 0 0 1-1v-2.2"/></svg>',
   };
 
-  // 编辑器操作区（Markdown 模式切换 / 查看源码 / 内置浏览器）+「定位」—— 统一挂在标签栏右端。
-  // ⚠ 必须跟 renderTabs() 同生命周期：标签栏这一片会被 renderTabs 清空，
-  //   而「标脏点」等路径只调 renderTabs 不调 renderView —— 挂在 renderView 里会被清掉
-  //   （症状：右端按钮"有时有一个有时没有"，之前踩过）。
+  // 标签刷新和视图切换都可能改变可用操作。
   function renderTabActions() {
-    tabActions.innerHTML = '';
-    renderPaneActions();
-    if(previewFeedback){const status=document.createElement('span');status.id='preview-tab-status';status.setAttribute('role','status');status.textContent=previewFeedback;status.title=previewFeedback;tabActions.appendChild(status);}
+    const tabActions = paneLayout?.visible ? activePane.actions : mainTabActions;
+    const fileActions = paneLayout?.visible ? activePane.fileActions : mainFileActions;
+    tabActions.replaceChildren();
+    fileActions.replaceChildren();
+    renderPaneActions(tabActions);
+    if(previewFeedback){const status=document.createElement('span');status.id='preview-tab-status';status.setAttribute('role','status');status.textContent=previewFeedback;status.title=previewFeedback;fileActions.appendChild(status);}
     const tab = currentTab();
     if (!tab) return;
     const acts = document.createElement('div');
     acts.className = 'ed-actions';
-    if(tab.retention==='preview'){const keep=document.createElement('button');keep.className='tb-btn';keep.textContent='保留标签';keep.onclick=()=>Shortcuts.execute('keep-tab',Shortcuts.context(tab));acts.appendChild(keep);}
+    if(tab.retention==='preview'){const keep=document.createElement('button');keep.className='tb-btn';keep.textContent='保留标签';keep.onclick=()=>Shortcuts.execute('keep-tab',Shortcuts.context(tab));tabActions.appendChild(keep);}
     if (tab.saveError) {
       const recover = document.createElement('button'); recover.className = 'tb-btn save-recovery-button';
       recover.textContent = tab.saveErrorCode === 'VERSION_CONFLICT' ? '保存冲突' : '保存失败';
       recover.title = '查看磁盘版本、另存副本或明确覆盖'; recover.onclick = () => showSaveRecovery(tab);
-      acts.appendChild(recover);
+      tabActions.appendChild(recover);
     }
 
     if(tab.reader){
       const label=document.createElement('span');label.className='reader-tab-label';label.textContent='只读阅读';acts.append(label);
-      tabActions.append(acts);return;
+      fileActions.append(acts);return;
     }
     if(/\.txt$/i.test(tab.name)){const read=document.createElement('button');read.className='vt-btn';read.textContent='阅读';read.onclick=()=>Reader.open(tab.path);acts.append(read);}
     const isMarkdown = /\.(md|markdown)$/i.test(tab.name);
@@ -1229,9 +1229,9 @@ const Viewer = (() => {
       acts.appendChild(btnOffice);
     }
 
-    if (acts.children.length) tabActions.appendChild(acts);
+    if (acts.children.length) fileActions.appendChild(acts);
 
-    // 「定位」属于文件操作，跟标签放一起最顺手；常驻最右端
+    // 「定位」对任意文件类型都可用。
     const loc = document.createElement('button');
     loc.className = 'tab-locate';
     loc.innerHTML = ACT_IC.locate;
@@ -1308,7 +1308,6 @@ const Viewer = (() => {
     assignPaneTabs();tabbar.classList.toggle('split-layout',!!paneLayout?.visible);
     for(const group of paneLayout?.groups||[])group.strip.replaceChildren();
     tabScroll.innerHTML = '';
-    tabActions.innerHTML = '';
     const renderTab=(t,i,owner)=>{
       const el = document.createElement('div');
       el.className = 'tab' + (t.id === (owner?owner.tabId:activeTabId) ? ' active' : '')+(t.pinned?' pinned':'')+(t.retention==='preview'?' preview-tab':'');
@@ -1530,9 +1529,7 @@ const Viewer = (() => {
     const local=activePane.states.get(tab.id);
     if(local){if(TextLines.raw(local.state)===tab.content)tab.cmState=local.state;else tab.cmState=null;tab.scrollTop=local.top;tab.scrollLeft=local.left;}
     const isMarkdown = /\.(md|markdown)$/i.test(tab.name);
-    // 编辑器操作按钮（模式切换 / 查看源码 / 内置浏览器）不再单独占一整行 ——
-    // 跟「定位」一起挂在标签栏右端。原来那一行左边 500px 全空，只为右侧摆 4 个小按钮。
-    // 模式切换后要刷新按钮的 active 态，所以这里也重建一次。
+    // 模式切换会改变当前文件操作的选中态。
     renderTabActions();
 
     // 状态栏：文件 + 行数（公共区域，edit/preview/error 都更新）

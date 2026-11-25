@@ -251,9 +251,11 @@
   <div id="sidebar-resizer" title="拖动调整目录区宽度"></div>
   <div id="content">
     <div id="bg-layer" aria-hidden="true"></div>
-    <!-- 标签栏 = 左「可滚动标签区」+ 右「操作区（模式切换 / 定位）」。
-         拆开的原因：整条一起横向滚动的话，文件一多模式按钮就被推出视野看不见了 -->
-    <div id="tabbar"><div id="tab-scroll" role="tablist" aria-label="打开的文件"></div><div id="tab-actions"></div></div>
+    <div id="tabbar">
+      <div id="tab-scroll" role="tablist" aria-label="打开的文件"></div>
+      <div id="tab-common-actions"></div>
+      <div id="tab-actions" class="file-actions" role="group" aria-label="当前文件操作"></div>
+    </div>
     <div id="viewer" role="tabpanel" tabindex="-1"></div>
         <!-- 启动面板主区：选中条目的详情与日志（条目列表在左侧 #panel-launch）-->
     <div id="launch-main" class="hidden">

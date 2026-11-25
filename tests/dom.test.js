@@ -1874,12 +1874,8 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     const img = $(dom, '.img-view img');
     assert_(img, 'img 元素出现');
     assert_(img.src.includes('pic.png'), 'src 指向图片文件, got: ' + img.src);
-    // 编辑器操作区现在挂在标签栏右端（#tab-actions）：图片这类文件除了「定位」不该有别的按钮
-    const acts = $(dom, '#tab-actions');
-    const hasSrc = acts ? $allIn(acts, 'button').some((x) => x.textContent.includes('源码')) : false;
-    assert_(!hasSrc, '图片无「查看源码」按钮');
-    assert_(!$(dom, '#tab-actions .vt-path'), '不再有路径行');
-    assert_(!$(dom, '#tab-actions .vt-btn'), '图片文件在标签栏右端没有视图按钮（只剩「定位」）');
+    assert_($(dom, '#tab-actions').childElementCount === 0, '图片无专属栏按钮，第二行收起');
+    assert_($(dom, '#tab-common-actions .tab-locate'), '图片仍可从通用操作定位');
   });
 
   await okAsync('Office 预览：docx 走 preview 模式 + 渲染容器 + 无源码按钮', async () => {
@@ -1892,7 +1888,6 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(st, 'loading/错误状态节点出现');
     assert_(st.textContent.includes('预览失败') || st.textContent.includes('解析'), '状态显示加载或错误, got: ' + st.textContent);
     assert_($(dom, '.office-retry'), '错误降级提供重试按钮');
-    // 编辑器操作区已从 body 内的工具条行迁到标签栏右端（#tab-actions）
     const hasSrc = $allIn($(dom, '#tab-actions'), 'button').some((b) => b.textContent.includes('源码'));
     assert_(!hasSrc, 'docx 无「查看源码」按钮（二进制无源码可看）');
     const hasOpen = $allIn($(dom, '#tab-actions'), 'button').some((b) => b.textContent.includes('系统打开'));
@@ -9227,21 +9222,20 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick();
   });
 
-  // ---------- 整体视觉：chrome 只留 3 行 + 三个标题行等高 + 明度阶梯 ----------
-  await okAsync('整体视觉：编辑区不再有独立工具条行，操作区跟着标签栏', async () => {
+  await okAsync('标签与通用操作同排，第二行跟随当前文件类型', async () => {
     FAKE_FS[P + '/note.md'] = { content: '# 标题' + '\n' };
     await g(dom, 'Viewer.openFile("' + P + '/note.md")');
     await tick(); await tick();
-    // 原结构：标签栏一行 + 编辑器工具条一行（左边 500px 全空，只为右侧摆 4 个按钮）
-    assert_(!$(dom, '.viewer-toolbar'), '编辑器不再有独立的工具条行');
-    assert_($(dom, '#tabbar'), '标签栏还在');
-    // 模式切换按钮必须挂在「不随标签滚动」的操作区里，否则文件一多就被推出视野
-    const seg = $(dom, '#tab-actions .md-mode-seg');
-    assert_(seg, 'Markdown 模式切换挂到了标签栏右端操作区');
-    assert_($(dom, '#tab-actions').parentElement.id === 'tabbar', '操作区与标签滚动区是兄弟节点');
-    assert_(!!$(dom, '#tab-scroll .tab'), '标签本体在可滚动区里');
-    assert_(!!$(dom, '#tab-actions .tab-locate'), '「定位」也在操作区（只有 1 个）');
-    assert_($allIn($(dom, '#tab-actions'), '.tab-locate').length === 1, '「定位」不重复');
+    const fileActions = $(dom, '#tab-actions');
+    const commonActions = $(dom, '#tab-common-actions');
+    assert_(commonActions.previousElementSibling.id === 'tab-scroll', '标签滚动区和通用操作同排');
+    assert_(fileActions.previousElementSibling === commonActions, '文件操作另起一行');
+    assert_(fileActions.querySelector('.md-mode-seg') && fileActions.textContent.includes('导出 HTML'), 'Markdown 模式和导出在文件操作行');
+    assert_(!commonActions.querySelector('.md-mode-seg') && !commonActions.textContent.includes('导出 HTML'), '顶行只含通用操作');
+    assert_(commonActions.querySelectorAll('.tab-locate').length === 1, '定位仍在顶行且没有重复');
+    await g(dom, 'Viewer.openFile("' + P + '/pic.png")');
+    await tick(); await tick();
+    assert_(fileActions.childElementCount === 0 && commonActions.querySelector('.tab-locate'), '切换为图片后移除专属操作行');
     await g(dom, 'Viewer.closeAll()');
     await tick();
   });

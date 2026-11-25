@@ -43,17 +43,17 @@ const wait = async (s, ms = 10000) => { const end = Date.now() + ms; while (Date
     await probe(`Viewer.openFile(${JSON.stringify(root + '/笔记.md')})`);
     await sleep(1400);
 
-    // ① 按钮真的在编辑区右上角工具栏里
+    // ① 导出按钮位于标签栏下方的文件操作行。
     const btn = await probe(`(() => {
-      const b = [...document.querySelectorAll('#tab-actions button, #tabbar button, .tab-actions button')]
+      const b = [...document.querySelectorAll('#tab-actions button')]
         .find(el => /导出\\s*HTML/.test(el.textContent));
       if (!b) return null;
       const r = b.getBoundingClientRect();
       return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2),
                text: b.textContent.trim(), title: b.title,
-               inTabActions: !!b.closest('#tab-actions, .tab-actions, #tabbar') };
+               belowTabs: r.top >= document.getElementById('tab-scroll').getBoundingClientRect().bottom };
     })()`);
-    check('编辑区右上角有「导出 HTML」按钮', !!btn, JSON.stringify(btn));
+    check('文件操作行有「导出 HTML」按钮', btn?.belowTabs, JSON.stringify(btn));
     check('按钮带说明 title', /同目录|所在目录/.test(btn.title || ''), btn.title);
 
     // ② 真实点击，断言「不弹保存框」「文件落到 md 同目录」

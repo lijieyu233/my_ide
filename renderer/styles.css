@@ -431,8 +431,8 @@ body.rsb-collapsed #ai-panel { display: none !important; }
 /* ---------- 内容区 ---------- */
 #content { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); position: relative; z-index: 0; }
 #tabbar {
-  display: flex; align-items: stretch; flex-shrink: 0;
-  height: var(--head-h);
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: var(--head-h) auto; flex-shrink: 0;
   background: var(--bg-tabbar); border-bottom: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
 }
 /* 标签横向滚动区（文件多时只滚标签，右端操作区不动） */
@@ -440,14 +440,21 @@ body.rsb-collapsed #ai-panel { display: none !important; }
    滚动改为滚轮（见 viewer.js）+ 右端「▾ N 全部标签」下拉做提示 */
 #tab-scroll { flex: 1; min-width: 0; display: flex; overflow-x: auto; scrollbar-width: none; }
 #tab-scroll::-webkit-scrollbar { display: none; }
-/* 编辑器操作区：Markdown 模式切换 / 查看源码 / 内置浏览器 +「定位」 */
-#tab-actions {
-  flex-shrink: 0; display: flex; align-items: center; gap: 6px;
+#tab-common-actions {
+  display: flex; align-items: center; gap: 6px;
   padding: 0 8px; border-left: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
 }
-#tab-actions:empty { display: none; }
+#tab-common-actions:empty, .file-actions:empty { display: none; }
+.file-actions {
+  display: flex; align-items: center; gap: 6px; flex: none; min-width: 0;
+  min-height: var(--head-h); padding: 3px 8px;
+  background: var(--bg-tabbar); border-top: 1px solid var(--border);
+  overflow-x: auto; scrollbar-width: thin;
+}
+#tab-actions { grid-column: 1 / -1; }
+.editor-pane > .file-actions { border-top: 0; border-bottom: 1px solid var(--border); }
 .vt-note { color: var(--text-dim); font-size: 12px; padding: 0 6px; white-space: nowrap; }
-#tab-actions .md-mode-seg, #tab-actions .ed-actions { display: flex; align-items: center; gap: 4px; }
+.file-actions .ed-actions { display: flex; flex: none; align-items: center; gap: 4px; }
 .tab {
   display: flex; align-items: center; gap: 6px;
   padding: 0 10px; font-size: 12px; color: var(--text-dim);
@@ -456,7 +463,7 @@ body.rsb-collapsed #ai-panel { display: none !important; }
   /* 统一宽度：宽度跟着文件名走的话，一排 tab 参差不齐，看着就"乱" */
   flex: 0 0 164px; min-width: 0; white-space: nowrap;
 }
-#tabbar.disambiguated { height: max(var(--head-h), 42px); }
+#tabbar.disambiguated { grid-template-rows: max(var(--head-h), 42px) auto; }
 .tab-select { appearance: none; background: transparent; color: inherit; border: none; padding: 0; display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; height: 100%; font: inherit; text-align: left; }
 .tab-label { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
 .tab .tpath { font-size: 10px; color: var(--text-dim); line-height: 1.3; white-space: nowrap; }
@@ -5052,7 +5059,6 @@ details[open] > .ai-tool-summary > .ai-tool-ic::after { transform: rotate(225deg
 #tabbar.split-layout>#tab-scroll{display:none}
 .editor-pane-head>.pane-tab-actions{min-width:0;max-width:65%;flex-shrink:1;overflow-x:auto;scrollbar-width:none;padding:0 4px;gap:3px}
 .editor-pane-head>.vt-btn{flex-shrink:0}
-.editor-pane-head .ed-actions{flex-shrink:0}
 .editor-tab-drop{position:fixed;pointer-events:none;z-index:99990;border:2px solid var(--accent);background:color-mix(in srgb,var(--accent) 16%,transparent);box-sizing:border-box}
 .editor-pane-view{min-width:0}
 .editor-pane-divider{width:6px;flex:0 0 6px;background:var(--bg-title);cursor:col-resize;touch-action:none}
