@@ -2032,7 +2032,7 @@ const AiPanel = (() => {
     let preview;
     try{preview=JSON.parse(match[1]);}catch{return;}
     if(typeof preview?.path!=='string'||!preview.path)return;
-    return {type:'myideVisualization',raw:match[0],path:preview.path,mode:preview.mode};
+    return {type:'myideVisualization',raw:match[0],path:preview.path};
   }
   function renderMd(text) {
     try {
@@ -2047,7 +2047,7 @@ const AiPanel = (() => {
           block:[visualizationToken,...extensions?.block||[]],
           startBlock:[source=>{const index=source.indexOf(visualizationPrefix);return index<0?undefined:index;},...extensions?.startBlock||[]],
           renderers:{...extensions?.renderers,myideVisualization:token=>
-            '<template data-ai-visualization="'+esc(token.path)+'" data-mode="'+(token.mode==='wide'?'wide':'inline')+'"></template>'},
+            '<template data-ai-visualization="'+esc(token.path)+'"></template>'},
         }};
       }
       const html = marked.parse(clean,options);
@@ -2056,10 +2056,9 @@ const AiPanel = (() => {
   }
   const visualizationLeases=new Map();
   let visualizationObserver;
-  function createVisualization({path,mode}) {
+  function createVisualization(path) {
     const widget=document.createElement('div');
     widget.className='ai-visualization';
-    widget.classList.toggle('ai-visualization-wide',mode==='wide');
     const frame=document.createElement('iframe');
     frame.title=path.split(/[\\/]/).pop()||'可视化预览';
     frame.setAttribute('sandbox','allow-scripts allow-forms');
@@ -2137,7 +2136,7 @@ const AiPanel = (() => {
   }
   function renderVisualizations(container) {
     for(const token of container.querySelectorAll('template[data-ai-visualization]')){
-      token.replaceWith(createVisualization({path:token.dataset.aiVisualization,mode:token.dataset.mode}));
+      token.replaceWith(createVisualization(token.dataset.aiVisualization));
     }
   }
   // marked 输出的 <code> 块套 hljs 高亮（失败静默）

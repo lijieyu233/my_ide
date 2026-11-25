@@ -3647,18 +3647,12 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 /* 消息内 markdown（沿用 .md-view 排版基调） */
 .ai-md.ai-stream-plain { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ai-visualization {
-  --ai-visualization-height: clamp(280px, 55vh, 600px);
+  --ai-visualization-height: min(240px, 30vh);
   --ai-visualization-toolbar-height: 32px;
   display: block;
-  width: min(100%, 720px);
+  width: 100%;
   min-height: calc(var(--ai-visualization-height) + var(--ai-visualization-toolbar-height) + 2px);
   margin: 8px 0;
-}
-.ai-visualization-wide {
-  --ai-visualization-height: clamp(320px, 62vh, 720px);
-  --ai-visualization-bleed: max(0px, calc(var(--ai-transcript-inset, 0px) - 12px));
-  width: calc(100% + 2 * var(--ai-visualization-bleed));
-  margin-inline: calc(-1 * var(--ai-visualization-bleed));
 }
 .ai-visualization-surface {
   box-sizing: border-box;

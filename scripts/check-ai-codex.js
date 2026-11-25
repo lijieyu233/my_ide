@@ -60,12 +60,15 @@ async function verifyVisualization() {
    document.querySelector('.ai-visualization').scrollIntoView({block:'center'});
    return old;
  });
- check('Wide previews use the chat width without moving or widening the surrounding prose',await js(()=>{
-   const preview=document.querySelector('.ai-visualization'), md=preview.closest('.ai-md'), transcript=document.getElementById('ai-msgs');
-   const a=preview.getBoundingClientRect(),b=md.getBoundingClientRect(),c=transcript.getBoundingClientRect();
-   return a.width>b.width+60&&a.left>=c.left&&a.right<=c.right&&transcript.scrollWidth===transcript.clientWidth&&
-     preview.querySelector('button').getBoundingClientRect().bottom<preview.querySelector('iframe').getBoundingClientRect().top;
- }));
+ const fitsInline=()=>{
+   const preview=document.querySelector('.ai-visualization'), prose=preview.previousElementSibling, transcript=document.getElementById('ai-msgs');
+   const a=preview.getBoundingClientRect(),b=prose.getBoundingClientRect(),c=transcript.getBoundingClientRect();
+   const frame=preview.querySelector('iframe').getBoundingClientRect();
+   return Math.abs(a.left-b.left)<2&&a.right<=b.right+1&&a.left>=c.left&&a.right<=c.right&&
+     frame.height<=Math.min(240,innerHeight*.30)+1&&transcript.scrollWidth===transcript.clientWidth&&
+     preview.querySelector('button').getBoundingClientRect().bottom<frame.top;
+ };
+ check('A wide marker stays within the prose and uses a compact preview in the wide chat panel',await js(fitsInline));
  await capture('codex-inline-visualization');
  await js(()=>document.querySelector('.ai-visualization button').click());
  await until(()=>js(()=>!!document.querySelector('.ai-visualization-surface:popover-open')),'preview expanded');
@@ -81,6 +84,8 @@ async function verifyVisualization() {
    const button=document.querySelector('.ai-visualization button');
    return !document.querySelector('.ai-visualization-surface:popover-open')&&button===document.activeElement&&button.textContent==='放大查看';
  })&&await widgetFrame.executeJavaScript('document.querySelector("#increment").textContent==="计数 1"'));
+ await js(()=>{document.getElementById('ai-panel').style.width='370px';});
+ check('A narrow chat panel keeps the compact preview inside the prose without horizontal overflow',await js(fitsInline));
  await js(width=>{document.getElementById('ai-panel').style.width=width;},savedWidth);
  const formResult = await widgetFrame.executeJavaScript(`(() => {
    const dialog = document.createElement('dialog');
