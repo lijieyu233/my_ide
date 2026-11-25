@@ -87,7 +87,7 @@ window.MarkdownImages = (() => {
         const x = Math.floor(e.clientX), y = Math.floor(e.clientY);
         if (document.elementFromPoint(x, y) !== img) throw Error('图片已移出可见区域，请重新右键复制');
         const result = await window.myIDE.clip.copyImageAt(x, y);
-        if (!result?.ok) throw Error(result?.error || '复制图片失败'); toast('已复制图片');
+        if (!result?.ok) throw Error(result?.error || '复制图片失败');
       }, !!img.naturalWidth);
       if (options.resize) item('↔ 恢复默认大小', () => { if (options.resize(null) === false) throw Error('图片位置或文档状态已变化，请重试'); }, options.editable?.() !== false);
       // 删除（2026-10-29 用户要求）。

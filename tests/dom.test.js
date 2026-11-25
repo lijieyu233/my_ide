@@ -213,7 +213,6 @@ function makeDom() {
         return { ok: true, version: { schema: 1, target: p, stamp: String(FAKE_FS[p].revision), hash: String(content) } };
       },
       pathSnapshot: async p=>({snapshot:fakeSnapshot(p)}),
-      // 粘贴截图落盘（tree.js pasteClipboardImage）：渲染层只传 base64，这里记下目标路径与字节数。
       writeBinary: async (p, base64) => {
         const bytes = Buffer.from(String(base64 || ''), 'base64');
         fakeWrittenBinary.push({ path: p, bytes: bytes.length });
@@ -355,6 +354,9 @@ function makeDom() {
       getFiles: async () => (fakeExternal.length ? fakeExternal.slice() : []),
       readText: async () => ({ ok: true, text: fakeClipText }),
       readImage: async () => (fakeClipImage ? { ok: true, empty: false, png: fakeClipImage, width: 4, height: 4 } : { ok: true, empty: true }),
+      pasteImageTo: async (target) => fakeClipImage
+        ? w.myIDE.fs.writeBinary(target, fakeClipImage)
+        : { ok: true, empty: true },
     },
     fsCopy: async (src, destDir, overwrite) => {
       const name = src.split('/').pop();
@@ -2198,7 +2200,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(written.bytes > 0, '写入的是真实字节');
     const toasts = [...dom.window.document.querySelectorAll('#toast-wrap .toast')].map((t) => t.textContent);
     assert_(!toasts.some((t) => /剪贴板中没有文件/.test(t)), '不应报「剪贴板中没有文件」：' + JSON.stringify(toasts));
-    assert_(toasts.some((t) => /已粘贴截图/.test(t)), '应提示已粘贴截图：' + JSON.stringify(toasts));
+    assert_(!toasts.some((t) => /已粘贴截图/.test(t)), '截图落盘成功时不应弹提示');
     fakeClipImage = null;
   });
 
@@ -2223,7 +2225,7 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     assert_(fakeWrittenBinary.length === 1, '截图应落盘，实际 writeBinary 调用 ' + fakeWrittenBinary.length + ' 次');
     assert_(!FAKE_FS[P + '/src/notes.txt'], '不能把上一次复制的旧文件粘到目标目录');
     const toasts = [...dom.window.document.querySelectorAll('#toast-wrap .toast')].map((t) => t.textContent);
-    assert_(toasts.some((t) => /已粘贴截图/.test(t)), '应提示已粘贴截图：' + JSON.stringify(toasts));
+    assert_(!toasts.some((t) => /已粘贴截图/.test(t)), '截图落盘成功时不应弹提示');
     fakeClipImage = null;
     dom.window.Tree.__testClearCopied();
   });

@@ -1041,19 +1041,16 @@ const Tree = (() => {
   }
 
   // 剪贴板里是图片时落盘：优先落成截图文件放进目标目录（用户的直觉是「贴到这儿」）。
-  // 主进程读字节（渲染进程拿不到剪贴板图片），命名与 Markdown 贴图同一套规则。
+  // 主进程直接落盘，避免在两个进程之间来回传输整张图片。
   // 返回 true 表示「已经处理过（成功或已报错）」，调用方不要再报「剪贴板中没有文件」。
   async function pasteClipboardImage(destDir) {
-    let r;
-    try { r = await window.myIDE.clip.readImage(); } catch { return false; }
-    if (!r?.ok || r.empty || !r.png) return false;
     const name = '截图-' + timestampName() + '.png';
     const target = destDir.replace(/[\\/]+$/, '') + '\\' + name;
     try {
-      const w = await window.myIDE.fs.writeBinary(target, r.png);
-      if (!w || (w.error && !w.ok)) { MI.toast('粘贴截图失败: ' + ((w && w.error) || '写入未确认'), 'err'); return true; }
+      const w = await window.myIDE.clip.pasteImageTo(target);
+      if (w?.empty) return false;
+      if (!w?.ok) { MI.toast('粘贴截图失败: ' + (w?.error || '写入未确认'), 'err'); return true; }
       invalidateAll(); render(); App.refreshGit();
-      MI.toast('✅ 已粘贴截图 ' + name, 'ok');
       return true;
     } catch (e) {
       MI.toast('粘贴截图失败: ' + String((e && e.message) || e), 'err');

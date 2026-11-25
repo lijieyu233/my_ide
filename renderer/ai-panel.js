@@ -2136,7 +2136,6 @@ const AiPanel = (() => {
           if (document.elementFromPoint(px, py) !== img) throw Error('图片已移出可见区域，请重新右键复制');
           const result = await window.myIDE.clip.copyImageAt(px, py);
           if (!result?.ok) throw Error(result?.error || '复制图片失败');
-          MI.toast('已复制图片', 'ok');
         } }],
       });
     }
@@ -2378,7 +2377,7 @@ const AiPanel = (() => {
 
   function onPasteImage(e) {
     const dt = e.clipboardData;
-    if (!dt || pasteChatMessage(e, dt) || !dt.items) return;
+    if (!dt || (dt.types?.includes('text/html') && pasteChatMessage(e, dt)) || !dt.items) return;
     const item = [...dt.items].find((it) => it.kind === 'file' && /^image\//.test(it.type || ''));
     if (!item) return;
     e.preventDefault();
@@ -2390,7 +2389,6 @@ const AiPanel = (() => {
       if(scope!==inputViewKey())return;
       pendingImages.push(String(fr.result || ''));
       renderImages();
-      MI.toast('已附上图片，发送时一并给模型（需要模型支持看图）', 'ok');
     };
     fr.onerror = () => MI.toast('读图片失败', 'err');
     fr.readAsDataURL(f);

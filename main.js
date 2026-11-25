@@ -1612,6 +1612,19 @@ ipcMain.handle('clip:readImage', () => {
   } catch (e) { return { ok: false, error: String(e) }; }
 });
 
+ipcMain.handle('clip:pasteImageTo', (event, target) => {
+  try {
+    if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame ||
+        typeof target !== 'string' || !path.isAbsolute(target) || path.extname(target).toLowerCase() !== '.png') {
+      throw Error('无效的截图保存位置');
+    }
+    const image = clipboard.readImage();
+    if (image.isEmpty()) return { ok: true, empty: true };
+    PathJobs.assertWritable(target);
+    return FileWrite.atomicWrite(target, image.toPNG());
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
 // 文件复制：写系统剪贴板双轨
 // 1) Electron 同步写 text + FileNameW（应用内直读快路径，立即生效）
 // 2) PowerShell .NET DataObject 异步覆盖写标准格式（SetFileDropList 自动写 FileDrop(CF_HDROP) + FileNameW + FileName）
@@ -1697,6 +1710,16 @@ function psReadFileDropList() {
     } catch { resolve([]); }
   });
 }
+
+let isClipboardFormatAvailable;
+function hasWindowsFileDrop() {
+  try {
+    isClipboardFormatAvailable ||= require('koffi').load('user32.dll')
+      .func('__stdcall', 'IsClipboardFormatAvailable', 'int', ['uint32_t']);
+    return isClipboardFormatAvailable(15) !== 0; // CF_HDROP
+  } catch { return true; } // 原生探测不可用时仍尝试读取完整文件列表。
+}
+
 // 读取系统剪贴板中的文件路径（多文件）
 // 顺序：应用内复制直读 → PowerShell 完整 CF_HDROP → CF_HDROP 原始解析（防御）→ FileNameW（外部时仅第一个，兜底）→ 文本按行拆
 ipcMain.handle('clip:getFiles', async () => {
@@ -1713,7 +1736,7 @@ ipcMain.handle('clip:getFiles', async () => {
     return [];
   };
   // 0) 应用内复制会话判定：私有标记仍在剪贴板（外部复制会清空重写剪贴板 → 标记消失）。
-  //    只有标记在，快路径才可信；否则一律按外部剪贴板处理（走 PowerShell 读完整列表）
+  //    只有标记在，快路径才可信；否则按外部剪贴板处理。
   let isOwnSession = false;
   if (lastOwnCopy && lastOwnMark) {
     try {
@@ -1732,8 +1755,8 @@ ipcMain.handle('clip:getFiles', async () => {
       if (list.length && JSON.stringify(list) === JSON.stringify(lastOwnCopy)) return list;
     }
   } catch {}
-  // 2) 外部复制（资源管理器）：PowerShell 读完整 CF_HDROP 多文件列表
-  if (process.platform === 'win32') {
+  // 2) 只有文件列表才需要启动 PowerShell，普通截图跳过冷加载。
+  if (process.platform === 'win32' && hasWindowsFileDrop()) {
     const ext = await psReadFileDropList();
     if (ext.length) return ext;
   }
