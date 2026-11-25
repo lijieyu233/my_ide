@@ -1610,7 +1610,7 @@ const AiPanel = (() => {
       if (/^(\/|[a-z]:\/)/i.test(path)) return { path, line };
       const root = sessionRoot();
       const local = resolveInRoot(path, root || '');
-      return local?.rel ? { path: local.root.replaceAll('\\', '/') + '/' + local.rel, line } : null;
+      return local ? { path: local.root.replaceAll('\\', '/') + '/' + local.rel, line } : null;
     } catch { return null; }
   }
   let replyLinkIntent = 0;
@@ -1625,7 +1625,12 @@ const AiPanel = (() => {
       ].filter(Boolean))].slice(0, 256);
       const file = await window.myIDE.fs.locateFileProject(target.path, roots);
       if (intent !== replyLinkIntent || DocumentPaths.key(App.root) !== origin) return;
-      if (!file?.ok) throw Error(file?.error || '无法定位链接指向的文件');
+      if (!file?.ok) throw Error(file?.error || '无法定位链接目标');
+      if (file.directory) {
+        const result = await window.myIDE.shell.openDirectory(file.path);
+        if (!result?.ok && intent === replyLinkIntent) throw Error('无法打开目录：' + (result?.error || '未知错误'));
+        return;
+      }
       const destination = DocumentPaths.key(file.root);
       if (destination && destination !== origin) {
         if (!await App.openProject(file.root) || intent !== replyLinkIntent || DocumentPaths.key(App.root) !== destination) return;
@@ -1762,10 +1767,10 @@ const AiPanel = (() => {
     if (!target) return;
     const root = window.App?.root;
     const actions = [
-      { label: target.path ? '打开文件' : '打开链接', run: () => openReplyLink(target) },
-      { label: target.path ? '复制文件路径' : '复制链接地址', run: async () => {
+      { label: '打开链接', run: () => openReplyLink(target) },
+      { label: target.path ? '复制路径' : '复制链接地址', run: async () => {
         if (!await MI.copyText(target.path ?? target.url)) throw Error('复制失败');
-        MI.toast(target.path ? '已复制文件路径' : '已复制链接地址', 'ok');
+        MI.toast(target.path ? '已复制路径' : '已复制链接地址', 'ok');
       } },
     ];
     if (target.path) actions.push({ label: '在资源管理器中显示', run: () => window.myIDE.shell.showInFolder(target.path) });

@@ -169,7 +169,8 @@ function makeDom() {
       setRecent: async () => ({ ok: true }),
       inspectDirectory: async () => ({ ok: true }),
       locateFileProject: async (path, roots) => {
-        if (FAKE_FS[path]?.type !== 'file') return { ok: false, error: '链接指向的文件不存在' };
+        if (FAKE_FS[path]?.type === 'dir') return { ok: true, directory: true, path };
+        if (FAKE_FS[path]?.type !== 'file') return { ok: false, error: '链接目标不存在' };
         const root = roots.filter(root => path.startsWith(root.replace(/\/$/, '') + '/'))
           .sort((a, b) => b.length - a.length)[0] || '';
         return { ok: true, root, path };
@@ -6049,24 +6050,24 @@ assert_(panel, 'CM6 搜索面板出现');
       click($(d, '#tool-ai'));
       const msg = $(d, '#ai-msgs');
       msg.innerHTML = '<div class="ai-assistant"><div class="ai-md">' + w.marked.parse(
-        '[**咨询记录**](docs/%E5%92%A8%E8%AF%A2%E8%AE%B0%E5%BD%95%20%E9%87%8D%E8%AE%BE%E8%AE%A1.html) · [网页](' + web + ')'
+        '[**咨询记录**](docs/%E5%92%A8%E8%AF%A2%E8%AE%B0%E5%BD%95%20%E9%87%8D%E8%AE%BE%E8%AE%A1.html) · [网页](' + web + ') · [目录](src)'
       ) + '</div></div>';
-      const [fileLink, webLink] = msg.querySelectorAll('a');
+      const [fileLink, webLink, directoryLink] = msg.querySelectorAll('a');
       const action = name => $$(d, '#ctx-menu:not(.hidden) [role="menuitem"]').find(item => item.textContent === name);
       const rightClick = node => node.dispatchEvent(new w.MouseEvent('contextmenu', {
         bubbles: true, cancelable: true, clientX: 80, clientY: 100,
       }));
       rightClick(fileLink.firstElementChild);
-      assert(action('打开文件') && action('在资源管理器中显示'));
-      click(action('复制文件路径'));
+      assert(action('打开链接') && action('在资源管理器中显示'));
+      click(action('复制路径'));
       await tick();
       assert.equal(calls.copy.at(-1), local);
       fileLink.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true, cancelable: true }));
-      assert.equal(w.document.activeElement, action('打开文件'));
-      action('打开文件').dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      assert.equal(w.document.activeElement, action('打开链接'));
+      action('打开链接').dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       assert.equal(w.document.activeElement, fileLink);
       rightClick(fileLink);
-      click(action('打开文件'));
+      click(action('打开链接'));
       for (let i = 0; i < 20 && w.Viewer.activeTab?.path !== local; i++) await tick();
       assert.equal(w.Viewer.activeTab?.path, local);
       rightClick(webLink);
@@ -6078,6 +6079,12 @@ assert_(panel, 'CM6 搜索面板出现');
       rightClick(webLink);
       click(action('打开链接'));
       assert.deepEqual(opened, [web]);
+      w.myIDE.shell.openDirectory = async path => { opened.push(path); return { ok: true }; };
+      rightClick(directoryLink);
+      click(action('打开链接'));
+      await tick();
+      assert.deepEqual(opened, [web, P + '/src']);
+      assert.equal(w.Viewer.activeTab?.path, local);
       const unsafe = w.document.createElement('a');
       unsafe.href = 'javascript:123';
       msg.querySelector('.ai-md').append(unsafe);

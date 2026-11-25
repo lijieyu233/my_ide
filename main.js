@@ -616,7 +616,9 @@ ipcMain.handle('fs:locateFileProject', async (event, file, roots) => {
   };
   try {
     const realFile = await fs.promises.realpath(file);
-    if (!(await fs.promises.stat(realFile)).isFile()) return { ok: false, error: '链接目标不是文件' };
+    const stat = await fs.promises.stat(realFile);
+    if (stat.isDirectory()) return { ok: true, directory: true, path: realFile };
+    if (!stat.isFile()) return { ok: false, error: '链接目标不是文件或目录' };
     const known = await Promise.all([...new Set(roots.filter(absolute))].map(async root =>
       ({ root, real: await fs.promises.realpath(root).catch(() => null) })));
     const matches = known.filter(project => project.real && containsFile(project.real, realFile));
@@ -628,7 +630,7 @@ ipcMain.handle('fs:locateFileProject', async (event, file, roots) => {
       ? path.join(project.root, path.relative(project.real, realFile)) : realFile };
   } catch (error) {
     const missing = error.code === 'ENOENT' || error.code === 'ENOTDIR';
-    return { ok: false, error: missing ? '链接指向的文件不存在' : '无法打开链接指向的文件：' + error.message };
+    return { ok: false, error: missing ? '链接目标不存在' : '无法打开链接目标：' + error.message };
   }
 });
 ipcMain.handle('fs:setRecent', async (_e, p) => {
@@ -1422,6 +1424,17 @@ ipcMain.handle('fs:remove', (_e, p) => {
 });
 
 ipcMain.handle('shell:showInFolder', (_e, p) => { shell.showItemInFolder(p); });
+ipcMain.handle('shell:openDirectory', async (event, p) => {
+  if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame) {
+    return { ok: false, error: '无效的链接来源' };
+  }
+  const directory = await inspectProjectDirectory(p);
+  if (!directory.ok) return directory;
+  try {
+    const error = await shell.openPath(p);
+    return error ? { ok: false, error } : { ok: true };
+  } catch (error) { return { ok: false, error: error.message }; }
+});
 // 右键运行：按扩展名选解释器，独立进程启动（不阻塞编辑器）
 const { spawn, exec } = require('child_process');
 ipcMain.handle('run:file', (_e, p) => {

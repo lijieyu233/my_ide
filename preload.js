@@ -106,6 +106,7 @@ contextBridge.exposeInMainWorld('myIDE', {
   },
   shell: {
     showInFolder: (p) => ipcRenderer.invoke('shell:showInFolder', p),
+    openDirectory: (p) => ipcRenderer.invoke('shell:openDirectory', p),
     openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
     openTerminal: (dir) => ipcRenderer.invoke('shell:openTerminal', dir),
     runFile: (p) => ipcRenderer.invoke('run:file', p),
