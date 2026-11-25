@@ -1634,6 +1634,10 @@ const AiPanel = (() => {
     group.tabIndex = -1;
     if (busy) group.setAttribute('aria-busy', 'true');
     const events = new AbortController();
+    const lookup = kind === 'session' ? historyAnchorLookup(anchor) : null;
+    const originalRect = lookup && anchor.getBoundingClientRect();
+    const offsetX = originalRect ? x - originalRect.left : 0;
+    const offsetY = originalRect ? y - originalRect.top : 0;
     const close = (restore = false) => {
       events.abort();
       if (aiContextMenu?.close === close) aiContextMenu = null;
@@ -1642,9 +1646,19 @@ const AiPanel = (() => {
       menu.classList.add('hidden');
       if (restore && anchor.isConnected) anchor.focus({ preventScroll: true });
     };
-    aiContextMenu = { kind, anchor, close };
+    const menuState = { kind, anchor, close, updateAnchor() {
+      if (!lookup) return;
+      if (!anchor.isConnected) anchor = lookup();
+      if (!anchor || anchor.disabled || anchor.closest('[hidden], .hidden') || !isCurrent(anchor)) { close(); return; }
+      menuState.anchor = anchor;
+      const rect = anchor.getBoundingClientRect();
+      x = rect.left + offsetX;
+      y = rect.top + offsetY;
+      positionAiContextMenu(menu, x, y, alignEnd);
+    } };
+    aiContextMenu = menuState;
     let parentAction = null;
-    const canSelect = () => group.parentElement === menu && !menu.classList.contains('hidden') && isCurrent();
+    const canSelect = () => group.parentElement === menu && !menu.classList.contains('hidden') && isCurrent(anchor);
     const back = () => { const previous = parentAction; parentAction = null; renderActions(actions, previous); };
     function renderActions(items, focusAction = null) {
       group.replaceChildren();
@@ -1686,7 +1700,7 @@ const AiPanel = (() => {
           if (item.back) { back(); return; }
           if (item.children) { parentAction = item; renderActions(item.children); return; }
           close(true);
-          try { await item.run(); } catch (error) { MI.toast(error.message || String(error), 'err'); }
+          try { await (kind === 'session' ? item.run(anchor) : item.run()); } catch (error) { MI.toast(error.message || String(error), 'err'); }
         };
         group.append(button);
         if (!button.disabled && (item === focusAction || item.checked)) nextFocus = button;
@@ -1719,7 +1733,7 @@ const AiPanel = (() => {
     menu.classList.remove('hidden');
     renderActions(actions);
     document.addEventListener('pointerdown', event => { if (!group.contains(event.target)) close(); }, { capture: true, signal: events.signal });
-    window.addEventListener('blur', () => close(), { signal: events.signal });
+    if (!lookup) window.addEventListener('blur', () => close(), { signal: events.signal });
     return { close, isOpen: canSelect, update(nextActions) {
       if (!canSelect()) return;
       actions = nextActions;
@@ -3618,6 +3632,7 @@ const AiPanel = (() => {
     if (codexHistoryDrag) return true;
     const { all, running } = sessionsForHist();
     renderHistRows(histSidebar, all, running);
+    aiContextMenu?.updateAnchor?.();
     if (aiContextMenu?.kind === 'session' && !aiContextMenu.anchor.isConnected) aiContextMenu.close();
     return true;
   }
@@ -4311,10 +4326,28 @@ const AiPanel = (() => {
     return true;
   }
 
+  function historyAnchorLookup(anchor) {
+    const row = anchor.closest('.ai-hist-row');
+    const rowKey = row && rowSelectionKey(row);
+    const group = anchor.closest('.ai-hist-group');
+    if (!group) return null;
+    const groupKey = historyGroupKey(group);
+    return () => {
+      if (rowKey) {
+        return [...histSidebar.querySelectorAll('.ai-hist-row')].find(item => rowSelectionKey(item) === rowKey)
+          ?.querySelector('.ai-hist-open');
+      }
+      return [...histSidebar.querySelectorAll('.ai-hist-group')].find(item => historyGroupKey(item) === groupKey)
+        ?.querySelector('[data-hist-toggle]:enabled, [data-hist-jump]');
+    };
+  }
+
   function editHistoryName(anchor, label, value) {
     const menu = document.getElementById('ctx-menu');
     if (!anchor?.isConnected || !menu) return Promise.resolve(null);
     aiContextMenu?.close();
+    const lookup = historyAnchorLookup(anchor);
+    const scope = selectionScopeFor(getConfig());
     return new Promise(resolve => {
       const form = document.createElement('form');
       form.className = 'ai-hist-name-form';
@@ -4331,11 +4364,20 @@ const AiPanel = (() => {
         if (form.parentElement === menu) {
           form.remove();
           menu.classList.add('hidden');
-          if (restore && anchor.isConnected) anchor.focus({ preventScroll: true });
+          if (restore && anchor?.isConnected) anchor.focus({ preventScroll: true });
         }
         resolve(result);
       };
-      aiContextMenu = { kind: 'session', anchor, close };
+      const editor = { kind: 'session', anchor, close, updateAnchor() {
+        if (scope !== selectionScopeFor(getConfig())) { close(); return; }
+        // Catalog refresh can replace the row, but the open form owns its input and focus.
+        if (!anchor.isConnected) anchor = lookup?.();
+        if (!anchor || anchor.disabled || anchor.closest('[hidden], .hidden')) { close(); return; }
+        editor.anchor = anchor;
+        const rect = anchor.getBoundingClientRect();
+        positionAiContextMenu(menu, rect.left, rect.bottom);
+      } };
+      aiContextMenu = editor;
       form.onsubmit = event => {
         event.preventDefault();
         if (anchor.isConnected && form.parentElement === menu && !menu.classList.contains('hidden')) finish(input.value, true);
@@ -4347,11 +4389,9 @@ const AiPanel = (() => {
         if (event.key === 'Enter') event.stopPropagation();
       };
       document.addEventListener('pointerdown', event => { if (!form.contains(event.target)) close(); }, { capture: true, signal: events.signal });
-      window.addEventListener('blur', close, { signal: events.signal });
       menu.replaceChildren(form);
       menu.classList.remove('hidden');
-      const rect = anchor.getBoundingClientRect();
-      positionAiContextMenu(menu, rect.left, rect.bottom);
+      editor.updateAnchor();
       input.focus({ preventScroll: true });
       input.select();
     });
@@ -4407,7 +4447,8 @@ const AiPanel = (() => {
     if (!rootDir || !histSidebarVisible || head.closest('[hidden], .hidden')) return false;
     const anchor = head.querySelector('[data-hist-toggle]:enabled, [data-hist-jump]') || head.querySelector('button');
     const scope = sessKey(), engine = getConfig().engine;
-    const current = () => histSidebarVisible && anchor.isConnected && scope === sessKey() && engine === getConfig().engine;
+    const sameScope = () => histSidebarVisible && scope === sessKey() && engine === getConfig().engine;
+    const current = anchor => sameScope() && anchor.isConnected;
     const actions = [{ label: '在资源管理器中显示', run: () => window.myIDE.shell.showInFolder(rootDir) }];
     if (engine === 'codex' && group.dataset.codexProject) {
       const projectId = group.dataset.codexProject;
@@ -4416,9 +4457,9 @@ const AiPanel = (() => {
         if (!result?.ok) MI.toast(result?.error || '无法打开 Codex 项目', 'err');
       } });
       const project = currentCodexCatalog()?.projects.find(item => item.id === projectId);
-      if (project) actions.push({ label: '重命名', run: async () => {
+      if (project) actions.push({ label: '重命名', run: async anchor => {
         const title = (await editHistoryName(anchor, '项目名称', project.title))?.trim();
-        if (!title || title === project.title || !current()) return;
+        if (!title || title === project.title || !sameScope()) return;
         const config = getConfig(), launcher = config.codexPath || '';
         const result = await window.myIDE.ai.codexRenameProject(config, projectId, title);
         if (!result?.ok) throw Error(result?.error || '重命名失败');
@@ -4437,12 +4478,12 @@ const AiPanel = (() => {
       actions.unshift({ label: '新建会话', run: () => run('new') });
       if (!workspace) actions.push({ label: '添加到 DSH 工作区', run: () => run('add') });
       else {
-        actions.push({ label: '重命名', run: async () => {
+        actions.push({ label: '重命名', run: async anchor => {
           const title = (await editHistoryName(anchor, '工作区名称', workspace.title || sessionRootLabel(rootDir)))?.trim();
-          if (title && current()) await run('renameWorkspace', { title });
-        } }, { label: '删除', run: async () => {
+          if (title && sameScope()) await run('renameWorkspace', { title });
+        } }, { label: '删除', run: async anchor => {
           const accepted = await Modal.confirm('删除 DSH 工作区', '从 DSH 移除「' + (workspace.title || sessionRootLabel(rootDir)) + '」的工作区登记？');
-          if (accepted && current()) await run('removeWorkspace');
+          if (accepted && current(anchor)) await run('removeWorkspace');
         } });
         if (historyPrefs.sort === 'manual') {
           const order = [...dshCatalog.workspaces.values()].map(item => item.id);
@@ -4820,7 +4861,7 @@ const AiPanel = (() => {
     return sessionsForHist().all.find(item => item.id === row.dataset.id && pathKey(item.rootDir) === pathKey(row.dataset.root));
   }
 
-  function batchHistoryActions(targets, anchor) {
+  function batchHistoryActions(targets) {
     const config = getConfig(), scope = sessKey(), selectionScope = historySelectionScope;
     const current = () => scope === sessKey() && selectionScope === selectionScopeFor(getConfig());
     const nativeDsh = item => config.engine === 'dsh' && item.hostId && !item.localOnly;
@@ -4828,11 +4869,11 @@ const AiPanel = (() => {
     const actions = [];
     const action = (key, label, items, task, prepare) => {
       if (!items.length) return;
-      actions.push({ key, label: items.length === targets.length ? label : `${label}（${items.length}）`, run: async () => {
+      actions.push({ key, label: items.length === targets.length ? label : `${label}（${items.length}）`, run: async anchor => {
         if (historyBatchBusy || !current()) return;
         historyBatchBusy = true;
         try {
-          const input = prepare ? await prepare(items) : true;
+          const input = prepare ? await prepare(anchor) : true;
           if (!input || !current()) return;
           let done = 0, failed = 0, firstError = '';
           for (const [index, item] of items.entries()) {
@@ -4862,8 +4903,8 @@ const AiPanel = (() => {
     action('fork', '分叉', catalogued.filter(item => !item.codexThreadId || !item.archived), item => item.codexThreadId
       ? window.myIDE.ai.codexFork(config, item.codexThreadId) : dsh(item, 'fork'));
     action('rename', '批量重命名', targets.filter(item => !item.virtual || item.codexThreadId || nativeDsh(item)),
-      (item, prefix, index) => actOnHistorySession(item, 'ren', anchor, (prefix.slice(0, 110) + ' ' + (index + 1))),
-      async () => (await editHistoryName(anchor, '名称前缀（自动编号）', ''))?.trim());
+      (item, prefix, index) => actOnHistorySession(item, 'ren', null, (prefix.slice(0, 110) + ' ' + (index + 1))),
+      async anchor => (await editHistoryName(anchor, '名称前缀（自动编号）', ''))?.trim());
     const savedIds = new Set(loadSessions().map(item => item.id));
     const local = targets.filter(item => !item.foreign && !item.virtual && !item.running && savedIds.has(item.id));
     if (local.length) actions.push({ key: 'del', label: `删除本地记录（${local.length}）`, run: async () => {
@@ -4921,8 +4962,8 @@ const AiPanel = (() => {
       if (targets.length > 1) {
         const keys = targets.map(item => historyRowKey(item.id, item.rootDir));
         showAiContextMenu(anchor, x, y, { kind: 'session', label: `已选 ${targets.length} 个会话`,
-          actions: batchHistoryActions(targets, anchor),
-          isCurrent: () => {
+          actions: batchHistoryActions(targets),
+          isCurrent: anchor => {
             if (!histSidebarVisible || !anchor.isConnected || scope !== sessKey() || engine !== getConfig().engine) return false;
             const visible = new Set(visibleHistoryRows().map(rowSelectionKey));
             return keys.every(key => visible.has(key) && selectedHistoryRows.has(key));
@@ -4930,7 +4971,7 @@ const AiPanel = (() => {
         return true;
       }
     }
-    const action = (key, label) => ({ key, label, run: () => actOnHistorySession(target, key, anchor) });
+    const action = (key, label) => ({ key, label, run: anchor => actOnHistorySession(target, key, anchor) });
     const runningInMyide = [currentRun, parkedRecordOf(target.id)?.record.run].some(run =>
       run?.engine === 'codex' && run.identity.sessionId === target.id &&
       pathKey(run.identity.rootId) === pathKey(target.rootDir) && ['active', 'stopping'].includes(run.status));
@@ -4969,7 +5010,7 @@ const AiPanel = (() => {
     }
     showAiContextMenu(anchor, x, y, {
       kind: 'session', label: '会话操作', actions,
-      isCurrent: () => histSidebarVisible && anchor.isConnected && !anchor.closest('[hidden], .hidden') &&
+      isCurrent: anchor => histSidebarVisible && anchor.isConnected && !anchor.closest('[hidden], .hidden') &&
         scope === sessKey() && engine === getConfig().engine,
     });
     return true;

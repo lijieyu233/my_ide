@@ -464,11 +464,27 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
    [...document.querySelectorAll('#ctx-menu button')].find(button=>button.textContent==='重命名').click();
  });
  await until(()=>js(()=>document.querySelector('.ai-hist-name-form input')?.value==='桌面空项目'),'project rename input');
- await js(()=>{
-   const form=document.querySelector('.ai-hist-name-form');
-   form.querySelector('input').value='桌面项目新名称';
-   form.requestSubmit();
- });
+ const draftRename=async (selector,title,updateCatalog)=>{
+   await js((selector,title)=>{
+     window.__renameAnchor=document.querySelector(selector);
+     const input=document.querySelector('.ai-hist-name-form input');
+     input.value=title;
+     input.setSelectionRange(1,3);
+   },selector,title);
+   updateCatalog();
+   await js(()=>window.dispatchEvent(new Event('focus')));
+   await until(()=>js(()=>!window.__renameAnchor.isConnected),'catalog replaced rename target row');
+   return js(title=>{
+     window.dispatchEvent(new Event('blur'));
+     const input=document.querySelector('#ctx-menu:not(.hidden) .ai-hist-name-form input');
+     return input?.value===title&&input===document.activeElement&&input.selectionStart===1&&input.selectionEnd===3;
+   },title);
+ };
+ check('Project rename survives catalog refresh and window blur',
+   await draftRename('[data-codex-project="desktop-empty"] .ai-hist-group-head','桌面项目新名称',()=>{
+     fixture.projects.find(project=>project.id==='desktop-empty').name='桌面空项目（后台更新）';
+   }));
+ await js(()=>document.querySelector('.ai-hist-name-form').requestSubmit());
  await until(()=>js(()=>document.querySelector('[data-codex-project="desktop-empty"] .ai-hist-workspace-name')?.textContent==='桌面项目新名称'),'renamed project row');
  const renamedProject=fixture.projects.find(project=>project.id==='desktop-empty');
  check('Renaming a Codex project updates the original project and preserves its roots',renamedProject.name==='桌面项目新名称'&&renamedProject.roots[0].path===emptyRoot);
@@ -534,15 +550,27 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  await js(id=>{
    const row=document.querySelector('[data-id="codex:'+id+'"]');
    row.querySelector('.ai-hist-open').dispatchEvent(new MouseEvent('contextmenu',{button:2,bubbles:true,cancelable:true}));
-   [...document.querySelectorAll('#ctx-menu button')].find(button=>button.textContent==='重命名').click();
+   window.__renameMenuRow=row;
+   window.__renameMenuButton=[...document.querySelectorAll('#ctx-menu button')].find(button=>button.textContent==='重命名');
+   window.__renameMenuButton.focus();
  },externalId);
+ fixture.threads.get(implicitId).name='项目主目录里的旧会话（右键菜单更新）';
+ await js(()=>window.dispatchEvent(new Event('focus')));
+ await until(()=>js(()=>!window.__renameMenuRow.isConnected),'catalog replaced the row under the context menu');
+ check('The session context menu stays open and focused when its row is replaced',
+   await js(()=>{
+     window.dispatchEvent(new Event('blur'));
+     return document.querySelector('#ctx-menu:not(.hidden)')?.contains(window.__renameMenuButton)&&
+       document.activeElement===window.__renameMenuButton;
+   }));
+ await js(()=>window.__renameMenuButton.click());
  await until(()=>js(()=>document.querySelector('.ai-hist-name-form input')?.value==='桌面 Codex 外部会话'),'native rename opens beside the row');
+ check('Session rename keeps the draft and selection when its sidebar row is replaced',
+   await draftRename('[data-id="codex:'+externalId+'"]',renamedThreadTitle,()=>{
+     fixture.threads.get(implicitId).name='项目主目录里的旧会话（后台更新）';
+   }));
  await capture('codex-rename-form');
- await js(name=>{
-   const form=document.querySelector('.ai-hist-name-form');
-   form.querySelector('input').value=name;
-   form.requestSubmit();
- },renamedThreadTitle);
+ await js(()=>document.querySelector('.ai-hist-name-form').requestSubmit());
  const renamed=()=>js((id,name)=>{
    const row=document.querySelector('[data-id="codex:'+id+'"] .ai-hist-nm');
    return row?.textContent===name&&document.getElementById('ai-current-session').textContent===name;
