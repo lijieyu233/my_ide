@@ -36,8 +36,7 @@ const until=async(fn,name)=>{const deadline=Date.now()+20000;while(Date.now()<de
 const check=(name,ok,data)=>{checks.push({name,ok,data});console.log((ok?'PASS ':'FAIL ')+name+(data?' '+JSON.stringify(data):''));assert(ok,name);};
 async function capture(name){await js(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true)))));let timer;const image=await Promise.race([win.capturePage(undefined,{stayHidden:true,stayAwake:true}),new Promise(resolve=>timer=setTimeout(()=>resolve(null),2500))]);clearTimeout(timer);if(image&&!image.isEmpty())fs.writeFileSync(path.join(out,name+'.png'),image.toPNG());}
 async function finish(code,error){if(done)return;done=true;clearTimeout(watchdog);await service?.dispose();fs.writeFileSync(path.join(out,'report.json'),JSON.stringify({code,error,checks,network,requests:fixture.requests.map(r=>({method:r.method,...r.method==='turn/start'?{threadId:r.params.threadId}:r.method==='thread/start'?{cwd:r.params.cwd,sandbox:r.params.sandbox}:{} })),receipts:fixture.receipts,temp},null,2));console.log('CODEX_UI_REPORT '+path.join(out,'report.json'));app.exit(code);}
-function createVisualizationMarker() {
- const visualizationDir=path.join(process.env.CODEX_HOME,'visualizations','fixture');
+function createVisualizationMarker(visualizationDir=path.join(process.env.CODEX_HOME,'visualizations','fixture')) {
  fs.mkdirSync(visualizationDir,{recursive:true});
  const visualizationFile=path.join(visualizationDir,'interactive demo.html');
  fs.writeFileSync(visualizationFile,'<style>body{color:#e5edf6;background:#121923;font:22px system-ui;padding:32px}</style><h2>互动预览</h2><button id="increment">计数 0</button><script>const button=document.querySelector("button");button.onclick=()=>{window.openai.setWidgetState(1);button.textContent="计数 "+window.openai.widgetState;};</script>');
@@ -117,11 +116,11 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  await js(async root=>{Object.defineProperty(document,'hidden',{value:false,configurable:true});await App.setRoot(root);App.showAi();await AiPanel.setConfig({engine:'codex',autoIdeContext:false,injectMyideRules:false});return true;},roots[0]);await until(()=>js(()=>AiPanel.aiState().dshState==='ready'),'Codex options');check('Codex connects in existing mode selector and shows native model',await js(()=>document.getElementById('ai-engine').value==='codex'&&document.getElementById('ai-model').textContent.includes('Codex offline fixture')));check('inspect never creates a thread or starts a turn',!fixture.requests.some(r=>['thread/start','turn/start'].includes(r.method)));
  if (process.argv.includes('--codex-visualization-only')) {
    const id = '019caa00-0000-7000-8000-000000000003';
-   fixture.projects.push({id:'viz-project',name:'演示项目',roots:[{path:roots[0]}]});
-   fixture.threads.set(id,{id,projectId:'viz-project',cwd:roots[0],model:'offline-codex',historyMode:'paginated',
+   fixture.projects.push({id:'viz-project',name:'演示项目',roots:[{path:roots[1]}]});
+   fixture.threads.set(id,{id,projectId:'viz-project',cwd:roots[1],model:'offline-codex',historyMode:'paginated',
      name:'可视化会话',updatedAt:1710000000,running:false,items:[
        {type:'userMessage',content:[{type:'text',text:'演示预览'}]},
-       {type:'agentMessage',text:'资源库演示\n\n'+createVisualizationMarker()+'\n\n可在演示中点击操作。'},
+       {type:'agentMessage',text:'资源库演示\n\n'+createVisualizationMarker(path.join(roots[1],'demos','custom folder'))+'\n\n可在演示中点击操作。'},
      ]});
    await js(()=>App.showTool('sessions'));
    await until(()=>js(id=>{
@@ -133,6 +132,8 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
      return true;
    },id),'open Codex visualization history');
    await verifyVisualization();
+   check('Project preview uses the conversation workspace while the editor stays in a different project',
+     await js((editor,chat)=>App.root===editor&&AiPanel.dshView().rootId===chat,roots[0],roots[1]));
    await finish(0);
    return;
  }

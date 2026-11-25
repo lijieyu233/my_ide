@@ -26,7 +26,7 @@ const {createService}=require('../src/main/browser/html-preview');
     await test('符号链接不能逃出项目',async()=>{await fs.symlink(temp,path.join(root,'outside'),'junction');assert.equal((await service.handle(request('myide-preview://'+lease.id+'/outside/private.txt'))).status,403);});
     await test('独立源与所有者隔离，释放后无法继续读取',async()=>{const second=await service.open(2,{path:file,root,content:'第二次预览'});assert.notEqual(new URL(second.url).hostname,new URL(lease.url).hostname);service.close(2,lease.id);assert.equal((await service.handle(request(lease.url))).status,200);service.close(1,lease.id);assert.equal((await service.handle(request(lease.url))).status,404);service.clear(2);assert.equal((await service.handle(request(second.url))).status,404);});
     await test('禁止写方法和无效HTML入口',async()=>{assert.equal((await service.handle({url:lease.url,method:'POST'})).status,405);await assert.rejects(service.open(1,{path:file,content:42}));await assert.rejects(service.open(1,{path:path.join(root,'assets','site.css'),content:'a'}));});
-    await test('Codex 可视化可从会话工程的 artifacts 预览，并限制在单个 HTML 文件内',async()=>{
+    await test('Codex 可视化支持会话工程内任意目录，并限制在单个 HTML 文件内',async()=>{
       const artifacts=path.join(root,'artifacts'), demo=path.join(artifacts,'voice session.html');
       const standardRoot=path.join(temp,'visualizations');
       const otherRoot=path.join(temp,'other-project'), otherArtifacts=path.join(otherRoot,'artifacts');
@@ -40,7 +40,15 @@ const {createService}=require('../src/main/browser/html-preview');
       assert.equal(response.status,200);
       assert.match(response.headers.get('Content-Security-Policy'),/sandbox allow-scripts/);
       assert.match(await response.text(),/查看详情/);
-      await assert.rejects(access(file),/可视化文件路径无效/);
+      const rootDemo=path.join(root,'preview.html');
+      const nestedDemo=path.join(root,'交互演示','任意目录','demo.html');
+      await fs.mkdir(path.dirname(nestedDemo),{recursive:true});
+      for (const target of [rootDemo,nestedDemo,file]) {
+        await fs.writeFile(target,'<button>查看预览</button>');
+        const additional=await access(target);
+        assert.match(await (await service.handle(request(additional.url))).text(),/查看预览/);
+        service.close(1,additional.id);
+      }
       await assert.rejects(access(outside),/可视化文件路径无效/);
       await fs.writeFile(path.join(artifacts,'sibling.html'),'<p>相邻文件</p>');
       assert.equal((await service.handle(request(new URL('sibling.html',widget.url).href))).status,403);
@@ -49,7 +57,7 @@ const {createService}=require('../src/main/browser/html-preview');
       await assert.rejects(access(path.join(link,'other.html')),/可视化文件路径无效/);
       service.close(1,widget.id);
     });
-    await test('Codex 可视化支持会话工程 outputs 下的演示，并拒绝其他工程和重定向目录',async()=>{
+    await test('Codex 可视化支持已有 outputs 演示，并拒绝缺失的会话工程和越界链接',async()=>{
       const outputs=path.join(root,'outputs'), demo=path.join(outputs,'statistics-demo','index.html');
       await fs.mkdir(path.dirname(demo),{recursive:true});
       await fs.writeFile(demo,'<button id="snapshot">统计快照</button><script>window.ready=true;</script>');
@@ -59,7 +67,7 @@ const {createService}=require('../src/main/browser/html-preview');
       assert.equal(response.status,200);
       assert.match(await response.text(),/统计快照/);
       assert.match(response.headers.get('Content-Security-Policy'),/default-src 'none'/);
-      await assert.rejects(access(demo,temp),/可视化文件路径无效/);
+      await assert.rejects(access(demo,path.join(temp,'other-project')),/可视化文件路径无效/);
       await assert.rejects(access(demo,''),/可视化文件路径无效/);
       const outside=path.join(temp,'other-project');
       await fs.symlink(outputs,path.join(outside,'outputs'),'junction');

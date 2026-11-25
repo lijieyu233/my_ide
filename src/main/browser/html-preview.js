@@ -16,15 +16,7 @@ async function visualizationAllowed(file, visualizationRoot, getProjectRoot) {
   // Only the active Codex conversation can supply a workspace, never the preview request.
   const workspace = await getProjectRoot?.();
   if (!workspace || !path.isAbsolute(workspace)) return false;
-  const root = await fs.realpath(workspace);
-  for (const folder of ['artifacts', 'outputs']) {
-    const expected = path.join(root, folder);
-    if (!inside(expected, file)) continue;
-    const actual = await fs.realpath(expected).catch(() => '');
-    // A redirected output directory must not grant access to another directory.
-    if (actual && path.relative(expected, actual) === '') return true;
-  }
-  return false;
+  return inside(await fs.realpath(workspace), file);
 }
 function createService() {
   const entries=new Map();
