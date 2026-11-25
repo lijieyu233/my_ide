@@ -78,7 +78,7 @@ async function listProjectThreads(request, archived = false) {
     for (const thread of data) {
       if (isProjectThread(thread) && !threads.has(thread.id)) {
         threads.set(thread.id, { ...threadSummary(thread), archived, rolloutPath: thread.path,
-          historyMode: thread.historyMode, running: !archived && thread.status?.type === 'active' });
+          historyMode: thread.historyMode, updatedAt: thread.updatedAt, running: !archived && thread.status?.type === 'active' });
       }
     }
   });

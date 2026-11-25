@@ -241,6 +241,37 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
      !recent.querySelector('[data-hist-jump]');
  },firstProject.name));
 
+ if (process.argv.includes('--codex-sync-only')) {
+   await js(()=>{
+     const project=document.querySelector('[data-codex-project="desktop-b"]');
+     const toggle=project.querySelector('[data-hist-toggle]');
+     if (toggle.getAttribute('aria-expanded')==='false') toggle.click();
+     [...project.querySelectorAll('.ai-hist-open')].find(row=>row.textContent.includes('桌面 Codex 外部会话')).click();
+   });
+   const transcript=sample=>js(sample=>document.getElementById('ai-msgs').textContent.includes(sample),sample);
+   await until(()=>transcript('CODEX_PREVIOUS_ANSWER'),'original Desktop transcript');
+   await js(()=>{
+     const input=document.getElementById('ai-input');
+     input.value='保留草稿';
+     input.dispatchEvent(new Event('input',{bubbles:true}));
+   });
+   const thread=fixture.threads.get(externalId);
+   thread.recencyAt=thread.updatedAt;
+   await sleep(6200);
+   thread.updatedAt++;
+   thread.items.push({type:'userMessage',id:'quick-user',content:[{type:'text',text:'DESKTOP_QUICK_INPUT'}]},
+     {type:'agentMessage',id:'quick-reply',text:'DESKTOP_QUICK_COMPLETED'});
+   await until(()=>transcript('DESKTOP_QUICK_COMPLETED'),'completed turn discovered by normal catalog poll');
+   check('a Desktop turn completed between polls updates the idle conversation and keeps the draft',
+     await transcript('DESKTOP_QUICK_INPUT') && await js(()=>document.getElementById('ai-input').value==='保留草稿'));
+   thread.items.push({type:'agentMessage',id:'same-time',text:'DESKTOP_SAME_TIMESTAMP'});
+   await js(()=>window.dispatchEvent(new Event('focus')));
+   await until(()=>transcript('DESKTOP_SAME_TIMESTAMP'),'focus refresh even when the catalog revision is unchanged');
+   check('returning to MyIDE refreshes the open thread even with unchanged catalog metadata',true);
+   await finish(0);
+   return;
+ }
+
  if (process.argv.includes('--codex-order-only')) {
    const project = id => '[data-codex-project="' + id + '"]';
    const group = (id = '') => '#panel-sessions ' + project(id);

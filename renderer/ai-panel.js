@@ -3723,9 +3723,12 @@ const AiPanel = (() => {
     const view = codexLiveView;
     const running = selected.running === true;
     const waitingForQueuedReply = codexQueue?.key === inputViewKey() && codexQueue.value.items.some(item => item.syncing);
-    const unchanged = selected.revision ? view.revision === selected.revision : !running;
     if (view.pending || historyReplayJob) return;
-    if (!refresh && !waitingForQueuedReply && unchanged && running === view.observed) return;
+    // A quick Desktop turn can start and finish between catalog polls. Check both the
+    // thread revision and the idle transcript periodically in case timestamps coalesce.
+    const checkedRecently = Date.now() - (view.checkedAt || 0) < 15000;
+    if (!refresh && !waitingForQueuedReply && !running && !view.observed &&
+        view.revision === selected.revision && checkedRecently) return;
     const wanted = () => codexLiveView === view && !busy && sessionLoadTicket === ticket &&
       sessKey() === scope && currentCodexCatalog()?.launcher === launcher &&
       codexSelectedHistoryItem()?.threadId === threadId && !codexSelectedHistoryItem()?.archived;
@@ -3765,6 +3768,7 @@ const AiPanel = (() => {
       reconcileCodexReceipts(next);
       renderCodexObservedActivity();
       view.revision = selected.revision;
+      view.checkedAt = Date.now();
       view.observed = running;
       if (!running && selected.completedTurnId) refreshHistInPlace();
     } catch {
@@ -3772,16 +3776,17 @@ const AiPanel = (() => {
     } finally { view.pending = false; }
   }
 
-  function refreshCodexCatalog({ background = false } = {}) {
+  function refreshCodexCatalog({ background = false, manual = false, forceHistory = false } = {}) {
     if (!codexProjectHistory()) return;
     const config = getConfig(), codexPath = config.codexPath || '';
     const workspaceRoot = pathKey(window.App?.root);
     if (codexCatalogRequest?.launcher === codexPath && codexCatalogRequest.workspaceRoot === workspaceRoot) {
       if (manual) codexCatalogRequest.manual = true;
+      codexCatalogRequest.forceHistory ||= forceHistory || manual;
       return codexCatalogRequest.promise;
     }
 
-    const request = { launcher: codexPath, workspaceRoot, background, manual };
+    const request = { launcher: codexPath, workspaceRoot, background, manual, forceHistory: forceHistory || manual };
     codexCatalogRequest = request;
     if (!background) refreshHistInPlace();
     request.promise = (async () => {
@@ -3800,7 +3805,7 @@ const AiPanel = (() => {
         if (codexLiveView && selected?.running && !previous?.running) codexLiveView.activity = '';
         if (previous?.running !== selected?.running || previous?.archived !== selected?.archived || previous?.desktopOwned !== selected?.desktopOwned) setBusyUI(busy);
         else if (previous?.title !== selected?.title) renderCurrentSessionTitle();
-        void syncCodexLiveHistory(selected, config);
+        void syncCodexLiveHistory(selected, config, { refresh: request.forceHistory });
         if (panel && !panel.classList.contains('hidden')) void refreshNativeQueue(true);
       } catch (error) {
         if (codexCatalogRequest === request) reportCatalogFailure('codex', codexPath, request, error);
@@ -6581,7 +6586,7 @@ const AiPanel = (() => {
     const refreshVisibleCodex = () => {
       if (document.hidden) return;
       refreshHistInPlace();
-      if (visibleHistoryRefresh() === refreshCodexCatalog) void refreshCodexCatalog({ background: true });
+      if (visibleHistoryRefresh() === refreshCodexCatalog) void refreshCodexCatalog({ background: true, forceHistory: true });
     };
     window.addEventListener('focus', refreshVisibleCodex);
     document.addEventListener('visibilitychange', refreshVisibleCodex);

@@ -421,8 +421,9 @@ function createService(options={}){
         ? { running: false } : conn.shared ? { running: item.running } : await observeDesktop(home, item);
       const completedTurnId = locallyRunning.has(item.threadId)
         ? undefined : await completedDesktopTurn(request, item, desktop.running);
-      const { rolloutPath, historyMode, ...summary } = item;
-      return { ...summary, ...desktop, completedTurnId, desktopOwned, ...(conn.shared ? { sharedControl: true } : {}) };
+      const { rolloutPath, historyMode, updatedAt, ...summary } = item;
+      const revision = JSON.stringify([updatedAt, item.ts, desktop.revision]);
+      return { ...summary, ...desktop, revision, completedTurnId, desktopOwned, ...(conn.shared ? { sharedControl: true } : {}) };
     })) };
   }
 
