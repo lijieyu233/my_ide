@@ -177,6 +177,52 @@ function fixture(inspectReplay = false, fontPreference) {
 }
 const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + name); };
 (async () => {
+  await test('Codex 可直接发送两张图片，也可在运行中排队或插入纯图片消息', async () => {
+    const f = fixture(true);
+    const { promptContent } = require('../src/main/codex/ai-codex');
+    const images = ['data:image/png;base64,AAAA', 'data:image/png;base64,BBBB'];
+    const expected = images.map(url => ({ type: 'image', url }));
+    const submitted = [];
+    f.w.myIDE.ai.codexInput = async (_cfg, target, action) => {
+      if (action.kind === 'list') return { ok: true, queue: { available: true, items: [] } };
+      submitted.push({ target, action });
+      return { ok: true };
+    };
+    f.w.App.showAi();
+    await f.w.AiPanel.setConfig({ engine: 'codex' });
+    await until(() => f.w.AiPanel.aiState().dshState === 'ready');
+    f.hold = true;
+    const send = f.element('#ai-send');
+    send.click();
+    assert.equal(f.calls.length, 0);
+    f.w.__testInputImages([...images]);
+    send.click();
+    await until(() => f.calls.length === 1);
+    const { context, messages } = f.calls[0];
+    assert.deepEqual(promptContent(JSON.parse(JSON.stringify(messages))), expected);
+    assert.equal(f.element('#ai-input').value, '');
+    assert.equal(f.w.__testInputImages().length, 0);
+    await f.codexEvent({ type: 'status', context, phase: 'accepted', nativeThreadId: 'native-thread', turnId: 'native-turn' });
+    const input = f.element('#ai-input');
+    for (const [altKey, kind] of [[false, 'queue'], [true, 'steer']]) {
+      f.w.__testInputImages([...images]);
+      input.dispatchEvent(new f.w.Event('input', { bubbles: true }));
+      assert.equal(f.element(kind === 'queue' ? '#ai-queue-submit' : '#ai-steer-submit').disabled, false);
+      input.dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'Enter', altKey, bubbles: true }));
+      await until(() => f.w.__testInputImages().length === 0);
+      const { target, action } = submitted.at(-1);
+      assert.equal(target.sessionId, context.sessionId);
+      assert.equal(action.kind, kind);
+      assert.deepEqual(promptContent([JSON.parse(JSON.stringify(action.message))]), expected);
+    }
+    assert.equal(submitted.length, 2);
+    assert.equal(f.calls.length, 1);
+    f.done(0, { ok: true, text: '图片已处理' });
+    const saved = JSON.parse(f.w.localStorage.getItem('myide-ai-sessions:' + f.A + ':codex'))[0];
+    f.w.__testReplay(saved.msgs);
+    assert.equal(f.w.document.querySelectorAll('.ai-user img').length, 2);
+    assert(!f.element('.ai-user').textContent.includes('（含图片的消息）'));
+  });
   await test('Codex提交前不声称已生成，原生受理/重试/真实正文各有可核对阶段',async()=>{
     const f=fixture();f.w.App.showAi();await f.w.AiPanel.setConfig({engine:'codex'});await until(()=>f.w.AiPanel.aiState().dshState==='ready');f.hold=true;f.send('阶段验证');await until(()=>f.calls.length===1);const context=f.calls[0].context,notice=f.element('#ai-runstate');assert(notice.textContent.includes('尚未确认消息受理'));assert(!notice.textContent.includes('正在生成'));
     await f.codexEvent({type:'status',context,phase:'submitting',nativeThreadId:'native-thread',text:'正在提交到 Codex · 尚未确认受理'});assert(notice.textContent.includes('尚未确认受理'));assert.equal(f.w.AiPanel.aiState().tasks[0].native.turnId,null);

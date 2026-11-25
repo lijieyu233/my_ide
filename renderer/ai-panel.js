@@ -296,9 +296,15 @@ const AiPanel = (() => {
     if (page.projectContext) followActive();
     refreshDshOptions();
   }
+  function userContent(text, images) {
+    if (!images?.length) return text;
+    const blocks = images.map(url => ({ type: 'image_url', image_url: { url } }));
+    if (text) blocks.unshift({ type: 'text', text });
+    return blocks;
+  }
   function plainUserContent(m) {
     if (m._contextFreeContent !== undefined) return m._contextFreeContent;
-    return m._imgs?.length ? [{type:'text',text:m._text || ''}].concat(m._imgs.map(url=>({type:'image_url',image_url:{url}}))) : m._text || '';
+    return userContent(m._text || '', m._imgs);
   }
   // 只投影发送给模型的历史，存盘原文保留。原生 tool_call / tool 仍成对，避免重现 HTTP 400。
   function contextHistory() {
@@ -2206,7 +2212,7 @@ const AiPanel = (() => {
   async function regenerate() {
     if (busy) { MI.toast('正在生成中…', 'err'); return; }
     if (lastUserAt == null || lastUserAt >= msgs.length) { MI.toast('没有可重新生成的回复', 'err'); return; }
-    if(nativeEngine()){const message=msgs[lastUserAt];inputEl.value=message._text||String(message.content||'');pendingImages=(message._imgs||[]).slice();renderImages();autoGrowInput();inputEl.focus();MI.toast('已复制到输入框；发送后会继续原生会话','ok');return;}
+    if(nativeEngine()){const message=msgs[lastUserAt];inputEl.value=message._text??(typeof message.content==='string'?message.content:'');pendingImages=(message._imgs||[]).slice();renderImages();autoGrowInput();inputEl.focus();MI.toast('已复制到输入框；发送后会继续原生会话','ok');return;}
     msgs.length = lastUserAt + 1;             // 保留那条用户消息，丢掉之后的
     const keep = msgs[lastUserAt] && msgs[lastUserAt]._ui;
     const rows = [...msgsEl.children].filter(row => row.matches('.ai-msg, .ai-tool, .ai-tool-group'));
@@ -2261,6 +2267,7 @@ const AiPanel = (() => {
       d.appendChild(x);
       box.appendChild(d);
     });
+    renderNativeInputUI();
   }
   function pasteChatMessage(event, clipboard) {
     const html = clipboard.getData?.('text/html');
@@ -2717,7 +2724,7 @@ const AiPanel = (() => {
       const latest=msgs.findLast(m=>m.role==='user');
       // 原生会话已有历史；这里只发送本次原话和明确选中的资料，不拼接自动跟随文件、系统提示或旧工具。
       return latest?[{role:'user',content:latest._text!==undefined
-        ? (latest._imgs?.length?[{type:'text',text:latest._text},...latest._imgs.map(url=>({type:'image_url',image_url:{url}}))]:latest._text)
+        ? userContent(latest._text, latest._imgs)
         : latest.content,_dshAttachments:latest._dshAttachments||[]}]:[];
     }
     msgs=repairToolHistory(msgs);
@@ -2781,15 +2788,19 @@ const AiPanel = (() => {
     if (getConfig().engine === 'codex') return codexQueue?.key === inputViewKey() ? codexQueue.value : null;
     return dshOwnRun()?currentRun.inputQueue:dshWatch&&dshWatchWanted(dshWatch)?dshWatch.state?.queue:null;
   }
+  function hasInputDraft(text = inputEl?.value.trim()) {
+    return !!text || pendingImages.length > 0;
+  }
   function codexContinuationId() {
-    if (getConfig().engine !== 'codex' || busy || codexObservedRunning() || inputEl?.value.trim() || pendingImages.length) return null;
+    if (getConfig().engine !== 'codex' || busy || codexObservedRunning() || hasInputDraft()) return null;
     const queue = nativeQueueSource();
     return queue && !queue.items.length ? queue.interruptedTurnId : null;
   }
   function freezeInputDraft(){
-    const text=(inputEl.value||'').trim();if(!text)return null;
+    const text = inputEl.value.trim();
+    if (!hasInputDraft(text)) return null;
     const files=effectiveCtxFiles().filter(file=>!file.auto).map(file=>({...file})),imgs=pendingImages.slice();
-    return {key:inputViewKey(),scope:inputScopeKey(),page:{...currentPage()},revision:inputDraftRevision,raw:inputEl.value,text,imgs,message:{role:'user',content:imgs.length?[{type:'text',text},...imgs.map(url=>({type:'image_url',image_url:{url}}))]:text,_text:text,_imgs:imgs,_dshAttachments:files.map(file=>({path:file.path,kind:file.special==='clip'?'clipboard':file.isDir?'directory':'file',content:file.content}))}};
+    return {key:inputViewKey(),scope:inputScopeKey(),page:{...currentPage()},revision:inputDraftRevision,raw:inputEl.value,text,imgs,message:{role:'user',content:userContent(text, imgs),_text:text,_imgs:imgs,_dshAttachments:files.map(file=>({path:file.path,kind:file.special==='clip'?'clipboard':file.isDir?'directory':'file',content:file.content}))}};
   }
   function clearAcceptedDraft(draft){
     if(!draft||draft.cleared||draft.key!==inputViewKey())return;
@@ -2808,10 +2819,10 @@ const AiPanel = (() => {
     if(stream.timeline.length)msgs.push({role:'assistant',content:stream.partText??stream.text,_dshTimeline:stream.timeline});
     stream.timeline=[];stream.partText='';
     const actualText=Array.isArray(consumedContent)?consumedContent.find(block=>block?.type==='text')?.text:undefined;
-    const text = typeof actualText === 'string' ? actualText : item?.draft.text || '（图片或附件）';
     const imgs = queued ? consumedContent.filter(block => block?.type === 'image' && /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(block.url)).map(block => block.url)
       : Array.isArray(consumedContent) && !consumedContent.some(block => block?.type === 'image') ? [] : item.draft.imgs;
-    const user={...item?.draft.message,role:'user',content:imgs.length?[{type:'text',text},...imgs.map(url=>({type:'image_url',image_url:{url}}))]:text,_text:text,_imgs:imgs,_ui:'u'+(++uiSeq)};msgs.push(user);const row=addMsg('user',text,{imgs});row.dataset.mid=user._ui;lastUserAt=msgs.length-1;
+    const text = typeof actualText === 'string' ? actualText : item?.draft.text ?? (imgs.length ? '' : '（图片或附件）');
+    const user={...item?.draft.message,role:'user',content:userContent(text, imgs),_text:text,_imgs:imgs,_ui:'u'+(++uiSeq)};msgs.push(user);const row=addMsg('user',text,{imgs});row.dataset.mid=user._ui;lastUserAt=msgs.length-1;
     if (item) {
       clearAcceptedDraft(item.draft);
       if (item.accepted) nativeInputRequests.delete(requestId);
@@ -2835,7 +2846,7 @@ const AiPanel = (() => {
     const actions=document.getElementById('ai-running-input-actions');
     actions?.classList.toggle('hidden', !showActions);
     actions?.querySelector('span')?.classList.toggle('hidden', codex);
-    const hasDraft = !!target && !nativeInputPending && !!inputEl.value.trim();
+    const hasDraft = !!target && !nativeInputPending && hasInputDraft();
     const ready = hasDraft && (codex || (target.kind === 'run' ? currentRun.inputReady === true : queue?.available === true));
     const queueButton=document.getElementById('ai-queue-submit'),steerButton=document.getElementById('ai-steer-submit');
     if (queueButton) {
@@ -2850,7 +2861,7 @@ const AiPanel = (() => {
       steerButton.textContent = desktopSteer ? '在 Codex 中插入' : '插入';
       steerButton.title = desktopSteer ? '复制草稿文字并打开原会话（Alt+Enter）'
         : '在当前任务下一步安全边界补充要求（Alt+Enter）';
-      steerButton.disabled = codex ? !hasDraft || !target?.run && !target?.turnId && !desktopSteer : !ready ||
+      steerButton.disabled = codex ? !hasDraft || (desktopSteer ? !inputEl.value.trim() : !target?.run && !target?.turnId) : !ready ||
         (target.kind === 'run' ? !currentRun.inputActive : !dshWatch?.state?.running);
     }
     const box=document.getElementById('ai-input-queue');if(!box)return;
@@ -2977,7 +2988,7 @@ const AiPanel = (() => {
     if (!target || !draft) return;
     if (mode === 'steer' && !target.run && !target.turnId) {
       if (codexSelectedHistoryItem()?.sharedControl) return;
-      if (!codexObservedRunning()) return;
+      if (!codexObservedRunning() || !draft.text) return;
       nativeInputPending = true;
       renderNativeInputUI();
       try {
@@ -3050,7 +3061,7 @@ const AiPanel = (() => {
     const continuation = inputOptions?.codexContinueTurnId;
     if (continuation && continuation !== codexContinuationId()) return;
     const text = continuation ? '继续' : (inputEl.value || '').trim();
-    if (!text) return;
+    if (!hasInputDraft(text)) return;
     const cfg = getConfig();
     if (!nativeEngine(cfg.engine)&&(!cfg.baseUrl || !cfg.model)) {
       MI.toast('请先配置服务地址与模型', 'err');
@@ -3096,10 +3107,7 @@ const AiPanel = (() => {
     const imgs = run.initialInputDraft?run.initialInputDraft.imgs.slice():pendingImages.slice();
     if(!run.initialInputDraft)pendingImages = [];
     renderImages();
-    if (imgs.length) {
-      // 多模态消息：文本 + 图片（OpenAI 兼容格式；不支持看图的模型会忽略图片部分）
-      content = [{ type: 'text', text: content }].concat(imgs.map((u) => ({ type: 'image_url', image_url: { url: u } })));
-    }
+    content = userContent(content, imgs);
     const urow = addMsg('user', text, { imgs });
     const mid = 'u' + (++uiSeq);
     urow.dataset.mid = mid;
@@ -3109,8 +3117,7 @@ const AiPanel = (() => {
     const hasProjectContext = files.some(f=>f.special !== 'clip');
     const userMessage = { role: 'user', content, _ui: mid, _text: text, _imgs: imgs,
       ...(nativeEngine(cfg.engine)?{_dshAttachments:files.map(f=>({path:f.path,kind:f.special==='clip'?'clipboard':f.isDir?'directory':'file',content:f.content}))}:{}),
-      _hasProjectContext:hasProjectContext, ...(hasProjectContext ? {_contextFreeContent:imgs.length
-        ? [{type:'text',text:contextFreeText}].concat(imgs.map(url=>({type:'image_url',image_url:{url}}))) : contextFreeText} : {}) };
+      _hasProjectContext:hasProjectContext, ...(hasProjectContext ? {_contextFreeContent:userContent(contextFreeText, imgs)} : {}) };
     msgs.push(userMessage);
     if (run.codexDraft) Object.assign(run.codexDraft, { message: userMessage, row: urow });
 
@@ -3349,7 +3356,7 @@ const AiPanel = (() => {
     const continuation = !b && !queueMode && !codexArchived && codexContinuationId();
     const submitting = !b && getConfig().engine === 'codex' && nativeInputPending;
     sendBtn.setAttribute('aria-busy', String(submitting));
-    sendBtn.disabled = queueMode ? !inputEl.value.trim() || submitting || !nativeInputTarget()
+    sendBtn.disabled = queueMode ? !hasInputDraft() || submitting || !nativeInputTarget()
       : codexArchived || stopping || !b && !external && (!dshCanSend() || submitting);
     sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b || external ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : continuation ? '<path d="M5 3v10l8-5z" fill="currentColor" stroke="none"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b || external ? '⏹' : '➤') + '</span>';
     const continuationTitle = continuation && (codexDesktopOwnsCurrentSession() || codexConflictForCurrentDraft()?.turnId === continuation)
@@ -3453,7 +3460,7 @@ const AiPanel = (() => {
         }
         if (m._dshTool || m.role === 'tool' || m.tool_calls) continue; // 工具轮次不重放（工具行是一次性的）
         if (m.role === 'user') {
-          const t = m._text || (typeof m.content === 'string' ? m.content : '（含图片的消息）');
+          const t = m._text ?? (typeof m.content === 'string' ? m.content : '（含图片的消息）');
           const row = addMsg('user', t, { imgs: m._imgs || [] });
           if (m._ui) row.dataset.mid = m._ui;
           lastUserAt = i;
@@ -3500,7 +3507,7 @@ const AiPanel = (() => {
             if(part){replayActivityPosition=[i,j];if(part.kind==='text')addMsg('assistant',part.text||'');else if(part.kind==='tool'&&part.call)renderDshActivity(part);else if(part.kind==='codexMedia')renderCodexMedia(part.images, part.label, part.id);else if(['thought','reasoning','projection'].includes(part.kind))renderDshThought(part);}
             else if (m._codexActivity) renderCodexHistoryActivity(m._codexActivity);
             else if(!m._dshTool&&m.role!=='tool'&&!m.tool_calls){
-              if(m.role==='user'){const row=addMsg('user',m._text||(typeof m.content==='string'?m.content:'（含图片的消息）'),{imgs:m._imgs||[]});if(m._ui)row.dataset.mid=m._ui;lastUserAt=i;}
+              if(m.role==='user'){const row=addMsg('user',m._text??(typeof m.content==='string'?m.content:'（含图片的消息）'),{imgs:m._imgs||[]});if(m._ui)row.dataset.mid=m._ui;lastUserAt=i;}
               else if(m._codexMedia){replayActivityPosition=[i,0];renderCodexMedia(m._imgs, m._codexMedia, m._codexMediaId);}
               else if(m.role==='assistant')decorateCodeBlocks(addMsg('assistant', m.content || '', { imgs: m._imgs }));
             }
