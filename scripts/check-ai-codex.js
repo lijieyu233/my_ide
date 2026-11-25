@@ -151,7 +151,8 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  await js(()=>AiPanel.ask('HOLD_CODEX 后台隔离'));await until(()=>fixture.requests.filter(r=>r.method==='turn/start').length===3,'held turn');await js(async root=>{await App.setRoot(root);return true;},roots[1]);await until(()=>js(()=>AiPanel.aiState().dshState==='ready'),'project B ready');check('changing project parks Codex without cancelling or leaking A output',!fixture.requests.some(r=>r.method==='turn/interrupt')&&await js(()=>AiPanel.__testParked().backgroundRuns===1&&!document.getElementById('ai-msgs').textContent.includes('HOLD_CODEX')));await js(async root=>{await App.setRoot(root);return true;},roots[0]);await until(()=>js(()=>AiPanel.__testParked().currentRun==='active'),'restore held');
  await js(()=>{const input=document.getElementById('ai-input');input.value='补充当前轮';input.dispatchEvent(new Event('input',{bubbles:true}));});
  await until(()=>js(()=>!document.getElementById('ai-steer-submit').disabled),'native steer available');
- await js(()=>{document.getElementById('ai-steer-submit').click();});
+ await js(()=>document.getElementById('ai-input').dispatchEvent(
+   new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,bubbles:true,cancelable:true})));
  await until(()=>js(()=>document.getElementById('ai-msgs').textContent.includes('补充当前轮')&&!document.getElementById('ai-input').value),'steer consumption');
  check('MyIDE inserts into the exact active Codex turn without starting another turn',
    fixture.requests.filter(r=>r.method==='turn/steer').length===1&&fixture.requests.filter(r=>r.method==='turn/start').length===3);
@@ -159,7 +160,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
    const input = document.getElementById('ai-input');
    input.value = '从待发队列插入当前轮';
    input.dispatchEvent(new Event('input', { bubbles: true }));
-   document.getElementById('ai-queue-submit').click();
+   document.getElementById('ai-input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
  });
  const held = fixture.threads.get(firstThread);
  await until(()=>held.inputQueue?.length === 1 && js(()=>{
@@ -620,7 +621,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  const steerCalls=fixture.requests.filter(r=>r.method==='turn/steer').length;
  const desktopOpens=desktopLinks.length;
  await js(()=>document.getElementById('ai-input').dispatchEvent(
-   new KeyboardEvent('keydown',{key:'Enter',altKey:true,bubbles:true,cancelable:true})));
+   new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,bubbles:true,cancelable:true})));
  await until(()=>desktopLinks.length>desktopOpens&&clipboardWrites.includes('等待桌面完成的草稿'),
    'desktop insertion opens the original chat and prepares its draft');
  check('Desktop insertion handoff keeps the draft and starts no turn or queue entry',

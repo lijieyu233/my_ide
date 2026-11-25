@@ -2859,8 +2859,8 @@ const AiPanel = (() => {
     if (steerButton) {
       steerButton.classList.toggle('hidden', codex && !b && !desktopSteer && !target?.turnId);
       steerButton.textContent = desktopSteer ? '在 Codex 中插入' : '插入';
-      steerButton.title = desktopSteer ? '复制草稿文字并打开原会话（Alt+Enter）'
-        : '在当前任务下一步安全边界补充要求（Alt+Enter）';
+      steerButton.title = desktopSteer ? '复制草稿文字并打开原会话（Ctrl+Enter）'
+        : '在当前任务下一步安全边界补充要求（Ctrl+Enter）';
       steerButton.disabled = codex ? !hasDraft || (desktopSteer ? !inputEl.value.trim() : !target?.run && !target?.turnId) : !ready ||
         (target.kind === 'run' ? !currentRun.inputActive : !dshWatch?.state?.running);
     }
@@ -3361,7 +3361,7 @@ const AiPanel = (() => {
     sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b || external ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : continuation ? '<path d="M5 3v10l8-5z" fill="currentColor" stroke="none"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b || external ? '⏹' : '➤') + '</span>';
     const continuationTitle = continuation && (codexDesktopOwnsCurrentSession() || codexConflictForCurrentDraft()?.turnId === continuation)
       ? '加入待发，沿用原会话的设置和权限' : '继续上一次中断的任务';
-    sendBtn.title = continuation ? continuationTitle : queueMode ? '发送到原 Codex 会话，沿用原会话权限（Enter）' : codexArchived ? '请先取消归档再发送' : b && currentRun?.engine==='codex' ? '请求中断当前 Codex 轮次，不影响其他会话' : b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : sharedTurn ? '停止 Codex 当前轮次' : external ? '停止 DSH 当前会话；Enter 排队，Alt+Enter 插入' : codexDesktopOwnsCurrentSession() ? '由 Codex 桌面端发送，沿用原会话设置和权限（Enter）' : '发送（Enter）';
+    sendBtn.title = continuation ? continuationTitle : queueMode ? '发送到原 Codex 会话，沿用原会话权限（Enter）' : codexArchived ? '请先取消归档再发送' : b && currentRun?.engine==='codex' ? '请求中断当前 Codex 轮次，不影响其他会话' : b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : sharedTurn ? '停止 Codex 当前轮次' : external ? '停止 DSH 当前会话；Enter 排队，Ctrl+Enter 插入' : codexDesktopOwnsCurrentSession() ? '由 Codex 桌面端发送，沿用原会话设置和权限（Enter）' : '发送（Enter）';
     sendBtn.setAttribute('aria-label', codexArchived ? sendBtn.title : b || external ? '停止生成' : continuation ? '继续' : '发送消息');
   }
 
@@ -6663,17 +6663,19 @@ const AiPanel = (() => {
         onInputMention();             // 否则看是不是 @ 引用
       });
       inputEl.addEventListener('keydown', (e) => {
-        if (onKeydownSlash(e)) return;   // / 命令弹窗接管
-        if (onKeydownMention(e)) return; // @ 补全弹窗接管：↑↓/Enter/Esc
-        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-          e.preventDefault();
-          if (submitCodexGoalCommand()) return;
-          if (codexPrimaryQueues()) {
-            if (e.altKey && codexObservedRunning()) void submitRunningInput('steer');
-            else if (!e.altKey) void submitRunningInput('queue');
-          } else if(codexRunningInput() || getConfig().engine==='dsh'&&(busy||dshObservedRunning()))submitRunningInput(e.altKey?'steer':'queue');
-          else if (!busy) send();
+        if (e.key === 'Enter' && (e.isComposing || e.keyCode === 229 || e.altKey || e.metaKey)) return;
+        const insert = e.key === 'Enter' && e.ctrlKey && !e.shiftKey;
+        if (!insert && (onKeydownSlash(e) || onKeydownMention(e))) return;
+        if (e.key !== 'Enter' || e.shiftKey) return;
+        e.preventDefault();
+        const running = codexRunningInput() || (getConfig().engine === 'dsh' && (busy || dshObservedRunning()));
+        if (insert) {
+          if (running) void submitRunningInput('steer');
+          return;
         }
+        if (submitCodexGoalCommand()) return;
+        if (running || codexPrimaryQueues()) void submitRunningInput('queue');
+        else if (!busy) void send();
       });
       inputEl.addEventListener('paste', onPasteImage);
     }
