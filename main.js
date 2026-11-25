@@ -909,7 +909,7 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
         if(event.type==='text')send('ai:chunk',{delta:event.delta,messageId:event.messageId,context});else send('ai:codex-event',{...event,context});
       },event=>{try{assertCodexRun(e,context);send('ai:codex-event',{type:'tool',...event,context});}catch{CODEX.toolResult(context,event.call.id,{ok:false,text:'请求已停止，未执行工具'});}});
       if (r?.ok && r.status === 'queued' && r.wakeDesktop && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(r.threadId)) {
-        void shell.openExternal('codex://threads/wake/' + r.threadId).catch(() => {});
+        void openCodexDesktop('codex://threads/wake/' + r.threadId).catch(() => {});
       }
     }catch(error){r={ok:false,status:'failed',complete:false,error:error.message,engine:'codex',context};}
   }else r = await AI.chatStream(cfg, messages, delta => {

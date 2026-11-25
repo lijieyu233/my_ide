@@ -19,7 +19,17 @@ const codex={abort:id=>aborts.push(id),status:async launcher=>({ok:true,launcher
   forkHistory:async(_cfg, threadId)=>({threadId:'fork-'+threadId,messages:[]}),
   toolResult:(...args)=>result('tool',...args),permissionResult:(...args)=>result('permission',...args),questionResult:(...args)=>result('question',...args),
   chat:async(cfg,messages,tools,context,onEvent,onTool)=>{calls.push({kind:'chat',cfg,context});return new Promise(resolve=>pending.set(context.requestId,{context,onEvent,onTool,resolve}));}};
-const sandbox={ipcMain:{handle:(name,handler)=>handlers.set(name,handler)},mainWindow:{webContents:sender},
+const desktopOpens = [], protocolOpens = [];
+let rejectDesktopOpen = false;
+const desktopHost = {
+  async open(url) {
+    desktopOpens.push(url);
+    if (rejectDesktopOpen) throw Error('Another desktop instance is already open');
+    return { opened: true };
+  },
+};
+const sandbox={manualCodexLifecycle:()=>true,sharedCodexHost:desktopHost,
+  shell:{openExternal:async url=>protocolOpens.push(url)},ipcMain:{handle:(name,handler)=>handlers.set(name,handler)},mainWindow:{webContents:sender},
   aiOwners:require('../src/main/ai/ai-owner-router').createRouter(),aiRuns:require('../src/main/ai/ai-runs').createRegistry(),CODEX:codex,
   DSH:{abort(){},hasRun:()=>false,chat:async(cfg,messages,tools,context)=>({ok:true,context})},
   AI:{abortChat(){},chatStream:async(cfg,messages,onChunk,tools,context)=>({ok:true,context})},aiTools:{bind(){}},
@@ -86,6 +96,21 @@ const settled=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
     const next=context('codex-next',3);second=invoke('ai:chat',cfg,[],[],next);await settled();assert(pending.has(next.requestId));assert(aborts.filter(id=>id===c.requestId).length>=2,'替换旧运行也中断Codex');
     pending.get(next.requestId).resolve({ok:true,context:next});assert.equal((await second).ok,true);
     assert.equal((await invoke('ai:finish',next)).ok,true);assert.equal((await invoke('ai:codex-question-result',next,'late-question',{})).ok,false);
+    const threadId = '019caa00-0000-7000-8000-000000000001';
+    const wakeUrl = 'codex://threads/wake/' + threadId;
+    for (const reject of [false, true]) {
+      rejectDesktopOpen = reject;
+      const queuedContext = context('codex-wake-' + reject, reject ? 5 : 4);
+      const chat = invoke('ai:chat', cfg, [], [], queuedContext);
+      await settled();
+      pending.get(queuedContext.requestId).resolve({
+        ok: true, status: 'queued', threadId, wakeDesktop: true, context: queuedContext,
+      });
+      assert.equal((await chat).status, 'queued');
+      assert.equal((await invoke('ai:finish', queuedContext)).ok, true);
+    }
+    assert.deepEqual(desktopOpens, [wakeUrl, wakeUrl]);
+    assert.deepEqual(protocolOpens, []);
     assert(source.includes('beforeQuit: () => Promise.all([DSH.dispose(),CODEX.dispose(),shieldDecrypt.dispose()])'));
     console.log('Codex主进程IPC：来源、三引擎归属、旧轮次、工具拒绝、事件隔离、只读检查与取消通过');
   }finally{for(const item of pending.values())item.resolve({ok:false,aborted:true});await Promise.all([first,second]);}
