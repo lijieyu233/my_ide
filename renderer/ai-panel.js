@@ -4122,6 +4122,40 @@ const AiPanel = (() => {
     return dshCatalog.items.find(item => item.sessionId === savedHostId)
       || dshCatalog.items.find(item => bindingsOf(item).some(binding => binding.sessionId === sessionId)) || null;
   }
+  function codexSessionsForHist() {
+    const root = workspaceRoot();
+    const catalog = currentCodexCatalog()?.items || [];
+    const localIds = new Set(catalog.map(item => item.localId));
+    const threadIds = new Set(catalog.map(item => item.threadId));
+    const all = [];
+    const running = new Set();
+    for (const item of catalog) {
+      const archived = item.archived === true;
+      if (archived !== codexArchiveOnly) continue;
+      all.push({ id: item.localId, codexThreadId: item.threadId, codexProjectId: item.projectId,
+        title: item.title, archived, rootDir: item.rootDir, ts: item.ts, virtual: true });
+      if (!archived && (item.running || currentRun?.status === 'active' && curSessionId === item.localId ||
+          parkedCodexRecordOf(item.localId, item.rootDir)?.record.run.status === 'active')) running.add(item.localId);
+    }
+    if (!codexArchiveOnly) {
+      // 本地正文是回放缓存。宿主还没列出的旧记录无法判断归档状态，不能成为普通行。
+      for (const id of runningSessionIds()) {
+        const parked = parkedRecordOf(id)?.record;
+        const run = id === curSessionId ? currentRun : parked?.run;
+        if (localIds.has(id) || threadIds.has(run?.nativeState?.threadId)) continue;
+        const messages = id === curSessionId ? msgs : parked?.view?.msgs;
+        all.push({ id, title: messages?.length ? sessTitle(messages) : '新会话', rootDir: root, ts: Date.now(), virtual: true });
+        running.add(id);
+      }
+      if (curSessionId && !dshSessionAccess?.foreign && !localIds.has(curSessionId) && !running.has(curSessionId) &&
+          localStorage.getItem(sessKey() + ':draft') === curSessionId) {
+        all.push({ id: curSessionId, title: '新会话', rootDir: root, ts: Date.now(), virtual: true });
+      }
+    }
+    all.sort((a, b) => (b.ts || 0) - (a.ts || 0) || a.id.localeCompare(b.id));
+    return { all, running };
+  }
+
   /**
    * 历史列表的数据源（2026-11-01 用户三项要求）：
    *   ① 名称与 DSH 同步 → 标题优先取宿主目录里的 title；
@@ -4132,6 +4166,7 @@ const AiPanel = (() => {
    * 是否正在跑」一律以宿主为准 —— 两处都写会互相打架。
    */
   function sessionsForHist() {
+    if (codexProjectHistory()) return codexSessionsForHist();
     const local = loadSessions().filter(s => !s.archived);
     const byId = new Map(local.map(s => [s.id, s]));
     const all = [];
@@ -4203,27 +4238,12 @@ const AiPanel = (() => {
       all.push({id,hostId:item.sessionId,title:item.title || '（未命名会话）',ts:item.updatedAt || 0,
         cwd:item.cwd || '',rootDir,archived:archived.has(item.sessionId),foreign:true,unknownRoot:!rootDir,running:running.has(id),virtual:true});
     }
-    const desktop = currentCodexCatalog();
-    if (desktop) {
-      const currentRows = new Map(all.map(item => [item.id, item]));
-      for (const item of desktop.items) {
-        const here = pathKey(item.rootDir) === pathKey(root);
-        const native = { id: item.localId, codexThreadId: item.threadId, codexProjectId: item.projectId, title: item.title,
-          archived: item.archived === true,
-          rootDir: here ? root : item.rootDir, ts: item.ts, virtual: true };
-        if (item.running || currentRun?.status === 'active' && curSessionId === item.localId ||
-            parkedCodexRecordOf(item.localId, item.rootDir)?.record.run.status === 'active') running.add(item.localId);
-        const localRow = here && currentRows.get(item.localId);
-        if (localRow) Object.assign(localRow, native);
-        else all.push(native);
-      }
-    }
     // 全部工作区列表按时间排列，避免当前会话换到别的项目时行顺序跟着跳动。
-    const currentOnly = getConfig().engine !== 'dsh' && !codexProjectHistory();
+    const currentOnly = getConfig().engine !== 'dsh';
     all.sort((a, b) => (currentOnly ? Number(b.id === curSessionId) - Number(a.id === curSessionId)
       || Number(!!b.running) - Number(!!a.running) : 0) || (b.ts || 0) - (a.ts || 0)
       || String(a.hostId || a.id || '').localeCompare(String(b.hostId || b.id || '')));
-    const filter = getConfig().engine === 'dsh' ? historyPrefs.archive : codexProjectHistory() && codexArchiveOnly ? 'archived' : 'active';
+    const filter = getConfig().engine === 'dsh' ? historyPrefs.archive : 'active';
     return { all: all.filter(item => filter === 'all' || !!item.archived === (filter === 'archived')), running };
   }
   const historyIcon = path => '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="' + path + '"/></svg>';

@@ -281,6 +281,54 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
   await test('Codex无正文原生失败会收回运行状态并显示原因，不在后台或下一轮复活旧错误',async()=>{
     const f=fixture();f.w.App.showAi();await f.w.AiPanel.setConfig({engine:'codex'});await until(()=>f.w.AiPanel.aiState().dshState==='ready');f.hold=true;f.send('失败验证');await until(()=>f.calls.length===1);const context=f.calls[0].context;await f.codexEvent({type:'status',context,phase:'error',errorCode:'httpConnectionFailed',httpStatusCode:401,willRetry:false,text:'Codex 原生连接失败（HTTP 401），未收到助手回复'});f.done(0,{ok:false,status:'failed',complete:false,error:'Codex 原生连接失败（HTTP 401），未收到助手回复'});assert.equal(f.w.AiPanel.__testRun().status,'failed');assert(!f.text().includes('HTTP 401'));assert(f.notifications.some(item=>item.type==='err'&&item.message.includes('HTTP 401')));assert.equal(f.element('#ai-send').textContent,'➤');f.send('新的明确请求');await until(()=>f.calls.length===2);await f.codexEvent({type:'status',context,phase:'retrying',text:'旧轮次错误不得返回'});assert(!f.text().includes('旧轮次错误不得返回'));assert.equal(f.w.AiPanel.aiState().tasks[0].native.errorCode,undefined);f.done(1,{ok:true,text:'新回复'});
   });
+  await test('Codex 会话栏按原生归档状态显示，旧正文缓存不补回会话行', async () => {
+    const f = fixture();
+    const key = 'myide-ai-sessions:' + f.A + ':codex';
+    const currentId = 'codex:current', archivedId = 'codex:archived', staleId = 's-stale-alias';
+    const local = JSON.stringify([currentId, archivedId, staleId].map(id => ({ id, title: id, ts: 20, msgs: [] })));
+    f.w.localStorage.setItem(key, local);
+    f.w.localStorage.setItem(key + ':active', staleId);
+    const catalog = [
+      { localId: currentId, threadId: 'current', title: '原生活跃会话', rootDir: f.A, ts: 20 },
+      { localId: archivedId, threadId: 'archived', title: '原生归档会话', rootDir: f.B, ts: 10, archived: true },
+    ];
+    const firstRead = defer();
+    let pending = true;
+    f.w.myIDE.ai.codexSessions = async () => pending ? firstRead.promise : { ok: true, items: catalog };
+    const row = id => f.element('.ai-hist-row[data-id="' + id + '"]');
+    const chooseArchive = label => {
+      f.element('[data-hist-options]').click();
+      [...f.w.document.querySelectorAll('#ctx-menu [role="menuitem"]')].find(item => item.textContent === label).click();
+    };
+    await f.w.AiPanel.setConfig({ engine: 'codex' });
+    f.openSessions();
+    assert(!row(staleId));
+    assert(!row(archivedId));
+    pending = false;
+    firstRead.resolve({ ok: true, items: catalog });
+    await until(() => row(currentId));
+    assert(!row(staleId));
+    assert(!row(archivedId));
+    chooseArchive('查看已归档');
+    await until(() => row(archivedId));
+    assert(!row(currentId));
+    assert(!row(staleId));
+    chooseArchive('返回会话列表');
+    await until(() => row(currentId));
+    catalog[0].archived = true;
+    f.element('[data-hist-refresh]').click();
+    await until(() => !row(currentId));
+    assert.equal(f.w.localStorage.getItem(key), local);
+    f.element('#ai-new').click();
+    await until(() => row(f.w.AiPanel.aiState().current));
+    assert(!row(archivedId));
+    assert(!row(staleId));
+    catalog[0].archived = false;
+    f.element('[data-hist-refresh]').click();
+    await until(() => row(currentId));
+    assert(!row(archivedId));
+    assert(!row(staleId));
+  });
   await test('Codex 原生模型/推理独立选择，未配置普通API仍可发送且只发本次用户原话',async()=>{
     const f=fixture();f.w.App.showAi();await f.w.AiPanel.setConfig({engine:'codex',baseUrl:'',model:'',dshModel:'DSH_UNTOUCHED',dshReasoning:'low'});await until(()=>f.w.AiPanel.aiState().dshState==='ready');assert.equal(f.element('#ai-engine').value,'codex');assert.equal(f.element('#ai-model').value,'codex-fixture');const selector=f.element('#ai-model');selector.value='codex-second';await selector.onchange();const reasoning=f.element('#ai-dsh-reasoning');reasoning.value='high';reasoning.dispatchEvent(new f.w.Event('change'));await until(()=>f.w.AiPanel.aiState().reasoning==='high'&&f.w.AiPanel.aiState().dshState==='ready');assert.equal(f.w.AiPanel.getConfig().dshModel,'DSH_UNTOUCHED');f.hold=true;assert.equal(f.send('CODEX_USER_ONLY'),true,JSON.stringify(f.w.AiPanel.aiState()));await until(()=>f.calls.length===1).catch(error=>{throw Error(error.message+' '+JSON.stringify(f.w.AiPanel.aiState()));});assert.equal(f.calls[0].cfg.engine,'codex');assert.equal(f.calls[0].messages.length,1);assert.equal(f.calls[0].messages[0].content,'CODEX_USER_ONLY');assert(f.calls[0].tools.length);f.chunk(0,'Codex完成');f.done(0,{ok:true,text:'Codex完成'});assert(f.text().includes('Codex完成'));assert.equal(f.calls.length,1);assert.equal(f.w.AiPanel.aiState().scope,'myide-ai-sessions:'+f.A+':codex');assert(f.w.localStorage.getItem('myide-ai-sessions:'+f.A+':codex'));assert(!f.w.localStorage.getItem('myide-ai-sessions:'+f.A+':dsh'));
   });
