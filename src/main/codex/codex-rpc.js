@@ -4,8 +4,11 @@ const notSent = error => Object.assign(error, { rpcNotSent: true });
 // Codex app-server uses newline-delimited JSON, not LSP Content-Length framing.
 // It may omit jsonrpc; diagnostics and arbitrary server error bodies never reach UI.
 class Rpc extends EventEmitter {
-  constructor(child,{maxLineBytes=4*1024*1024,maxPending=256}={}){
-    super();this.child=child;this.maxLineBytes=maxLineBytes;this.maxPending=maxPending;
+  constructor(child,{maxLineBytes,maxPending=256}={}){
+    super();this.child=child;this.maxPending=maxPending;
+    // History pages can include several base64 tool images in one response.
+    this.maxInboundLineBytes=maxLineBytes??32*1024*1024;
+    this.maxOutboundLineBytes=maxLineBytes??4*1024*1024;
     this.pending=new Map();this.sequence=0;this.fragments=[];this.bufferedBytes=0;this.closed=false;
     child.stdout.setEncoding('utf8');child.stdout.on('data',chunk=>this.read(chunk));
     child.stdin.on('error',()=>this.close(Error('Codex 标准输入已关闭')));
@@ -22,7 +25,7 @@ class Rpc extends EventEmitter {
     while(offset<chunk.length){
       const newline=chunk.indexOf('\n',offset),end=newline<0?chunk.length:newline,fragment=chunk.slice(offset,end);
       this.bufferedBytes+=Buffer.byteLength(fragment);
-      if(this.bufferedBytes>this.maxLineBytes)return this.close(Error('Codex 协议消息过大'));
+      if(this.bufferedBytes>this.maxInboundLineBytes)return this.close(Error('Codex 协议消息过大'));
       if(fragment)this.fragments.push(fragment);
       if(newline<0){if(this.fragments.length>65536)this.fragments=[this.fragments.join('')];break;}
       const line=this.fragments.join('').trim();this.fragments=[];this.bufferedBytes=0;offset=newline+1;
@@ -54,7 +57,7 @@ class Rpc extends EventEmitter {
   }
   write(message){
     if(this.closed||this.child.stdin.destroyed)throw Error('Codex 通信已关闭');
-    const line=JSON.stringify(message)+'\n';if(Buffer.byteLength(line)>this.maxLineBytes)throw Error('Codex 请求过大');
+    const line=JSON.stringify(message)+'\n';if(Buffer.byteLength(line)>this.maxOutboundLineBytes)throw Error('Codex 请求过大');
     this.child.stdin.write(line,error=>{if(error)this.close(Error('Codex 标准输入写入失败'));});
   }
   request(method,params={},timeout=45000){

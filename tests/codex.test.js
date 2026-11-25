@@ -61,6 +61,7 @@ function fixture(config={}){
      assert.equal(p.sortDirection,'desc');
      const data=p.cursor?[{item:{type:'userMessage',content:[{type:'text',text:'旧问题'}]}}]:
        [{item:{type:'agentMessage',text:'旧回答'}},{item:{type:'commandExecution',command:'never-rerun'}}];
+     if(!p.cursor&&config.historyOutputBytes)data[1].item.aggregatedOutput='x'.repeat(config.historyOutputBytes);
      send(c,{id:r.id,result:{data,nextCursor:p.cursor?null:'older'}});
    }else if(r.method==='thread/turns/list'&&config.history){
      assert.equal(p.itemsView,'notLoaded');
@@ -632,6 +633,17 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
    assert.deepEqual(turn.params.input.map(part=>part.text),['继续']);
    await assert.rejects(resumed.service.openHistory({},'019caa00-0000-7000-8000-000000000002'),/找不到/);
   }finally{await resumed.service.dispose();}
+ });
+ await test('超过 4 MiB 的历史页仍可打开原会话，并保持目录连接',async()=>{
+  const id='019caa00-0000-7000-8000-000000000001';
+  const f=fixture({history:[{id,cwd:temp,historyMode:'paginated'}],historyOutputBytes:4431999});
+  try{
+   const opened=await f.service.openHistory({},id);
+   assert.deepEqual(opened.messages.map(item=>item.content),['旧问题','旧回答']);
+   assert.equal((await f.service.listHistory({})).items[0].threadId,id);
+   assert.equal(f.children.length,1);
+   assert(!f.requests.some(r=>['thread/start','thread/resume','turn/start'].includes(r.method)));
+  }finally{await f.service.dispose();}
  });
  await test('仅完成正文和流式最后补齐都完整显示，重复完成通知不重复文字',async()=>{
   for(const prefix of ['', '开头']){const f=fixture({hold:true});try{const events=[],pending=f.service.chat({},user('完整正文'),[],context(),event=>events.push(event),()=>{});await until(()=>f.turns.size===1);const [threadId,turnId]=[...f.turns][0],params={threadId,turnId};if(prefix)f.send({method:'item/agentMessage/delta',params:{...params,itemId:'message-final',delta:prefix}});for(let n=0;n<2;n++)f.send({method:'item/completed',params:{...params,item:{type:'agentMessage',id:'message-final',text:prefix+'完整末尾'}}});f.send({method:'turn/completed',params:{threadId,turn:{id:turnId,status:'completed'}}});const r=await pending;assert(r.ok,r.error);assert.equal(r.text,prefix+'完整末尾');assert.equal(events.filter(e=>e.type==='text').map(e=>e.delta).join(''),r.text);}finally{await f.service.dispose();}}
