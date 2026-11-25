@@ -294,7 +294,7 @@ window.MdEditor = (() => {
     // ⚠ 表头底色别用纯 --bg-panel：它比正文底色只暗一点，截图里几乎看不出"这是表头"
     //   → 掺一层 accent tint（用户要的"起码标题颜色不同"要一眼看得出来）
     '.cm-md-table th': {
-      background: 'color-mix(in srgb, var(--accent) 16%, var(--bg-panel))',
+      background: 'var(--md-table-head, color-mix(in srgb, var(--accent) 16%, var(--bg-panel)))',
       color: 'var(--md-heading)', fontWeight: '700',
       padding: '0.38em 0.77em', textAlign: 'left', whiteSpace: 'nowrap',
       border: '1px solid color-mix(in srgb, var(--text) 22%, transparent)',

@@ -1769,12 +1769,13 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
   });
 
-  await okAsync('主题切换：默认深色 → Codex → 浅色 → 粉红 → 深红 → 石墨 → 回深色', async () => {
+  await okAsync('主题切换：包含反重力深色并依次循环', async () => {
     const T = 'myide-theme';
     const cls = () => $(dom, 'body').className;
-    const isDark = () => !/theme-(codex|light|pink|crimson|graphite)/.test(cls());
+    const isDark = () => !/theme-(codex|antigravity|light|pink|crimson|graphite)/.test(cls());
     const chain = [
       ['toggle', 'codex', 'theme-codex'],
+      ['toggle', 'antigravity', 'theme-antigravity'],
       ['toggle', 'light', 'theme-light'],
       ['key', 'pink', 'theme-pink'],
       ['toggle', 'crimson', 'theme-crimson'],
@@ -3493,6 +3494,11 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(!menu.hidden && trigger.getAttribute('aria-expanded') === 'true', '点击打开下拉');
     assert_(g(dom, 'Theme.current()') === 'dark', '打开下拉时主题未切换');
     assert_(menu.querySelector('[aria-checked=true]').dataset.theme === 'dark', '显示当前主题');
+    const antigravity = menu.querySelector('[data-theme="antigravity"]');
+    assert_(antigravity?.textContent === '反重力深色' && antigravity.querySelector('[data-theme-base="antigravity"]'), '反重力深色有独立主题色卡');
+    click(antigravity);
+    assert_(g(dom, 'Theme.current()') === 'antigravity' && menu.hidden, '直接切到反重力深色');
+    click(trigger);
     click(menu.querySelector('[data-theme="user:' + id + '"]'));
     assert_(g(dom, 'Theme.current()') === 'user:' + id && menu.hidden, '直接切到自定义主题');
     click(trigger);
