@@ -2824,7 +2824,7 @@ const AiPanel = (() => {
   }
 
   const nativeInputRequests=new Map();let nativeInputPending=false,nativeQueueReadTicket=0,inputDraftRevision=0;
-  let codexQueue = null, codexConflictDraft = null;
+  let codexQueue = null, codexConflictDraft = null, codexSteerPendingView = null;
   function inputScopeKey(){return JSON.stringify([sessKey(),curSessionId,currentPage().id,sessionRoot()]);}
   function inputViewKey(){return JSON.stringify([inputScopeKey(),pageEpoch]);}
   function codexRunningInput() {
@@ -2931,7 +2931,8 @@ const AiPanel = (() => {
     }
     if (steerButton) {
       steerButton.classList.toggle('hidden', codex && !b && !desktopSteer && !target?.turnId);
-      steerButton.textContent = desktopSteer ? '在 Codex 中插入' : '插入';
+      const submitting = codex && codexSteerPendingView === inputViewKey();
+      steerButton.textContent = submitting ? '插入中…' : desktopSteer ? '在 Codex 中插入' : '插入';
       steerButton.title = desktopSteer ? '复制草稿文字并打开原会话（Ctrl+Enter）'
         : '在当前任务下一步安全边界补充要求（Ctrl+Enter）';
       steerButton.disabled = codex ? !hasDraft || (desktopSteer ? !inputEl.value.trim() : !target?.run && !target?.turnId) : !ready ||
@@ -3082,6 +3083,7 @@ const AiPanel = (() => {
     const requestId = 'myide-input-' + window.crypto.randomUUID();
     const item = mode === 'steer' && target.run ? { requestId, draft, run: currentRun, rendered: false } : null;
     if (item) nativeInputRequests.set(requestId, item);
+    if (mode === 'steer') codexSteerPendingView = draft.key;
     nativeInputPending = true; renderNativeInputUI();
     let idle = false;
     try {
@@ -3098,12 +3100,18 @@ const AiPanel = (() => {
           rememberCodexSubmission(draft.key, result.itemId, requestId, draft.text);
           msgsEl.querySelector('.ai-codex-rejected')?.remove();
           void refreshNativeQueue(true);
+        } else if (mode === 'steer' && !target.run && draft.key === inputViewKey()) {
+          void syncCodexLiveHistory(codexSelectedHistoryItem(), getConfig(), { refresh: true });
         }
       }
     } catch (error) {
       if (item) nativeInputRequests.delete(requestId);
       if (draft.key === inputViewKey()) MI.toast(error.message, 'err');
-    } finally { nativeInputPending = false; renderNativeInputUI(); }
+    } finally {
+      codexSteerPendingView = null;
+      nativeInputPending = false;
+      renderNativeInputUI();
+    }
     // The preflight has performed no write. Reuse the click only while the original draft is still selected.
     if (idle && draft.key === inputViewKey() && draft.revision === inputDraftRevision && draft.raw === inputEl.value &&
         draft.imgs.length === pendingImages.length && draft.imgs.every((image, i) => image === pendingImages[i])) {

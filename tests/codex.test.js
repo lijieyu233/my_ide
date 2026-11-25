@@ -120,8 +120,11 @@ function fixture(config={}){
      complete(c,threadId,id);
     }
    }else if(r.method==='turn/steer'&&config.sharedLauncher){
-    if (config.rejectSteer) send(c,{id:r.id,error:{code:-32600,message:'fixture turn ended'}});
-    else send(c,{id:r.id,result:{turnId:p.expectedTurnId}});
+    const activeTurnId = turns.get(p.threadId) ||
+      (config.latestTurn?.status === 'inProgress' ? config.latestTurn.id : null);
+    if (config.rejectSteer || !activeTurnId || activeTurnId !== p.expectedTurnId) {
+     send(c,{id:r.id,error:{code:-32600,message:'fixture turn ended'}});
+    } else send(c,{id:r.id,result:{turnId:p.expectedTurnId}});
    }else if(r.method==='turn/settings/update'&&config.sharedLauncher){
     send(c,{id:r.id,result:{status:'applied'}});
    }else if(r.method==='turn/interrupt'){
@@ -407,7 +410,7 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
    assert.equal(f.children.length,0);
   } finally { await f.service.dispose(); }
  });
- await test('共享 Codex 连接操作桌面端原轮次，旧轮次和跨项目请求不派发',async()=>{
+ await test('共享 Codex 直接插入桌面端原轮次，拒绝失效轮次和跨项目操作',async()=>{
   const id='019caa00-0000-7000-8000-000000000010';
   const turnId='desktop-current-turn';
   const f=fixture({ sharedLauncher:'codex.exe', desktopInstalled:true,
@@ -427,12 +430,16 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
    await assert.rejects(f.service.changeInput({},c,{...target,turnId:'old-turn'},{kind:'interrupt'}),/轮次已变化/);
    await assert.rejects(f.service.changeInput({}, {...c,rootId:f.home},target,{kind:'interrupt'}),/身份已变化/);
    assert(!f.requests.some(r=>r.method==='turn/interrupt'));
-   assert.deepEqual(await f.service.changeInput({},c,target,{kind:'steer',requestId,message:user('补充当前轮次')[0]}),{ok:true});
+   const input = {kind:'steer',requestId,message:user('补充当前轮次')[0]};
+   const beforeSteer = f.requests.length;
+   assert.deepEqual(await f.service.changeInput({},c,target,input),{ok:true});
+   assert.deepEqual(f.requests.slice(beforeSteer).map(r=>r.method),['thread/list','turn/steer']);
    assert.equal((await f.service.changeInput({},c,target,{kind:'effort',effort:'high'})).applied,true);
    assert.deepEqual(await f.service.changeInput({},c,target,{kind:'interrupt'}),{ok:true});
    assert.deepEqual(f.requests.filter(r=>r.method.startsWith('turn/')).map(r=>[
     r.method,r.params.threadId,r.params.turnId||r.params.expectedTurnId,
    ]),['turn/steer','turn/settings/update','turn/interrupt'].map(method=>[method,id,turnId]));
+   await assert.rejects(f.service.changeInput({},c,{...target,turnId:'old-turn'},input),{code:-32600});
   }finally{await f.service.dispose();}
  });
  await test('目录状态滞后或上一轮正在释放写入权时，空闲的共享会话立即续聊', async()=>{

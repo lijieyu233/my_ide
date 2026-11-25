@@ -1213,7 +1213,7 @@ function createService(options={}){
     }
     const request = historyRequest(conn);
     let observedTurn;
-    if (!run && conn.shared && (inserting || ['interrupt', 'effort'].includes(action.kind))) {
+    if (!run && conn.shared && ['steerQueued', 'interrupt', 'effort'].includes(action.kind)) {
       const { turn } = await history.readLatestTurn(request, thread);
       if (!target.turnId || turn?.id !== target.turnId || turn?.status !== 'inProgress') {
         throw Error('Codex 当前轮次已变化');
@@ -1267,7 +1267,10 @@ function createService(options={}){
     const input = promptContent([action.message], context.page);
     const params = { threadId, input, clientUserMessageId: action.requestId };
     if (action.kind === 'steer') {
-      await steerInput(request, run, params, run?.turnId ?? observedTurn.id);
+      const turnId = run?.turnId ?? target.turnId;
+      if (typeof turnId !== 'string' || !turnId) throw Error('Codex 当前轮次尚未确认或已经结束');
+      // expectedTurnId validates the active turn at the write, avoiding a history read and its race.
+      await steerInput(request, run, params, turnId);
       return { ok: true };
     }
     return { ok: true, itemId: await enqueueInput(request, params) };

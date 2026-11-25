@@ -220,9 +220,11 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const images = ['data:image/png;base64,AAAA', 'data:image/png;base64,BBBB'];
     const expected = images.map(url => ({ type: 'image', url }));
     const submitted = [];
+    let confirmSteer;
     f.w.myIDE.ai.codexInput = async (_cfg, target, action) => {
       if (action.kind === 'list') return { ok: true, queue: { available: true, items: [] } };
       submitted.push({ target, action });
+      if (action.kind === 'steer') return new Promise(resolve => { confirmSteer = resolve; });
       return { ok: true };
     };
     f.w.App.showAi();
@@ -246,7 +248,15 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
       input.dispatchEvent(new f.w.Event('input', { bubbles: true }));
       assert.equal(f.element(kind === 'queue' ? '#ai-queue-submit' : '#ai-steer-submit').disabled, false);
       input.dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'Enter', ctrlKey, bubbles: true }));
+      if (kind === 'steer') {
+        const button = f.element('#ai-steer-submit');
+        assert.equal(button.textContent, '插入中…');
+        assert(button.disabled);
+        assert.equal(f.w.__testInputImages().length, images.length);
+        confirmSteer({ ok: true });
+      }
       await until(() => f.w.__testInputImages().length === 0);
+      assert.equal(f.element('#ai-steer-submit').textContent, '插入');
       const { target, action } = submitted.at(-1);
       assert.equal(target.sessionId, context.sessionId);
       assert.equal(action.kind, kind);
