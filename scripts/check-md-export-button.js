@@ -51,9 +51,11 @@ const wait = async (s, ms = 10000) => { const end = Date.now() + ms; while (Date
       const r = b.getBoundingClientRect();
       return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2),
                text: b.textContent.trim(), title: b.title,
-               belowTabs: r.top >= document.getElementById('tab-scroll').getBoundingClientRect().bottom };
+               belowTabs: r.top >= document.getElementById('tab-scroll').getBoundingClientRect().bottom,
+               pathOnLeft: document.querySelector('#tab-actions .file-actions-path').getBoundingClientRect().right <= r.left,
+               alignedRight: Math.abs(r.right - (b.closest('#tab-actions').getBoundingClientRect().right - 8)) < 1 };
     })()`);
-    check('文件操作行有「导出 HTML」按钮', btn?.belowTabs, JSON.stringify(btn));
+    check('地址在文件操作行左侧，导出按钮贴右', btn?.belowTabs && btn.pathOnLeft && btn.alignedRight, JSON.stringify(btn));
     check('按钮带说明 title', /同目录|所在目录/.test(btn.title || ''), btn.title);
 
     // ② 真实点击，断言「不弹保存框」「文件落到 md 同目录」

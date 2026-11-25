@@ -1107,6 +1107,18 @@ const Viewer = (() => {
     if(previewFeedback){const status=document.createElement('span');status.id='preview-tab-status';status.setAttribute('role','status');status.textContent=previewFeedback;status.title=previewFeedback;fileActions.appendChild(status);}
     const tab = currentTab();
     if (!tab) return;
+    const filePath = document.createElement('span');
+    filePath.className = 'file-actions-path';
+    filePath.title = tab.path;
+    const nameStart = Math.max(tab.path.lastIndexOf('/'), tab.path.lastIndexOf('\\')) + 1;
+    const directory = document.createElement('span');
+    directory.className = 'file-actions-directory';
+    directory.textContent = tab.path.slice(0, nameStart);
+    const name = document.createElement('span');
+    name.className = 'file-actions-name';
+    name.textContent = tab.path.slice(nameStart);
+    filePath.append(directory, name);
+    fileActions.prepend(filePath);
     const acts = document.createElement('div');
     acts.className = 'ed-actions';
     if(tab.retention==='preview'){const keep=document.createElement('button');keep.className='tb-btn';keep.textContent='保留标签';keep.onclick=()=>Shortcuts.execute('keep-tab',Shortcuts.context(tab));tabActions.appendChild(keep);}

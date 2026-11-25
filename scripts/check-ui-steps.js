@@ -1853,8 +1853,9 @@ module.exports = {
     await sleep(300);
     add('放大后容器可滚动（可上下滑动看画面）', stageEl.scrollHeight > stageEl.clientHeight + 1 || stageEl.scrollWidth > stageEl.clientWidth + 1,
       'scroll=' + stageEl.scrollWidth + 'x' + stageEl.scrollHeight + ' client=' + stageEl.clientWidth + 'x' + stageEl.clientHeight);
-    add('图片文件的第二行收起，定位仍在顶行',
-      getComputedStyle(q('#tab-actions')).display === 'none' && !!q('#tab-common-actions .tab-locate'));
+    add('图片文件的第二行显示地址，定位仍在顶行',
+      q('#tab-actions .file-actions-path')?.title === Viewer.activeTab.path &&
+      !q('#tab-actions .ed-actions') && !!q('#tab-common-actions .tab-locate'));
     add('标签页左侧有文件类型图标（SVG，不是 emoji）', !!q('.tab.active .tic svg'));
     add('标签栏右端「在资源管理器显示」只有 1 个', document.querySelectorAll('.tab-locate').length === 1,
       document.querySelectorAll('.tab-locate').length + ' 个');

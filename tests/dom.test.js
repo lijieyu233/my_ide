@@ -1874,7 +1874,8 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     const img = $(dom, '.img-view img');
     assert_(img, 'img 元素出现');
     assert_(img.src.includes('pic.png'), 'src 指向图片文件, got: ' + img.src);
-    assert_($(dom, '#tab-actions').childElementCount === 0, '图片无专属栏按钮，第二行收起');
+    assert_($(dom, '#tab-actions .file-actions-path').title === P + '/pic.png', '图片显示当前文件路径');
+    assert_(!$(dom, '#tab-actions .ed-actions'), '图片无专属栏按钮');
     assert_($(dom, '#tab-common-actions .tab-locate'), '图片仍可从通用操作定位');
   });
 
@@ -9216,8 +9217,7 @@ assert_(panel, 'CM6 搜索面板出现');
     await tick(); await tick();
     assert_(!!$(dom, '.tab.active .tic svg'), '标签页左侧有文件类型图标（SVG，不是 emoji）');
     assert_($allIn($(dom, '.tab.active'), '.tname').length === 1, '标签页仍有名字节点');
-    // 编辑器操作区：不再摆路径
-    assert_(!$(dom, '#tab-actions .vt-path'), '编辑器操作区里不再摆路径');
+    assert_($(dom, '#tab-actions .file-actions-path').textContent === P + '/note.md', '地址显示完整文件路径');
     await g(dom, 'Viewer.closeAll()');
     await tick();
   });
@@ -9230,14 +9230,16 @@ assert_(panel, 'CM6 搜索面板出现');
     const commonActions = $(dom, '#tab-common-actions');
     assert_(commonActions.previousElementSibling.id === 'tab-scroll', '标签滚动区和通用操作同排');
     assert_(fileActions.previousElementSibling === commonActions, '文件操作另起一行');
-    assert_(fileActions.querySelector('.md-mode-seg') && fileActions.textContent.includes('导出 HTML'), 'Markdown 模式和导出在文件操作行');
+    assert_(fileActions.firstElementChild.matches('.file-actions-path') && fileActions.firstElementChild.title === P + '/note.md', '第二行左侧显示 Markdown 路径');
+    assert_(fileActions.lastElementChild.matches('.ed-actions') && fileActions.querySelector('.md-mode-seg') && fileActions.textContent.includes('导出 HTML'), 'Markdown 模式和导出位于右侧');
     assert_(!commonActions.querySelector('.md-mode-seg') && !commonActions.textContent.includes('导出 HTML'), '顶行只含通用操作');
     assert_(commonActions.querySelectorAll('.tab-locate').length === 1, '定位仍在顶行且没有重复');
     await g(dom, 'Viewer.openFile("' + P + '/pic.png")');
     await tick(); await tick();
-    assert_(fileActions.childElementCount === 0 && commonActions.querySelector('.tab-locate'), '切换为图片后移除专属操作行');
+    assert_(fileActions.childElementCount === 1 && fileActions.firstElementChild.title === P + '/pic.png', '切到图片时更新地址并收起专属操作');
     await g(dom, 'Viewer.closeAll()');
     await tick();
+    assert_(fileActions.childElementCount === 0, '关闭最后一个文件后不留旧地址');
   });
 
   // ---------- 本地设置容错层（settings-store.js，2026-09-30 用户现场）----------

@@ -449,12 +449,20 @@ body.rsb-collapsed #ai-panel { display: none !important; }
   display: flex; align-items: center; gap: 6px; flex: none; min-width: 0;
   min-height: var(--head-h); padding: 3px 8px;
   background: var(--bg-tabbar); border-top: 1px solid var(--border);
-  overflow-x: auto; scrollbar-width: thin;
 }
 #tab-actions { grid-column: 1 / -1; }
 .editor-pane > .file-actions { border-top: 0; border-bottom: 1px solid var(--border); }
+.file-actions-path {
+  display: flex; min-width: 0; overflow: hidden;
+  color: var(--text-dim); font-size: 12px; white-space: nowrap;
+}
+.file-actions-directory, .file-actions-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.file-actions-name { flex: none; max-width: 100%; color: var(--text-bright); font-weight: 600; }
 .vt-note { color: var(--text-dim); font-size: 12px; padding: 0 6px; white-space: nowrap; }
-.file-actions .ed-actions { display: flex; flex: none; align-items: center; gap: 4px; }
+.file-actions .ed-actions {
+  display: flex; flex: none; align-items: center; gap: 4px; margin-left: auto;
+  max-width: calc(100% - min(6em, 30%)); overflow-x: auto; scrollbar-width: thin;
+}
 .tab {
   display: flex; align-items: center; gap: 6px;
   padding: 0 10px; font-size: 12px; color: var(--text-dim);
