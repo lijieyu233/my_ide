@@ -4755,6 +4755,8 @@ body.theme-codex #ai-send:not(:disabled):hover {
 .ai-head { gap: 7px; }
 .ai-head .ai-title { flex: 1; min-width: 0; letter-spacing: 0; color: var(--ai-strong-text); gap: 6px; }
 #ai-current-session { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#ai-current-session[role=button] { cursor: text; }
+#ai-session-name-input { width: 100%; min-width: 0; height: 22px; padding: 0 5px; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--accent); border-radius: 4px; }
 .ai-head .panel-title-actions { margin-left: auto; flex: none; }
 .ai-head .ai-title svg.ic { color: var(--ai-process-text); }
 .ai-head .vt-btn { color: var(--ai-process-text); }

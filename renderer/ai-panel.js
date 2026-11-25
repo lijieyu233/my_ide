@@ -3677,12 +3677,74 @@ const AiPanel = (() => {
     return true;
   }
   function sessionRootLabel(root) { return String(root || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '未打开工程'; }
+  let sessionTitleEdit = null;
+  function currentSessionName() {
+    const id = curSessionId, engine = getConfig().engine;
+    const access = dshSessionAccess?.sessionId === id ? dshSessionAccess : null;
+    const saved = id && !access?.foreign ? loadSessions().find(item => item.id === id) : null;
+    const codex = engine === 'codex' ? codexSelectedHistoryItem() : null;
+    const dsh = engine === 'dsh' && id ? catalogOf(id) : null;
+    const title = codex?.title || dsh?.title || (access?.foreign ? access.title : saved?.title) || sessTitle(msgs) || '新对话';
+    const target = { id, title, rootDir: sessionRoot(), foreign: access?.foreign === true };
+    const codexThreadId = engine === 'codex' && (codex?.threadId || access?.hostId);
+    const hostId = engine === 'dsh' && (dsh?.sessionId || access?.hostId || saved?.hostId);
+    if (codexThreadId) return { title, target: { ...target, codexThreadId, archived: codex?.archived === true } };
+    if (hostId) return { title, target: { ...target, hostId } };
+    return { title, target: saved ? { ...target, localOnly: true } : null };
+  }
+
   function renderCurrentSessionTitle() {
-    const label=document.getElementById('ai-current-session');if(!label)return;
-    const saved=loadSessions().find(item=>item.id===curSessionId);
-    const native=codexSelectedHistoryItem() || (getConfig().engine==='dsh' && catalogUsable() ? catalogOf(curSessionId) : null);
-    const title=native?.title || (dshSessionAccess?.foreign ? dshSessionAccess.title : saved?.title || sessTitle(msgs));
-    label.textContent=title || '新对话';label.title=label.textContent;
+    const label = document.getElementById('ai-current-session');
+    if (!label || backgroundView) return;
+    if (sessionTitleEdit && !sessionTitleEdit.isCurrent()) sessionTitleEdit.close();
+    const { title, target } = currentSessionName();
+    label.textContent = title;
+    label.title = title;
+    if (target) {
+      label.tabIndex = 0;
+      label.setAttribute('role', 'button');
+    } else {
+      label.removeAttribute('tabindex');
+      label.removeAttribute('role');
+    }
+  }
+
+  function editCurrentSessionTitle(label) {
+    if (sessionTitleEdit || backgroundView) return;
+    const { title, target } = currentSessionName();
+    if (!target) return;
+    const key = inputViewKey(), ticket = sessionLoadTicket;
+    const isCurrent = () => !backgroundView && ticket === sessionLoadTicket && key === inputViewKey();
+    const input = document.createElement('input');
+    input.id = 'ai-session-name-input';
+    input.maxLength = 120;
+    input.autocomplete = 'off';
+    input.setAttribute('aria-label', '会话名称');
+    input.value = title;
+    const close = () => {
+      if (sessionTitleEdit?.close !== close) return;
+      sessionTitleEdit = null;
+      input.remove();
+      label.hidden = false;
+    };
+    sessionTitleEdit = { close, isCurrent };
+    input.addEventListener('blur', close);
+    input.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== 'Escape') return;
+      event.stopPropagation();
+      if (event.isComposing || event.keyCode === 229) return;
+      event.preventDefault();
+      const next = event.key === 'Enter' ? input.value.trim() : '';
+      const current = isCurrent() ? currentSessionName().target : null;
+      close();
+      if (!current) return;
+      label.focus({ preventScroll: true });
+      if (next) void actOnHistorySession(current, 'ren', null, next).catch(error => MI.toast(error.message, 'err'));
+    });
+    label.after(input);
+    label.hidden = true;
+    input.focus();
+    input.select();
   }
   function renderSessionOrigin() {
     if (backgroundView) return;
@@ -5090,10 +5152,13 @@ const AiPanel = (() => {
       // 用户要求「这里的名称修改和 DSH 同步」：写成以宿主为准。
       // 先写 DSH，再写本地副本（本地那份只用于离线回放，不参与显示优先级）。
       if (engine === 'dsh' && (!batchTitle || !target.localOnly)) {
-        const result = await window.myIDE.ai.dshRename(getConfig(), target.hostId || id, title).catch(error => ({ ok: false, error: error.message }));
+        const hostId = target.hostId || id;
+        const result = await window.myIDE.ai.dshRename(getConfig(), hostId, title).catch(error => ({ ok: false, error: error.message }));
         if (scope !== sessKey() || engine !== getConfig().engine) return;
         if (!result?.ok) { if (batchTitle) throw Error(result?.error || '重命名失败'); MI.toast('DSH 改名失败：' + (result?.error || '未返回成功'), 'err'); return; }
-        if (dshSessionAccess?.foreign && dshSessionAccess.hostId === target.hostId) dshSessionAccess.title = title;
+        if (dshSessionAccess?.hostId === hostId) dshSessionAccess.title = title;
+        const cached = catalogUsable() && dshCatalog.items.find(item => item.sessionId === hostId);
+        if (cached) cached.title = title;
         if (!batchTitle) await refreshDshCatalog();
       }
       if (scope !== sessKey() || engine !== getConfig().engine) return;
@@ -5151,7 +5216,8 @@ const AiPanel = (() => {
     const config = getConfig(), threadId = target.codexThreadId;
     const result = await window.myIDE.ai.codexRename(config, threadId, title, target.archived === true);
     if (!result?.ok) throw Error(result?.error || '重命名失败');
-    if (!codexProjectHistory() || (getConfig().codexPath || '') !== (config.codexPath || '')) return;
+    if (getConfig().engine !== 'codex' || (getConfig().codexPath || '') !== (config.codexPath || '')) return;
+    if (dshSessionAccess?.foreign && dshSessionAccess.hostId === threadId) dshSessionAccess.title = result.title;
     const catalog = currentCodexCatalog();
     const item = catalog?.items.find(item => item.threadId === threadId);
     if (item) item.title = result.title;
@@ -6874,6 +6940,14 @@ const AiPanel = (() => {
     if (!panel) return;
     let savedFont;try{savedFont=localStorage.getItem(LS_FONT);}catch{}
     applyAiFont(savedFont == null || savedFont.trim() === '' ? AI_FONT_DEFAULT : savedFont);
+    const sessionTitle = document.getElementById('ai-current-session');
+    sessionTitle?.addEventListener('dblclick', () => editCurrentSessionTitle(sessionTitle));
+    sessionTitle?.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' || event.isComposing || sessionTitle.tabIndex !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      editCurrentSessionTitle(sessionTitle);
+    });
     document.getElementById('ai-reading-settings')?.addEventListener('click',toggleReadingSettings);
     initMessageNavigation();
     msgsEl?.addEventListener('click', event => {

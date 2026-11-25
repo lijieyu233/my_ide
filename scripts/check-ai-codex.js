@@ -655,6 +655,31 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  check('Codex right-click rename persists on the original thread without spawning or resuming a turn',
    fixture.threads.get(externalId).name===renamedThreadTitle&&fixture.requests.filter(r=>r.method==='thread/name/set'&&r.params.threadId===externalId).length===1&&
    fixture.requests.filter(r=>r.method==='turn/start').length===earlierTurns&&!fixture.requests.some(r=>r.method==='thread/resume'&&r.params.threadId===externalId));
+ const headerName='从标题栏重命名';
+ const renameFromHeader=(name,key,composing=false)=>js(({name,key,composing})=>{
+   const title=document.getElementById('ai-current-session');
+   title.dispatchEvent(new MouseEvent('dblclick',{bubbles:true}));
+   const input=document.getElementById('ai-session-name-input');
+   if(document.activeElement!==input||input.value!==title.textContent)throw Error('Missing focused title input');
+   input.value=name;
+   if(composing){
+     input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,isComposing:true}));
+     if(document.activeElement!==input)throw Error('IME confirmation closed the title editor');
+   }
+   input.dispatchEvent(new KeyboardEvent('keydown',{key,bubbles:true}));
+ },{name,key,composing});
+ await renameFromHeader('应取消','Escape',true);
+ check('Escape and an IME confirmation leave the native title unchanged',
+   fixture.threads.get(externalId).name===renamedThreadTitle&&
+   await js(()=>!document.getElementById('ai-session-name-input')));
+ await renameFromHeader(headerName,'Enter');
+ await until(()=>js((id,name)=>document.getElementById('ai-current-session').textContent===name&&
+   document.querySelector('[data-id="codex:'+id+'"] .ai-hist-nm')?.textContent===name,externalId,headerName),'header and sidebar title updated');
+ check('Double-clicking the header renames the existing native thread once without restarting it',
+   fixture.threads.get(externalId).name===headerName&&
+   fixture.requests.filter(r=>r.method==='thread/name/set'&&r.params.threadId===externalId).length===2&&
+   fixture.requests.filter(r=>r.method==='turn/start').length===earlierTurns);
+ if (process.argv.includes('--codex-title-only')) { await finish(0); return; }
  const original=fixture.threads.get(externalId);
  const historyImageSelector='#ai-msgs .ai-user .ai-image-preview';
  const draftImageSelector='#ai-images .ai-image-preview';
