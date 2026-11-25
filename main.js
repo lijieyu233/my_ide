@@ -32,7 +32,9 @@ const G = require('./src/main/git/git-service');
 const DB = require('./src/main/db/db-service');
 const AI = require('./src/main/ai/ai-service');
 const DSH=require('./src/main/dsh/ai-dsh').createService({homeDir:()=>UI_CHECK?path.join(app.getPath('userData'),'harness-home'):undefined,mappingFile:()=>path.join(app.getPath('userData'),'dsh-native-sessions.json')});
-const sharedCodexHost = require('./src/main/codex/codex-shared-host').createSharedHost();
+const sharedCodexHost = require('./src/main/codex/codex-shared-host').createSharedHost({
+  desktopPath: async () => await mainWindow?.webContents.executeJavaScript('AiPanel.getConfig().codexDesktopPath || ""'),
+});
 function manualCodexLifecycle() {
   return process.platform === "win32" && ownsWindow && !UI_CHECK && !LIVE_CHECK &&
     !SMOKE && !process.env.MYIDE_CODEX_SHARED_LAUNCHER;

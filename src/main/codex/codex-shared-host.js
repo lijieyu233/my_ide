@@ -16,18 +16,38 @@ const bridgeVersion = 2;
 const samePath = (a, b) => typeof a === 'string' && typeof b === 'string' &&
   path.normalize(a).toLowerCase() === path.normalize(b).toLowerCase();
 
-async function installedDesktop() {
+async function installedDesktop(configuredPath, state) {
   const query = [
     "$ErrorActionPreference = 'Stop'",
-    "$pkg = Get-AppxPackage -Name 'OpenAI.Codex' | Select-Object -First 1",
-    "if (!$pkg) { return }",
-    "$exe = Join-Path $pkg.InstallLocation 'app\\ChatGPT.exe'",
+    "$pkg = $null",
+    "try { $pkg = Get-AppxPackage -Name 'OpenAI.Codex' | Where-Object InstallLocation | Select-Object -First 1 } catch {}",
+    "$entry = $null",
+    "$packageExe = $null",
+    "$alias = $null",
+    "if ($pkg) {",
+    "  try { $entry = (Get-AppxPackageManifest -Package $pkg).Package.Applications.Application | Where-Object Id -eq 'App' | Select-Object -First 1 } catch {}",
+    "  $relativeExe = if ($entry.Executable) { $entry.Executable } else { 'app\\ChatGPT.exe' }",
+    "  $packageExe = [IO.Path]::GetFullPath((Join-Path $pkg.InstallLocation $relativeExe))",
+    // The package-scoped alias cannot resolve to another app with the same public alias.
+    "  $aliasRoot = Join-Path (Join-Path $env:LOCALAPPDATA 'Microsoft\\WindowsApps') $pkg.PackageFamilyName",
+    "  $aliases = @(if ($entry) { $entry.SelectNodes(\".//*[local-name()='ExecutionAlias']\") | ForEach-Object { $_.Alias } } else { 'chatgpt-desktop.exe' })",
+    "  $alias = $aliases | ForEach-Object { Join-Path $aliasRoot $_ } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf -ErrorAction SilentlyContinue } | Select-Object -First 1",
+    "}",
+    "$exe = if ($env:MYIDE_CODEX_DESKTOP_PATH) { $env:MYIDE_CODEX_DESKTOP_PATH } else { $packageExe }",
+    "$knownPaths = @($packageExe, $exe) | Where-Object { $_ }",
+    "if (!$exe -and !$env:MYIDE_CODEX_MANAGED_DESKTOP_PATH) { return }",
     "$sessionId = (Get-Process -Id $PID).SessionId",
-    "$processes = @(Get-CimInstance Win32_Process -Filter \"Name='ChatGPT.exe'\" | Where-Object { $_.SessionId -eq $sessionId -and $_.ExecutablePath -eq $exe -and $_.CommandLine -notmatch ' --type=' })",
-    "[pscustomobject]@{executable=$exe; pids=@($processes | Select-Object -ExpandProperty ProcessId)} | ConvertTo-Json -Compress",
+    "$processes = @(Get-CimInstance Win32_Process -Filter ('SessionId=' + $sessionId) | Where-Object { $_.ExecutablePath -and $_.CommandLine -notmatch ' --type=' -and ($_.ExecutablePath -in $knownPaths -or ($_.ProcessId -eq $env:MYIDE_CODEX_MANAGED_DESKTOP_PID -and $_.ExecutablePath -eq $env:MYIDE_CODEX_MANAGED_DESKTOP_PATH)) })",
+    "$runningPaths = @{}",
+    "foreach ($process in $processes) { $runningPaths[[string]$process.ProcessId] = $process.ExecutablePath }",
+    "if ($exe -ne $packageExe) { $alias = $null }",
+    "[pscustomobject]@{executable=$exe; alias=$alias; runningPaths=$runningPaths; pids=@($processes | Select-Object -ExpandProperty ProcessId)} | ConvertTo-Json -Compress",
   ].join('\n');
   const { stdout } = await execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', query], {
     windowsHide: true, timeout: 12000,
+    env: { ...process.env, MYIDE_CODEX_DESKTOP_PATH: configuredPath,
+      MYIDE_CODEX_MANAGED_DESKTOP_PATH: state?.desktopExecutable || '',
+      MYIDE_CODEX_MANAGED_DESKTOP_PID: String(state?.desktopPid || '') },
   });
   return stdout.trim() ? JSON.parse(stdout) : null;
 }
@@ -65,6 +85,26 @@ async function launch(executable, args, cwd, env, windowsHide) {
   });
   child.unref();
   return child;
+}
+
+async function launchDesktop(desktop, args, env, startProcess) {
+  try {
+    return await startProcess(desktop.executable, args, path.dirname(desktop.executable), env, false);
+  } catch (error) {
+    if (!['EPERM', 'EACCES', 'ENOENT', 'ENOTDIR', 'UNKNOWN'].includes(error.code)) throw error;
+    // Windows can refuse a direct start from the package directory. Its registered
+    // alias can activate the same binary while retaining the arguments and bridge environment.
+    if (desktop.alias) {
+      try {
+        return await startProcess(desktop.alias, args, os.homedir(), env, false);
+      } catch (aliasError) {
+        throw Error('无法启动 Codex 桌面端（程序：' + error.code + '，应用执行别名：' +
+          (aliasError.code || '启动失败') + '）。请检查 Codex 安装状态及 Windows 的应用执行别名设置。', { cause: aliasError });
+      }
+    }
+    throw Error('无法启动 Codex 桌面端（' + error.code +
+      '）。请检查 Codex 安装状态及 Windows 的应用执行别名设置。', { cause: error });
+  }
 }
 
 async function withLaunchLock(directory, task) {
@@ -246,6 +286,7 @@ function createSharedHost({ detectDesktop = installedDesktop, startProcess = lau
   startHost = startBackend, checkIdle = assertBackendIdle, probeReady = ready, processAlive = isRunning,
   sharedDirectory = () => path.join(process.env.LOCALAPPDATA, 'MyIDE', 'codex-shared'),
   dataDirectory = () => process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
+  desktopPath = () => '',
 } = {}) {
   const codexDir = () => path.resolve(dataDirectory());
   const stateFile = () => path.join(sharedDirectory(), 'host.json');
@@ -255,6 +296,21 @@ function createSharedHost({ detectDesktop = installedDesktop, startProcess = lau
   });
   const isLive = async state => !!state && processAlive(state.hostPid) && await probeReady(state.port);
 
+  async function readDesktop(state, verifyConfigured = false) {
+    const value = await desktopPath();
+    const configured = typeof value === 'string' ? value.trim().replace(/^"(.*)"$/, '$1') : '';
+    const validPath = path.isAbsolute(configured) && path.extname(configured).toLowerCase() === '.exe';
+    const executable = validPath ? path.resolve(configured) : '';
+    if (verifyConfigured && configured && !validPath) {
+      throw Error('请在设置中填写 Codex 桌面端 .exe 的绝对路径');
+    }
+    const desktop = await detectDesktop(executable, state);
+    if (verifyConfigured && validPath && !desktop?.alias && !(await fs.stat(executable).catch(() => null))?.isFile()) {
+      throw Error('找不到配置的 Codex 桌面端，请重新选择程序或清空路径以自动查找');
+    }
+    return desktop;
+  }
+
   async function change(task) {
     if (process.platform !== 'win32') throw Error('当前系统不支持管理 Codex 进程');
     await fs.mkdir(sharedDirectory(), { recursive: true });
@@ -262,11 +318,11 @@ function createSharedHost({ detectDesktop = installedDesktop, startProcess = lau
   }
 
   async function status() {
-    const [state, desktop] = await Promise.all([readState(), detectDesktop()]);
-    const live = await isLive(state);
+    const state = await readState();
+    const [desktop, live] = await Promise.all([readDesktop(state), isLive(state)]);
     return {
       backendRunning: live && samePath(state.codexDir, codexDir()),
-      desktopAvailable: !!desktop,
+      desktopAvailable: !!desktop?.executable,
       desktopRunning: !!desktop?.pids.length,
       desktopShared: live && !!desktop?.pids.includes(state.desktopPid),
     };
@@ -285,7 +341,7 @@ function createSharedHost({ detectDesktop = installedDesktop, startProcess = lau
         if (!samePath(state.codexDir, codexDir())) throw Error('共享后台正在使用另一个 Codex 数据目录');
         return;
       }
-      const desktop = await detectDesktop();
+      const desktop = await readDesktop(state);
       if (desktop?.pids.length) throw Error('请先关闭已打开的 Codex 桌面端，再启动共享后台');
       if (state && processAlive(state.hostPid)) throw Error('原 Codex 共享后台尚未就绪，请稍后重试');
 
@@ -299,12 +355,12 @@ function createSharedHost({ detectDesktop = installedDesktop, startProcess = lau
     return change(async () => {
       const state = await readState();
       if (!samePath(state?.codexDir, codexDir()) || !await isLive(state)) throw Error('请先启动 Codex 共享后台');
-      const desktop = await detectDesktop();
-      if (!desktop) throw Error('未安装 Codex 桌面端');
-      if (desktop.pids.length) {
+      const desktop = await readDesktop(state, true);
+      if (desktop?.pids.length) {
         if (desktop.pids.some(pid => pid !== state.desktopPid)) throw Error('请先关闭单独打开的 Codex 桌面端');
         return { opened: false };
       }
+      if (!desktop?.executable) throw Error('未找到 Codex 桌面端，可以在设置中选择程序');
 
       if (state.bridgeVersion !== bridgeVersion) {
         state.bridge = await buildBridge(await fs.mkdtemp(path.join(sharedDirectory(), 'run-')));
@@ -313,8 +369,9 @@ function createSharedHost({ detectDesktop = installedDesktop, startProcess = lau
       }
       const env = { ...process.env, ...runtimeFor(state).env, CODEX_CLI_PATH: state.bridge, MYIDE_CODEX_BRIDGE_CLIENT: 'desktop' };
       delete env.ELECTRON_RUN_AS_NODE;
-      const child = await startProcess(desktop.executable, url ? [url] : [], path.dirname(desktop.executable), env, false);
+      const child = await launchDesktop(desktop, url ? [url] : [], env, startProcess);
       state.desktopPid = child.pid;
+      state.desktopExecutable = desktop.executable;
       await saveState(stateFile(), state);
       return { opened: true };
     });
@@ -322,12 +379,13 @@ function createSharedHost({ detectDesktop = installedDesktop, startProcess = lau
 
   function closeDesktop() {
     return change(async () => {
-      const desktop = await detectDesktop();
-      if (!desktop?.pids.length) return;
       const state = await readState();
+      const desktop = await readDesktop(state);
+      if (!desktop?.pids.length) return;
       const managed = await isLive(state) && desktop.pids.includes(state.desktopPid);
       if (!managed && desktop.pids.length > 1) throw Error('有多个 Codex 桌面端实例，请先退出其他实例');
-      await closeProcess(managed ? state.desktopPid : desktop.pids[0], desktop.executable, undefined, managed);
+      const pid = managed ? state.desktopPid : desktop.pids[0];
+      await closeProcess(pid, desktop.runningPaths?.[pid] || desktop.executable, undefined, managed);
     });
   }
 
@@ -336,7 +394,7 @@ function createSharedHost({ detectDesktop = installedDesktop, startProcess = lau
       const state = await readState();
       if (!state || !processAlive(state.hostPid)) return;
       if (!samePath(state.codexDir, codexDir())) throw Error('共享后台正在使用另一个 Codex 数据目录');
-      const desktop = await detectDesktop();
+      const desktop = await readDesktop(state);
       if (desktop?.pids.includes(state.desktopPid)) throw Error('请先关闭 Codex 桌面端，再关闭共享后台');
       await checkIdle(state);
       await closeProcess(state.hostPid, state.native, state.tokenFile);

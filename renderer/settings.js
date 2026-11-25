@@ -749,9 +749,12 @@ const Settings = (() => {
           <div class="set-note">侧栏连接本机 Harness，使用原生会话、工具、Skills 和插件；通过 MCP 操作 MyIDE。模型与推理选项由 Harness 返回。原生操作遵循 Harness 权限，MyIDE 操作仍遵循本应用权限；下方模型配置仅用于普通助手。</div>
         </div>
         <div id="ai-cfg-codex-wrap" class="hidden">
-          <label class="m-label" for="ai-cfg-codex" style="margin-top:8px">Codex 启动器（留空使用本机安装）</label>
+          <label class="m-label" for="ai-cfg-codex" style="margin-top:8px">Codex CLI 启动器（留空自动查找）</label>
           <input id="ai-cfg-codex" type="text" value="${esc(cfg.codexPath||'')}" placeholder="codex.cmd / codex.exe" spellcheck="false">
           <div class="set-button-row"><button id="ai-codex-pick" class="tb-btn">选择启动器</button><button id="ai-codex-detect" class="tb-btn">检查安装</button></div><span id="ai-codex-status" class="set-note" role="status"></span>
+          <label class="m-label" for="ai-cfg-codex-desktop" style="margin-top:8px">Codex 桌面端路径（Windows，留空自动查找）</label>
+          <input id="ai-cfg-codex-desktop" type="text" value="${esc(cfg.codexDesktopPath||'')}" placeholder="桌面应用的 .exe 绝对路径" spellcheck="false">
+          <div class="set-button-row"><button id="ai-codex-desktop-pick" class="tb-btn">选择桌面端</button></div>
           <div class="set-note">使用本机 Codex 已有登录态。模型由 Codex 提供，原生权限可在输入框的盾牌菜单设置。</div>
         </div>
       </div>
@@ -820,6 +823,10 @@ const Settings = (() => {
     const engineSel=document.getElementById('ai-cfg-engine');engineSel.value=['dsh','codex'].includes(cfg.engine)?cfg.engine:'standard';
     const syncEngine=()=>{for(const engine of ['dsh','codex'])document.getElementById('ai-cfg-'+engine+'-wrap').classList.toggle('hidden',engineSel.value!==engine);};engineSel.onchange=syncEngine;syncEngine();
     document.getElementById('ai-codex-pick').onclick=async()=>{const file=await window.myIDE.fs.pickFile('选择 Codex 启动器',[{name:'Codex 启动器',extensions:['cmd','exe','ps1']}]);if(file)document.getElementById('ai-cfg-codex').value=file;};
+    document.getElementById('ai-codex-desktop-pick').onclick = async () => {
+      const file = await window.myIDE.fs.pickFile('选择 Codex 桌面端', [{name:'应用程序',extensions:['exe']}]);
+      if (file) document.getElementById('ai-cfg-codex-desktop').value = file;
+    };
     const checkCodex=async()=>{
       const status=document.getElementById('ai-codex-status'),button=document.getElementById('ai-codex-detect');if(button.disabled)return;button.disabled=true;status.textContent='正在检查本机 Codex…';
       try{const result=await window.myIDE.ai.codexStatus(document.getElementById('ai-cfg-codex').value.trim());status.textContent=result.ok?'已找到本机 Codex'+(result.version?'：'+result.version:''):result.error||'未找到可用的 Codex';}
@@ -849,6 +856,7 @@ const Settings = (() => {
         engine:engineSel.value,
         dshPath:document.getElementById('ai-cfg-dsh').value.trim(),
         codexPath:document.getElementById('ai-cfg-codex').value.trim(),
+        codexDesktopPath:document.getElementById('ai-cfg-codex-desktop').value.trim(),
         provider: provSel.value,
         baseUrl: urlInput.value.trim(),
         apiKey: document.getElementById('ai-cfg-key').value.trim(),

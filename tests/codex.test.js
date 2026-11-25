@@ -2,6 +2,7 @@ const assert=require('assert/strict'),fs=require('fs'),os=require('os'),path=req
 const {EventEmitter}=require('events'),{PassThrough}=require('stream');
 const {createService,promptContent}=require('../src/main/codex/ai-codex');
 const {Rpc}=require('../src/main/codex/codex-rpc'),{resolveRuntime}=require('../src/main/codex/codex-runtime');
+const {createSharedHost}=require('../src/main/codex/codex-shared-host');
 const temp=fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(),'myide-codex-test-')));
 async function until(predicate){const end=Date.now()+3000;while(!predicate()){if(Date.now()>end)throw Error('Codex fixture await timeout');await new Promise(resolve=>setTimeout(resolve,5));}}
 const page={id:'project',projectContext:true};
@@ -138,6 +139,80 @@ function fixture(config={}){
 }
 let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+name);}
 (async()=>{try{
+ if(process.platform==='win32') await test('共享桌面启动优先兼容现有安装，Windows 启动错误时保留原链接和后台连接',async()=>{
+  const directory=path.join(temp,'desktop-launch');
+  fs.mkdirSync(directory);
+  const stateFile=path.join(directory,'host.json');
+  const bridge=path.join(directory,'bridge.exe'), tokenFile=path.join(directory,'capability');
+  const executable=path.join(directory,'package','ChatGPT.exe');
+  const alias=path.join(directory,'WindowsApps','package-family','chatgpt-desktop.exe');
+  const state={hostPid:10,port:32281,bridge,tokenFile,native:'fixture-codex.exe',codexDir:directory,bridgeVersion:2};
+  const url='codex://new?path=D%3A%5C%E6%B5%8B%E8%AF%95+project';
+  const attempts=[], closes=[];
+  let desktop={executable,alias,pids:[]}, directError, aliasError, configuredPath='';
+  const host=createSharedHost({
+   sharedDirectory:()=>directory,dataDirectory:()=>directory,desktopPath:()=>configuredPath,
+   detectDesktop:async file=>file ? {executable:file,pids:[]} : desktop,
+   probeReady:async()=>true,processAlive:pid=>pid===state.hostPid,
+   closeProcess:async(...args)=>{closes.push(args);},
+   startProcess:async(exe,args,cwd,env,windowsHide)=>{
+    attempts.push({exe,args,cwd,env,windowsHide});
+    const error=exe===executable?directError:aliasError;
+    if(error) throw Object.assign(Error('fixture spawn error'),{code:error});
+    return {pid:11};
+   },
+  });
+  const reset=()=>{fs.writeFileSync(stateFile,JSON.stringify(state));attempts.length=0;};
+  reset();
+  assert.deepEqual(await host.open(url),{opened:true});
+  assert.deepEqual(attempts.map(item=>item.exe),[executable]);
+  for(const code of ['EPERM','EACCES','ENOENT','ENOTDIR','UNKNOWN']){
+   reset();
+   directError=code;
+   assert.deepEqual(await host.open(url),{opened:true});
+   assert.deepEqual(attempts.map(item=>item.exe),[executable,alias]);
+   const [direct,fallback]=attempts;
+   assert.deepEqual(fallback.args,[url]);
+   assert.equal(fallback.cwd,os.homedir());
+   assert.equal(fallback.windowsHide,false);
+   assert.equal(fallback.env,direct.env);
+   assert.equal(fallback.env.CODEX_CLI_PATH,bridge);
+   assert.equal(fallback.env.MYIDE_CODEX_BRIDGE_TOKEN,tokenFile);
+   assert.equal(fallback.env.MYIDE_CODEX_BRIDGE_CLIENT,'desktop');
+   assert.equal(JSON.parse(fs.readFileSync(stateFile,'utf8')).desktopPid,11);
+  }
+  reset();
+  aliasError='ENOENT';
+  await assert.rejects(host.open(url),/UNKNOWN.*ENOENT/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(stateFile,'utf8')),state);
+  assert.equal(fs.existsSync(path.join(directory,'launch.lock')),false);
+  reset();
+  desktop={executable,pids:[]};
+  await assert.rejects(host.open(),/UNKNOWN.*应用执行别名/);
+  assert.equal(attempts.length,1);
+  reset();
+  desktop={executable,alias,pids:[12]};
+  await assert.rejects(host.open(url),/单独打开/);
+  assert.equal(attempts.length,0);
+  const custom=path.join(directory,'自定义 Codex Desktop.exe');
+  configuredPath='Codex Desktop.exe';
+  await assert.rejects(host.open(),/绝对路径/);
+  configuredPath=custom;
+  await assert.rejects(host.open(),/找不到配置的 Codex 桌面端/);
+  assert.equal(attempts.length,0);
+  fs.writeFileSync(custom,'');
+  aliasError=undefined;
+  configuredPath='"'+custom+'"';
+  assert.deepEqual(await host.open(),{opened:true});
+  assert.deepEqual(attempts.map(item=>item.exe),[custom]);
+  assert.equal(attempts[0].env.CODEX_CLI_PATH,bridge);
+  const saved=JSON.parse(fs.readFileSync(stateFile,'utf8'));
+  assert.equal(saved.desktopExecutable,custom);
+  configuredPath='';
+  desktop={executable,alias,pids:[saved.desktopPid],runningPaths:{[saved.desktopPid]:custom}};
+  await host.closeDesktop();
+  assert.deepEqual(closes,[[saved.desktopPid,custom,undefined,true]]);
+ });
  await test('新建项目会话带上唯一匹配的原生项目和普通用户会话类型',async()=>{
   const dir=path.join(temp,'shared-project');fs.mkdirSync(dir);
   const root=process.platform==='win32'?'\\\\?\\'+dir:dir;

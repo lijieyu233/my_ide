@@ -11,7 +11,8 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
   const provider={id:'custom',name:'自定义',models:[],baseUrl:''};
   w.AiPanel={PROVIDERS:[provider],providerOf:()=>provider,getConfig:()=>({...config}),setConfig:async value=>{calls.push({kind:'save',value});config={...config,...value};return {ok:true};},loadPerms:()=>({})};
   let statusResult={ok:true,version:'fixture-version'};
-  w.myIDE={fs:{pickFile:async(title,filters)=>{calls.push({kind:'pick',title,filters});return 'selected-codex.cmd';}},ai:{codexStatus:async launcher=>{calls.push({kind:'status',launcher});return statusResult;},dshStatus:async launcher=>{calls.push({kind:'dsh',launcher});return {ok:true};},chat:async()=>{throw Error('不得用真实模型测试原生连接');}}};
+  const desktopPath='D:\\自定义程序\\Codex Desktop.exe';
+  w.myIDE={fs:{pickFile:async(title,filters)=>{calls.push({kind:'pick',title,filters});return title==='选择 Codex 桌面端'?desktopPath:'selected-codex.cmd';}},ai:{codexStatus:async launcher=>{calls.push({kind:'status',launcher});return statusResult;},dshStatus:async launcher=>{calls.push({kind:'dsh',launcher});return {ok:true};},chat:async()=>{throw Error('不得用真实模型测试原生连接');}}};
   w.eval(source);const q=selector=>w.document.querySelector(selector);
   const select=engine=>{q('#ai-cfg-engine').value=engine;q('#ai-cfg-engine').dispatchEvent(new w.Event('change'));};
   try{
@@ -19,13 +20,18 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
     assert.match(q('#ai-cfg-codex-wrap').textContent,/已有登录态/);assert.match(q('#ai-cfg-codex-wrap').textContent,/盾牌菜单/);
     assert.equal(q('#ai-cfg-url').value,config.baseUrl,'原生模式不得覆写普通助手服务地址');
     q('#ai-codex-pick').click();await tick();assert.equal(q('#ai-cfg-codex').value,'selected-codex.cmd');assert.equal(calls.at(-1).kind,'pick');assert.equal(calls.at(-1).filters[0].extensions.join(','),'cmd,exe,ps1');
+    assert.equal(q('#ai-cfg-codex-desktop').value,'');
+    q('#ai-codex-desktop-pick').click();await tick();assert.equal(q('#ai-cfg-codex-desktop').value,desktopPath);assert.equal(calls.at(-1).filters[0].extensions.join(','),'exe');
     q('#ai-codex-detect').click();await tick();assert.match(q('#ai-codex-status').textContent,/fixture-version/);assert.equal(calls.at(-1).launcher,'selected-codex.cmd');
     statusResult={ok:false,error:'fixture unavailable'};q('#ai-cfg-test').click();await tick();assert.equal(q('#ai-codex-status').textContent,'fixture unavailable');assert.equal(calls.at(-1).kind,'status');
     q('#ai-cfg-save').click();await tick();assert.equal(config.codexPath,'selected-codex.cmd');assert.equal(config.codexModel,'native-model');assert.equal(config.codexReasoning,'high');assert.equal(config.dshModel,'harness-model');assert.equal(config.apiKey,'fixture-only');assert.equal(config.baseUrl,'https://gateway.invalid/v1');
+    assert.equal(config.codexDesktopPath,desktopPath);
     select('dsh');assert(q('#ai-cfg-codex-wrap').classList.contains('hidden'));assert(!q('#ai-cfg-dsh-wrap').classList.contains('hidden'));q('#ai-cfg-test').click();await tick();assert.equal(calls.at(-1).kind,'dsh');
     select('standard');assert(q('#ai-cfg-dsh-wrap').classList.contains('hidden'));assert(q('#ai-cfg-codex-wrap').classList.contains('hidden'));
     q('#ai-cfg-save').click();await tick();assert.equal(config.engine,'standard');assert.equal(config.codexModel,'native-model');assert.equal(config.codexReasoning,'high');assert.equal(config.codexPath,'selected-codex.cmd');
     w.Modal.hide();w.Settings.open('ai');assert.equal(q('#ai-cfg-engine').value,'standard');assert.equal(q('#ai-cfg-codex').value,'selected-codex.cmd');assert.equal(q('#ai-cfg-url').value,'https://gateway.invalid/v1');
+    assert.equal(q('#ai-cfg-codex-desktop').value,desktopPath);
+    q('#ai-cfg-codex-desktop').value='';q('#ai-cfg-save').click();await tick();assert.equal(config.codexDesktopPath,'');assert.equal(config.codexPath,'selected-codex.cmd');
     console.log('Codex设置：三模式、启动器、无模型安装检查、独立字段无损保存通过');
   }finally{w.close();}
   const ipc=new EventEmitter(),invoked=[];ipc.invoke=(...args)=>{invoked.push(args);return Promise.resolve({ok:true});};let api;
