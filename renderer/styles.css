@@ -4667,6 +4667,17 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 .ai-dsh-thought,.ai-dsh-permission,.ai-dsh-output{margin:6px 0;padding:8px;border:1px solid var(--btn-border);border-radius:6px;font-size:12px}.ai-dsh-permission{background:var(--bg-input)}.ai-dsh-permission button{margin-right:8px}.ai-dsh-thought pre,.ai-dsh-output pre,.ai-dsh-permission pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:200px;overflow:auto;font:inherit;color:var(--text-dim)}
 
 .ai-dsh-question fieldset{border:1px solid var(--border);margin:8px 0;padding:8px;min-width:0}.ai-dsh-question legend{white-space:normal}.ai-dsh-question label{display:flex;gap:6px;margin:6px 0;align-items:center}.ai-dsh-question textarea{box-sizing:border-box;width:100%;margin:6px 0;resize:vertical;color:inherit;background:var(--bg);border:1px solid var(--border)}
+.ai-codex-question { box-sizing: border-box; min-width: 0; margin: 8px 10px; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-panel); color: var(--text); }
+.ai-codex-question-docked { flex-shrink: 0; max-height: min(40vh, 320px); overflow: auto; }
+.ai-codex-question fieldset { min-width: 0; padding: 0; margin: 0 0 9px; border: 0; }
+.ai-codex-question legend { padding: 0; margin-bottom: 5px; font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ai-codex-question label { display: flex; align-items: start; gap: 8px; padding: 5px 7px; border-radius: 5px; cursor: pointer; overflow-wrap: anywhere; }
+.ai-codex-question label:hover, .ai-codex-question label:has(input:checked) { background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.ai-codex-question input { margin: 3px 0 0; accent-color: var(--accent); }
+.ai-codex-question small { display: block; opacity: .75; }
+.ai-codex-question textarea { box-sizing: border-box; width: 100%; margin-top: 6px; padding: 6px 8px; min-height: 29px; max-height: 110px; resize: vertical; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: inherit; font: inherit; }
+.ai-codex-question-actions { display: flex; justify-content: flex-end; gap: 6px; }
+
 
 /* 共享界面表面：颜色从所在主题派生，避免暗红界面出现另一套灰色面板。
    不对正文/编辑器做全局动画或尺寸变更，长文件与多面板仍保持原来的布局成本。 */

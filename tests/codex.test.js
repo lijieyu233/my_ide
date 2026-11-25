@@ -86,7 +86,13 @@ function fixture(config={}){
    }else if(r.method==='thread/unsubscribe'){
     send(c,{id:r.id,result:{status:'unsubscribed'}});
    }else if(r.method==='thread/start'||r.method==='thread/resume'){
-    if(r.method==='thread/resume'&&(config.writerLocked||config.writerConflictOnce)){
+    if (r.method === 'thread/resume' && config.replayQuestion) {
+      const thread=config.history.find(item=>item.id===p.threadId);
+      send(c,{id:r.id,result:{thread}});
+      send(c,config.replayQuestion);
+      continue;
+     }
+     if(r.method==='thread/resume'&&(config.writerLocked||config.writerConflictOnce)){
       config.writerConflictOnce=false;
      if(config.turnOnConflict)config.latestTurn=config.turnOnConflict;
      send(c,{id:r.id,error:{code:-32600,message:'thread '+p.threadId+' already has an active writer'}});
@@ -689,9 +695,49 @@ let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+
   const f=fixture({mode:'approval'});try{const c=context(),r=await f.service.chat({},user('命令'),[],c,event=>{if(event.type==='permission'){assert.deepEqual(event.options.map(o=>o.kind),['allow_once','reject_once']);assert.equal(f.service.permissionResult(c,event.id,'acceptForSession').ok,false);assert.equal(f.service.permissionResult({...c,generation:3},event.id,'allow_once').ok,false);assert(f.service.permissionResult(c,event.id,'reject_once').ok);assert.equal(f.service.permissionResult(c,event.id,'allow_once').ok,false);}},()=>{});assert(r.ok);assert.deepEqual(f.requests.find(r=>r.id==='server-turn-1').result,{decision:'decline'});}finally{await f.service.dispose();}
  });
  await test('requestUserInput按questionid转换官方answers字典，拒绝旧请求与未知选项',async()=>{
-  const f=fixture({mode:'question'});try{const c=context(),r=await f.service.chat({},user('问题'),[],c,e=>{if(e.type==='question'){assert.equal(f.service.questionResult(c,e.id,[{id:'question1',selected:['未知']}]).ok,false);assert(f.service.questionResult(c,e.id,[{id:'question1',selected:['继续'],custom:'补充'}]).ok);assert.equal(f.service.questionResult(c,e.id,[]).ok,false);}},()=>{});assert(r.ok);assert.deepEqual(f.requests.find(r=>r.id==='server-turn-1').result,{answers:{question1:{answers:['继续','补充']}}});}finally{await f.service.dispose();}
+  const f=fixture({mode:'question'});try{const c=context(),r=await f.service.chat({},user('问题'),[],c,e=>{if(e.type==='question'){assert.equal(f.service.questionResult(c,e.id,[{id:'question1',selected:['未知']}]).ok,false);assert(f.service.questionResult(c,e.id,[{id:'question1',selected:['继续'],custom:'补充'}]).ok);assert.equal(f.service.questionResult(c,e.id,[]).ok,false);}},()=>{});assert(r.ok);assert.deepEqual(f.requests.find(r=>r.id==='server-turn-1').result,{answers:{question1:{answers:['继续','user_note: 补充']}}});}finally{await f.service.dispose();}
  });
- await test('整轮/会话permissions扩权没有伪装成单次授权，默认明确拒绝',async()=>{const f=fixture({mode:'permissions'});try{assert((await f.service.chat({},user('x'),[],context(),()=>{},()=>{})).ok);assert.deepEqual(f.requests.find(r=>r.id==='server-turn-1').result,{permissions:{},scope:'turn'});}finally{await f.service.dispose();}});
+ await test('跳过本地 Codex 提问会发送原生空答案并继续原轮次',async()=>{
+   const f=fixture({mode:'question'});
+   try {
+    const c=context();
+    const result=await f.service.chat({},user('跳过'),[],c,event=>{
+     if(event.type==='question') assert.equal(f.service.questionResult(c,event.id,null).ok,true);
+    });
+    assert(result.ok);
+    assert.deepEqual(f.requests.find(r=>r.id==='server-turn-1').result,{answers:{}});
+   }finally{await f.service.dispose();}
+  });
+  await test('共享会话接收待回答提问，只接受原轮次答复并撤掉桌面端已处理的问题',async()=>{
+   const id='019caa00-0000-7000-8000-000000000044',turnId='desktop-question-turn';
+   const thread={id,cwd:temp,historyMode:'paginated',status:{type:'active',activeFlags:['waitingOnUserInput']}};
+   const questions=[{id:'choice',question:'继续吗？',isOther:false,options:[{label:'继续'}]}];
+   const pending={id:9,method:'item/tool/requestUserInput',params:{threadId:id,turnId,questions}};
+   const config={sharedLauncher:'codex.exe',history:[thread],latestTurn:{id:turnId,status:'inProgress'},replayQuestion:pending};
+   const f=fixture(config);
+   try {
+    const view=await f.service.openHistory({},id);
+    const [question]=view.pendingQuestions;
+    assert.equal(question.questions[0].allowCustom,false);
+    const c=context(1,{sessionId:view.localId});
+    const target={threadId:id,turnId,sessionId:view.localId};
+    const action={kind:'answerQuestion',id:question.id,answers:[{id:'choice',selected:['继续']}]};
+    assert.equal((await f.service.changeInput({},c,{...target,turnId:'stale'},action)).ok,false);
+    assert.equal((await f.service.changeInput({},c,target,{...action,answers:[{id:'choice',selected:[],custom:'不能填'}]})).ok,false);
+    assert.equal((await f.service.changeInput({},c,target,action)).ok,true);
+    assert.equal((await f.service.changeInput({},c,target,action)).ok,false);
+    assert.deepEqual(f.requests.filter(r=>!r.method&&r.id===9).map(r=>r.result),[{answers:{choice:{answers:['继续']}}}]);
+    f.send({...pending,id:10});
+    assert.equal((await f.service.openHistory({},id)).pendingQuestions.length,1);
+    f.send({method:'serverRequest/resolved',params:{threadId:id,requestId:10}});
+    assert.deepEqual((await f.service.openHistory({},id)).pendingQuestions,[]);
+    f.complete(id,turnId);
+    await until(()=>f.requests.some(r=>r.method==='thread/unsubscribe'&&r.params.threadId===id));
+    assert.equal(f.requests.filter(r=>r.method==='thread/resume').length,1);
+    assert(!f.requests.some(r=>r.method==='turn/start'));
+   }finally{await f.service.dispose();}
+  });
+  await test('整轮/会话permissions扩权没有伪装成单次授权，默认明确拒绝',async()=>{const f=fixture({mode:'permissions'});try{assert((await f.service.chat({},user('x'),[],context(),()=>{},()=>{})).ok);assert.deepEqual(f.requests.find(r=>r.id==='server-turn-1').result,{permissions:{},scope:'turn'});}finally{await f.service.dispose();}});
  await test('重启持久映射精确resume同线程，全球cfg不覆原生实际模型',async()=>{
   const map=path.join(temp,'resume.json'),f=fixture({map});try{assert((await f.service.chat({},user('首轮'),[],context(),()=>{},()=>{})).ok);}finally{await f.service.dispose();}
   const next=fixture({map,resumeModel:'other-model'});try{const events=[],r=await next.service.chat({codexModel:'native-model',codexReasoning:'medium'},user('继续'),[],context(2),e=>events.push(e),()=>{});assert(!r.ok&&r.error.includes('思考强度'));assert(!next.requests.some(r=>r.method==='thread/start'));assert.equal(next.requests.find(r=>r.method==='thread/resume').params.threadId,'thread-1');assert(!next.requests.find(r=>r.method==='thread/resume').params.model);assert(!next.requests.some(r=>r.method==='turn/start'));}finally{await next.service.dispose();}

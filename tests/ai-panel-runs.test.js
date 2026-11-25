@@ -177,6 +177,43 @@ function fixture(inspectReplay = false, fontPreference) {
 }
 const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + name); };
 (async () => {
+  await test('Codex问题卡回答、跳过和其他客户端已处理均不额外发送聊天',async()=>{
+    const f=fixture();
+    f.w.App.showAi();
+    await f.w.AiPanel.setConfig({engine:'codex'});
+    await until(()=>f.w.AiPanel.aiState().dshState==='ready');
+    f.hold=true;
+    f.send('发起原轮次');
+    await until(()=>f.calls.length===1);
+    const {context}=f.calls[0];
+    const questions=[{id:'route',question:'选哪种？',options:[{label:'选项甲',description:'保留历史'}],allowCustom:true}];
+    const card=()=>f.element('.ai-codex-question');
+    const ask=async id=>f.codexEvent({type:'question',context,id,questions});
+    await ask('choose');
+    await ask('choose');
+    assert.equal(f.w.document.querySelectorAll('.ai-codex-question').length,1);
+    assert(card().querySelector('button[type="submit"]').disabled);
+    assert(card().textContent.includes('保留历史'));
+    const custom=card().querySelector('textarea');
+    custom.value='我的回答';
+    custom.dispatchEvent(new f.w.Event('input',{bubbles:true}));
+    assert(!card().querySelector('button[type="submit"]').disabled);
+    card().dispatchEvent(new f.w.Event('submit',{cancelable:true}));
+    await until(()=>!card());
+    assert.equal(f.codexQuestions[0].answers[0].custom,'我的回答');
+    await ask('skip');
+    card().querySelector('button[type="button"]').click();
+    await until(()=>!card());
+    assert.equal(f.codexQuestions[1].answers,null);
+    await ask('resolved');
+    await f.codexEvent({type:'questionResolved',context,id:'resolved'});
+    assert(!card());
+    await ask('completion');
+    f.done(0,{ok:true,text:'继续执行'});
+    await until(()=>!card());
+    assert.equal(f.calls.length,1);
+    assert.equal(f.codexQuestions.length,2);
+  });
   await test('Codex 可直接发送两张图片，也可在运行中排队或插入纯图片消息', async () => {
     const f = fixture(true);
     const { promptContent } = require('../src/main/codex/ai-codex');

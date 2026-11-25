@@ -49,6 +49,7 @@ function validateChoice(models,model,effort){const selected=models.find(m=>m.mod
 function createService(options={}){
   const runs=new Map(),sessions=new Map(),saved=new Map(),locks=new Map(),pendingChoices=new Map();
   const desktopTransfers = new Set(), queueInsertions = new Map();
+  const questionWatches = new Map();
   let connection=null,starting=null,loaded=false,loading=null,disposed=false,saving=Promise.resolve();
   let stoppingBackend = false;
   let workspaceBindings;
@@ -145,8 +146,63 @@ function createService(options={}){
     if(run.queue.length>=1024||run.queuedBytes+bytes>4*1024*1024){run.conn.rpc.close(Error('Codex 早期消息超出限制'));return;}
     run.queue.push({kind,message});run.queuedBytes+=bytes;
   }
+
+  function receiveQuestion(request) {
+    const questions = request.params?.questions;
+    if (!Array.isArray(questions) || !questions.length || questions.length > 30 ||
+        questions.some(q => !q || q.isSecret || typeof q.id !== 'string' || typeof q.question !== 'string' ||
+          q.options != null && (!Array.isArray(q.options) || q.options.some(option => typeof option?.label !== 'string'))) ||
+        new Set(questions.map(q => q.id)).size !== questions.length) return null;
+    return {
+      id: crypto.randomUUID(), serverId: request.id, kind: 'question',
+      questions: questions.map(q => ({
+        id: q.id, header: q.header, question: q.question, options: q.options || [],
+        allowCustom: q.isOther !== false || !q.options?.length,
+      })),
+    };
+  }
+
+  function questionReply(conn, pending, answers) {
+    if (!pending || conn.rpc.closed) return false;
+    // An explicit skip is an empty native answer map.
+    if (answers !== null && (!Array.isArray(answers) || answers.length !== pending.questions.length)) return false;
+    const converted = Object.create(null);
+    for (const answer of answers || []) {
+      const question = pending.questions.find(q => q.id === answer?.id);
+      if (!question || Object.hasOwn(converted, question.id) || !Array.isArray(answer.selected) ||
+          answer.selected.length > 1 || answer.selected.some(option => !question.options.some(q => q.label === option)) ||
+          answer.custom !== undefined && (typeof answer.custom !== 'string' || !question.allowCustom || answer.custom.length > 20000)) return false;
+      const custom = answer.custom?.trim();
+      const values = [...answer.selected, ...(custom ? ['user_note: ' + custom] : [])];
+      if (!values.length) return false;
+      converted[question.id] = { answers: values };
+    }
+    try { conn.rpc.reply(pending.serverId, { answers: converted }); return true; }
+    catch { return false; }
+  }
+
+  async function stopQuestionWatch(watch) {
+    if (questionWatches.get(watch.threadId) !== watch) return;
+    questionWatches.delete(watch.threadId);
+    const session = sessions.get(watch.key);
+    if (!session?.attached || session.conn !== watch.conn) {
+      await releaseIdleThread({ id: watch.threadId, conn: watch.conn, attached: true });
+    }
+  }
+
   function notification(conn,message,replaying=false){
-    const p=message.params||{},session=[...sessions.values()].find(s=>s.id===p.threadId&&s.conn===conn);if(!session)return;
+    const p=message.params||{},session=[...sessions.values()].find(s=>s.id===p.threadId&&s.conn===conn);
+    const watch = questionWatches.get(p.threadId);
+    if (watch?.conn === conn) {
+      if (message.method === 'serverRequest/resolved') watch.pending.delete(p.requestId);
+      if (message.method === 'thread/closed') questionWatches.delete(p.threadId);
+      if (message.method === 'turn/completed' && p.turn?.id === watch.turnId) {
+        watch.pending.clear();
+        watch.ended = true;
+        void locked(watch.key, () => stopQuestionWatch(watch));
+      }
+    }
+    if (!session) return;
     const tid=p.turnId||p.turn?.id;
     if (message.method === 'thread/closed') session.attached = false;
     if (message.method === 'turn/completed' && session.stopping === tid) {
@@ -155,6 +211,15 @@ function createService(options={}){
     }
     const run=session.run;if(!run||run.conn!==conn||!run.accepting||run.settled)return;
     if(run.buffering&&!replaying){enqueue(run,'notification',message);return;}
+    if (message.method === 'serverRequest/resolved') {
+      const pending = [...run.permissions.values()].find(item => item.kind === 'question' && item.serverId === p.requestId);
+      if (pending) {
+        run.permissions.delete(pending.id);
+        activity(run);
+        emit(run, { type: 'questionResolved', id: pending.id });
+      }
+      return;
+    }
     if(tid!==run.turnId)return;
     activity(run);
     if(message.method==='turn/completed'){finishTurn(run,p.turn);return;}
@@ -213,8 +278,16 @@ function createService(options={}){
     // Responses and server requests can arrive in one stdout chunk, before the
     // awaiting turn/start continuation runs. Bind them only after its real id.
     if(run&&!run.aborted&&run.accepting&&run.buffering&&!replaying){enqueue(run,'request',request);return;}
-    // The other subscriber owns requests from its turn, including approvals.
-    if (conn.shared && (!run || run.detached)) return;
+    if (conn.shared && (!run || run.detached)) {
+      // Only mirror questions from a verified desktop turn that MyIDE joined.
+      const watch = questionWatches.get(p.threadId);
+      if (request.method === 'item/tool/requestUserInput' && watch?.conn === conn &&
+          !watch.ended && watch.turnId === p.turnId && watch.pending.size < 30 && !watch.pending.has(request.id)) {
+        const pending = receiveQuestion(request);
+        if (pending) watch.pending.set(request.id, pending);
+      }
+      return;
+    }
     if(!run||run.aborted||run.expired||run.settled||!run.turnId||p.turnId!==run.turnId){conn.rpc.reject(request.id);return;}
     activity(run);
     if(request.method==='item/tool/call'){
@@ -229,9 +302,15 @@ function createService(options={}){
       run.permissions.set(id,{serverId:request.id,kind:'approval',choices});
       emit(run,{type:'permission',id,options:choices,toolCall:{toolCallId:p.itemId,title:request.method.includes('fileChange')?'Codex 文件修改确认':'Codex 命令/网络确认',rawInput:{...(run.nativeItems.get(p.itemId)||{}),...(p.command?{command:redact(p.command)}:{}),...(p.cwd?{cwd:p.cwd}:{}),...(p.reason?{reason:redact(p.reason)}:{}),...(p.networkApprovalContext?{network:{host:redact(p.networkApprovalContext.host),protocol:p.networkApprovalContext.protocol}}:{})}}});
     }else if(request.method==='item/tool/requestUserInput'){
-      if(!Array.isArray(p.questions)||p.questions.length>30){conn.rpc.reject(request.id);return;}
-      if(p.questions.some(q=>q.isSecret===true)){conn.rpc.reject(request.id);emit(run,{type:'status',text:'Codex 请求了秘密信息；请使用官方安全登录流程，不在 MyIDE 普通问答框中输入凭据'});return;}
-      const id=crypto.randomUUID();run.permissions.set(id,{serverId:request.id,kind:'question',questions:p.questions});emit(run,{type:'question',id,questions:p.questions.map(q=>({id:q.id,header:q.header,question:q.question,options:q.options||[],multiSelect:false,isSecret:q.isSecret===true}))});
+      const pending = receiveQuestion(request);
+      if (!pending) {
+        conn.rpc.reject(request.id);
+        if (p.questions?.some?.(q => q?.isSecret)) emit(run, { type: 'status', text: 'Codex 请求了秘密信息；请在 Codex 中处理' });
+        return;
+      }
+      if ([...run.permissions.values()].some(item => item.serverId === request.id)) return;
+      run.permissions.set(pending.id, pending);
+      emit(run, { type: 'question', id: pending.id, questions: pending.questions });
     }else if(request.method==='item/permissions/requestApproval'){
       // This method grants a turn/session profile, not a one-command decision.
       // The first version has no UI for that broader authority: explicitly deny.
@@ -446,9 +525,39 @@ function createService(options={}){
     const conn = await connect(cfg), request = historyRequest(conn);
     const thread = await history.readProjectThread(request, threadId, archived);
     const view = await adoptHistory(request, thread, await projectThreadRoot(thread));
+    const previous = questionWatches.get(threadId);
+    if (previous?.conn === conn && (archived || thread.status?.type !== 'active')) {
+      await locked(previous.key, () => stopQuestionWatch(previous));
+    }
     if (conn.shared && !archived && thread.status?.type === 'active') {
       const { turn } = await history.readLatestTurn(request, thread);
-      if (turn?.status === 'inProgress') view.activeTurnId = turn.id;
+      if (turn?.status === 'inProgress') {
+        view.activeTurnId = turn.id;
+        const key = JSON.stringify([view.localId, norm(view.rootDir), 'project']);
+        if (Array.isArray(thread.status.activeFlags) && thread.status.activeFlags.includes('waitingOnUserInput') && !sessions.get(key)?.run) {
+          await locked(key, async () => {
+            if (sessions.get(key)?.run) return;
+            const current = questionWatches.get(threadId);
+            if (current?.conn === conn && current.turnId === turn.id) return;
+            if (current?.conn === conn) await stopQuestionWatch(current);
+            for (const [id, entry] of questionWatches) {
+              if (entry.conn.rpc.closed) questionWatches.delete(id);
+            }
+            if (questionWatches.size >= 32) return;
+            const watch = { conn, key, threadId, turnId: turn.id, pending: new Map() };
+            questionWatches.set(threadId, watch);
+            try {
+              const result = await request('thread/resume', { threadId, excludeTurns: true });
+              if (result.thread?.id === threadId && result.thread.status?.type === 'active' && !watch.ended) return;
+            } catch {}
+            await stopQuestionWatch(watch);
+          });
+        }
+        const watch = questionWatches.get(threadId);
+        if (watch?.conn === conn && watch.turnId === turn.id) {
+          view.pendingQuestions = [...watch.pending.values()].map(({ id, questions }) => ({ id, questions }));
+        }
+      }
     }
     return { ...view, archived };
   }
@@ -980,9 +1089,11 @@ function createService(options={}){
   function toolResult(context,id,result){const run=owned(context),pending=run?.tools.get(id);if(!pending)return {ok:false};run.tools.delete(id);activity(run);reply(run.conn,pending.serverId,{contentItems:[{type:'inputText',text:String(result?.text||'无返回内容').slice(0,100000)}],success:result?.ok===true});return {ok:true};}
   function permissionResult(context,id,optionId){const run=owned(context),pending=run?.permissions.get(id);if(pending?.kind!=='approval'||!pending.choices.some(c=>c.optionId===optionId))return {ok:false};run.permissions.delete(id);activity(run);reply(run.conn,pending.serverId,{decision:optionId==='allow_once'?'accept':'decline'});return {ok:true};}
   function questionResult(context,id,answers){
-    const run=owned(context),pending=run?.permissions.get(id);if(pending?.kind!=='question'||!Array.isArray(answers)||answers.length!==pending.questions.length)return {ok:false};
-    const converted=Object.create(null),seen=new Set();for(const answer of answers){const question=pending.questions.find(q=>q.id===answer?.id);if(!question||seen.has(answer.id)||!Array.isArray(answer.selected)||answer.selected.some(v=>typeof v!=='string'||!(question.options||[]).some(o=>o.label===v))||answer.selected.length>1||answer.custom!==undefined&&typeof answer.custom!=='string')return {ok:false};seen.add(answer.id);const values=[...answer.selected,...(answer.custom?[answer.custom]:[])];if(!values.length||values.some(v=>v.length>20000))return {ok:false};converted[answer.id]={answers:values};}
-    run.permissions.delete(id);activity(run);reply(run.conn,pending.serverId,{answers:converted});return {ok:true};
+    const run = owned(context), pending = run?.permissions.get(id);
+    if (pending?.kind !== 'question' || !questionReply(run.conn, pending, answers)) return { ok: false };
+    run.permissions.delete(id);
+    activity(run);
+    return { ok: true };
   }
   async function enqueueInput(request, params) {
     const result = await request('thread/queue/add', params);
@@ -1057,12 +1168,12 @@ function createService(options={}){
   }
 
   async function changeInput(cfg, context, target, action) {
-    if (!['list', 'queue', 'remove', 'steer', 'steerQueued', 'effort', 'interrupt', 'openDesktop'].includes(action?.kind)) throw Error('Codex 队列操作无效');
+    if (!['list', 'queue', 'remove', 'steer', 'steerQueued', 'effort', 'interrupt', 'openDesktop', 'answerQuestion'].includes(action?.kind)) throw Error('Codex 队列操作无效');
     const run = target.run ? owned(target.run) : null;
     const inserting = action.kind === 'steer' || action.kind === 'steerQueued';
     let conn, threadId, record, thread, info;
     if (target.run) {
-      if (['openDesktop', 'interrupt'].includes(action.kind)) throw Error('请先在当前视图操作运行中的轮次');
+      if (['openDesktop', 'interrupt', 'answerQuestion'].includes(action.kind)) throw Error('请先在当前视图操作运行中的轮次');
       if (!run?.turnId || run.buffering) throw Error('Codex 当前轮次尚未确认或已经结束');
       ({ conn } = run);
       info = run.session;
@@ -1082,6 +1193,14 @@ function createService(options={}){
       if (!thread || norm(await projectThreadRoot(thread)) !== norm(info.cwd)) throw Error('无法核对原 Codex 会话');
       threadId = record.id;
       if (action.kind === 'openDesktop') return { ok: true, desktopThreadId: threadId };
+      if (action.kind === 'answerQuestion') {
+        const watch = questionWatches.get(threadId);
+        if (!watch || watch.conn !== conn || watch.key !== info.key || watch.turnId !== target.turnId || watch.ended) return { ok: false };
+        const pending = [...watch.pending.values()].find(item => item.id === action.id);
+        if (!questionReply(conn, pending, action.answers)) return { ok: false };
+        watch.pending.delete(pending.serverId);
+        return { ok: true };
+      }
       if (action.kind === 'queue') {
         try {
           await history.assertThreadIdle(request, thread);

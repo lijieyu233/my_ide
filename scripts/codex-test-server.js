@@ -15,6 +15,16 @@ function createServer(){
     return;
    }
    if(input==='继续'){finish(thread,turn,'已继续原任务');return;}
+   if (input === 'ASK_USER_CODEX') {
+    const questions = [{ id: 'path', question: '选择下一步', isOther: true, options: [
+     { label: '继续当前方案', description: '保留已有内容' }, { label: '调整方向' },
+    ] }];
+    ask('item/tool/requestUserInput', { ...base, itemId: 'question-' + turn.id, questions }, result => {
+     receipts.push({ kind: 'question', threadId: thread.id, result });
+     finish(thread, turn, '原轮次已继续');
+    });
+    return;
+   }
    notice('item/started',{...base,item:{id:'native-'+turn.id,type:'commandExecution',command:'synthetic-display-only',cwd:thread.cwd,status:'inProgress'}});
    ask('item/commandExecution/requestApproval',{...base,itemId:'native-'+turn.id,command:'synthetic-display-only',cwd:thread.cwd,reason:'离线合成审批，不执行任何命令'},result=>{
     receipts.push({kind:'approval',threadId:thread.id,result});notice('item/completed',{...base,item:{id:'native-'+turn.id,type:'commandExecution',status:result.decision==='accept'?'completed':'declined',aggregatedOutput:'SYNTHETIC_NATIVE_ONLY'}});

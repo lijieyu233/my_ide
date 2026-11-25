@@ -177,6 +177,7 @@ const AiPanel = (() => {
     if (!runIsCurrent(run)) return;
     settlePendingTools(run,'工具结果未能完整记录，实际执行状态未确认。请先核对文件或进程状态，不要重复执行旧调用。');
     run.status = status;
+    for (const card of run.questionCards?.values() || []) card.close();
     if(run.engine==='codex'&&run.nativeState){run.nativeState.localStatus=status;run.nativeState.endedAt=Date.now();}
     if(run.stream?.element){finishLiveText(run.stream.element);run.stream.element.querySelector('.ai-cursor')?.remove();}
     if(run.thought)finishLiveText(run.thought.querySelector('pre'));
@@ -2888,6 +2889,7 @@ const AiPanel = (() => {
   function renderNativeInputUI(b = busy){
     if(backgroundView)return;
     renderSendButton(b);
+    renderObservedCodexQuestion();
     const codex = getConfig().engine === 'codex';
     if (codex) {
       const effort = document.getElementById('ai-dsh-reasoning');
@@ -3800,10 +3802,12 @@ const AiPanel = (() => {
       view.activity = result.activity;
       view.activityId = result.activityId;
       const turnId = result.activeTurnId || null;
+      view.questions = result.pendingQuestions || [];
       if (view.turnId !== turnId) {
         view.turnId = turnId;
         if (selected.sharedControl) setBusyUI(busy);
       }
+      renderObservedCodexQuestion();
       const next = result.messages;
       const samePrefix = msgs.length <= next.length && msgs.every((message, index) =>
         message.role === next[index].role && message.content === next[index].content && message._codexCommand === next[index]._codexCommand &&
@@ -5257,6 +5261,12 @@ const AiPanel = (() => {
     else switchSessionDraft(se.id, root, !!foreign);
     curSessionId = se.id;
     dshSessionAccess = access;
+    if (codexHistory?.activeTurnId) {
+      codexLiveView = {
+        ticket, scope: sessKey(), threadId: codexHistory.threadId, launcher: getConfig().codexPath || '',
+        turnId: codexHistory.activeTurnId, questions: codexHistory.pendingQuestions || [], observed: true,
+      };
+    }
     setBusyUI(false);
     rememberSession();
     if (!foreign) localStorage.removeItem(sessKey()+':draft');
@@ -5784,7 +5794,7 @@ const AiPanel = (() => {
     for(const record of backgroundRuns.values()){
       const button=document.createElement('button');button.className='tb-btn';
       const name=record.run.identity.rootId.split(/[\\/]/).filter(Boolean).at(-1)||'独立会话';
-      const waiting=record.pending.some(event=>event.type==='tool')||record.pending.some(event=>event.type==='permission'||event.type==='question')||!!record.view.msgsEl.querySelector('.ai-dsh-permission button:not(:disabled)');
+      const waiting=record.pending.some(event=>event.type==='tool')||record.pending.some(event=>event.type==='permission'||event.type==='question')||!!record.view.msgsEl.querySelector('.ai-dsh-permission button:not(:disabled), .ai-codex-question button:not(:disabled)');
       button.textContent=name+' · '+(record.run.status==='active'?(waiting?'等待返回处理':'后台运行'):record.run.status==='completed'?'后台已完成':'后台已结束');
       button.onclick=async()=>{
         if(getConfig().engine!==record.run.engine)await setConfig({engine:record.run.engine});
@@ -6510,6 +6520,122 @@ const AiPanel = (() => {
     } catch {}
   }
 
+  function makeCodexQuestionCard(request, { isCurrent, respond, remove }) {
+    const box = document.createElement('form');
+    box.className = 'ai-codex-question';
+    box.setAttribute('aria-label', 'Codex 提问');
+    const fields = [];
+    for (const question of request.questions) {
+      const group = document.createElement('fieldset');
+      const title = document.createElement('legend');
+      title.textContent = question.question;
+      group.append(title);
+      const choices = (question.options || []).map(option => {
+        const row = document.createElement('label');
+        const choice = document.createElement('input');
+        choice.type = 'radio';
+        choice.name = request.id + ':' + question.id;
+        choice.value = option.label;
+        const caption = document.createElement('span');
+        caption.textContent = option.label;
+        if (option.description) {
+          const detail = document.createElement('small');
+          detail.textContent = option.description;
+          caption.append(detail);
+        }
+        row.append(choice, caption);
+        group.append(row);
+        return choice;
+      });
+      let custom;
+      if (question.allowCustom || !choices.length) {
+        custom = document.createElement('textarea');
+        custom.rows = 1;
+        custom.maxLength = 20000;
+        custom.placeholder = '自定义回答';
+        custom.setAttribute('aria-label', '自定义回答');
+        group.append(custom);
+      }
+      box.append(group);
+      fields.push({ id: question.id, choices, custom });
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'ai-codex-question-actions';
+    const skip = document.createElement('button'), send = document.createElement('button');
+    skip.type = 'button';
+    send.type = 'submit';
+    skip.className = 'tb-btn';
+    send.className = 'tb-btn m-ok';
+    skip.textContent = '跳过';
+    send.textContent = '回答';
+    actions.append(skip, send);
+    box.append(actions);
+
+    const answers = () => fields.map(({ id, choices, custom }) => ({
+      id,
+      selected: choices.filter(choice => choice.checked).map(choice => choice.value),
+      ...(custom?.value.trim() ? { custom: custom.value.trim() } : {}),
+    }));
+    const ready = values => values.every(answer => answer.selected.length || answer.custom);
+    let sending = false, closed = false;
+    const update = () => { send.disabled = sending || !ready(answers()); };
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      box.remove();
+      remove?.();
+    };
+    const submit = async values => {
+      if (closed || sending || values && !ready(values)) return;
+      if (!isCurrent()) return close();
+      sending = skip.disabled = true;
+      update();
+      try {
+        const result = await respond(values);
+        if (result?.ok || !isCurrent()) close();
+        else MI.toast('回答未被接收', 'err');
+      } catch {
+        if (isCurrent()) MI.toast('回答未被接收', 'err');
+      } finally {
+        sending = skip.disabled = false;
+        update();
+      }
+    };
+    box.addEventListener('input', update);
+    box.addEventListener('change', update);
+    box.onsubmit = event => { event.preventDefault(); void submit(answers()); };
+    skip.onclick = () => { void submit(null); };
+    update();
+    return { box, close };
+  }
+
+  let observedCodexQuestion;
+  function renderObservedCodexQuestion() {
+    const view = codexLiveView, selected = codexSelectedHistoryItem();
+    const current = () => !!view && !busy && codexLiveView === view && view.ticket === sessionLoadTicket &&
+      view.scope === sessKey() && view.threadId === codexSelectedHistoryItem()?.threadId;
+    const request = current() && !selected.archived && view.turnId
+      ? view.questions?.find(question => !view.answeredQuestions?.has(question.id)) : null;
+    if (observedCodexQuestion?.view === view && observedCodexQuestion?.id === request?.id) return;
+    observedCodexQuestion?.close();
+    observedCodexQuestion = null;
+    if (!request) return;
+    const turnId = view.turnId, target = { sessionId: curSessionId, threadId: view.threadId, turnId };
+    const card = makeCodexQuestionCard(request, {
+      isCurrent: () => current() && view.turnId === turnId,
+      respond: async answers => {
+        const result = await window.myIDE.ai.codexInput(getConfig(), target, { kind: 'answerQuestion', id: request.id, answers });
+        if (result?.ok) (view.answeredQuestions ||= new Set()).add(request.id);
+        return result;
+      },
+      remove: () => { if (observedCodexQuestion?.id === request.id) observedCodexQuestion = null; },
+    });
+    observedCodexQuestion = { ...card, view, id: request.id };
+    card.box.classList.add('ai-codex-question-docked');
+    document.getElementById('ai-input-queue')?.before(card.box);
+  }
+
   async function handleDshEvent(event){
     const parked=parkedFor(event.context);
     if(parked){
@@ -6556,8 +6682,32 @@ const AiPanel = (() => {
       if(update.consumedRequestId)showConsumedInput(run,update.consumedRequestId,update.consumedContent);
       renderNativeInputUI();return;
     }
+    if (event.type === 'questionResolved') {
+      run.questionCards?.get(event.id)?.close();
+      return;
+    }
     if(event.type==='question'){
       sealDshSegment(run); sealActivityGroup();
+      if (run.engine === 'codex') {
+        const cards = run.questionCards ||= new Map();
+        if (cards.has(event.id)) return;
+        const signal = run.controller.signal;
+        const card = makeCodexQuestionCard(event, {
+          isCurrent: () => runIsLive(run),
+          respond: answers => nativeCall('codex', 'QuestionResult', event.context, event.id, answers),
+          remove: () => {
+            cards.delete(event.id);
+            signal.removeEventListener('abort', card.close);
+            if (!cards.size && runIsLive(run)) setRunState(run, '正在继续');
+          },
+        });
+        cards.set(event.id, card);
+        signal.addEventListener('abort', card.close, { once: true });
+        msgsEl.append(card.box);
+        setRunState(run, '等待回答');
+        scrollBottom();
+        return;
+      }
       const box=document.createElement('form');box.className='ai-dsh-permission ai-dsh-question';const fields=[];
       for(const question of event.questions||[]){
         const group=document.createElement('fieldset'),title=document.createElement('legend');title.textContent=question.question;group.appendChild(title);
