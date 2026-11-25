@@ -4524,8 +4524,6 @@ const AiPanel = (() => {
     const refresh = sidebar.querySelector('[data-hist-refresh]');
     refresh.hidden = !dsh && !codex;
     refresh.disabled = histLoading;
-    status.textContent = (dsh || codex) && histError ? '目录更新失败：' + histError : '';
-    status.classList.toggle('error', (dsh || codex) && !!histError);
 
     const groups = new Map(), runningGroups = new Set(), unreadGroups = new Set();
     const unreadSessions = new Set();
