@@ -276,23 +276,27 @@ const App = (() => {
     if (!root) return;
     try { localStorage.setItem(TOOL_STATE_PREFIX + root, JSON.stringify({ activeTool, sideTool })); } catch {}
   }
-  function restoreToolState(keepSessions) {
+  function restoreToolState(sessionSidebar) {
     browserReturn = null; // 跨项目恢复不能携带上一项目的来源页面。
     if (!root) return;
     let st = null;
     try { st = JSON.parse(localStorage.getItem(TOOL_STATE_PREFIX + root) || 'null'); } catch {}
-    const at = keepSessions ? 'sessions' : st && ALL_TOOLS.includes(st.activeTool) ? st.activeTool
-      : (st && st.activeTool === null ? null : 'project'); // 无记录默认项目面板
-    sideTool = keepSessions ? 'sessions' : st && SIDE_TOOLS.includes(st.sideTool) ? st.sideTool : 'project';
+    const keepSessions = sessionSidebar?.selected === true;
+    const at = keepSessions ? 'sessions' : st && ALL_TOOLS.includes(st.activeTool) &&
+      (!sessionSidebar || st.activeTool !== 'sessions') ? st.activeTool
+      : (st && st.activeTool === null ? null : 'project');
+    sideTool = keepSessions ? 'sessions' : st && SIDE_TOOLS.includes(st.sideTool) &&
+      (!sessionSidebar || st.sideTool !== 'sessions') ? st.sideTool : 'project';
     const prev = activeTool;
     activeTool = at;
-    sideCollapsed = false;
+    sideCollapsed = keepSessions && sessionSidebar.collapsed;
     // AI 右侧面板独立记忆（全局）
-    try { aiOpen = localStorage.getItem('myide-ai-open') === '1'; } catch {}
+    if (!sessionSidebar) try { aiOpen = localStorage.getItem('myide-ai-open') === '1'; } catch {}
     applyToolChange(prev, at);
     renderToolStrip();
   }
 
+  let lastAiVisibility;
   function renderToolStrip() {
     // 互斥工具的按钮高亮，AI 面板独立处理。
     for (const t of ALL_TOOLS) {
@@ -335,7 +339,10 @@ const App = (() => {
     const aiEl = document.getElementById('ai-panel');
     if (aiEl) aiEl.classList.toggle('hidden', !aiVisible);
     syncEditorLayout();
-    if (window.AiPanel) AiPanel.syncVisible(aiVisible);
+    if (window.AiPanel && lastAiVisibility !== aiVisible) {
+      lastAiVisibility = aiVisible;
+      AiPanel.syncVisible(aiVisible);
+    }
     // browser / log 面板显隐由 applyToolChange 调用模块 show/hide 完成
     if (activeTool === 'outline') {
       Outline.refresh(Viewer.activeTab);
@@ -913,8 +920,10 @@ const App = (() => {
         if (!await saveBeforeLeaving()) return false;
         if (next && !await projectAvailable(next.path)) return false;
         if(!saveProjectState())return false;
+        const sessionSidebar = { selected: sideTool === 'sessions', collapsed: sideCollapsed };
+        window.AiPanel?.beforeProjectChange?.(next?.path || '');
         Viewer.closeAll();
-        if (next) await activateProject(next.path);
+        if (next) await activateProject(next.path, sessionSidebar);
         else {
           root = null;
           if(window.Bookshelf?.visible)Bookshelf.refresh();
@@ -928,6 +937,7 @@ const App = (() => {
           if (window.GitLog) GitLog.setRoot(null);
           if (window.Tasks) Tasks.setRoot(null);
           GitPanel.refresh();
+          window.AiPanel?.onEditorProjectChange?.();
           await rememberActiveProject(null);
         }
       }
@@ -1101,8 +1111,10 @@ const App = (() => {
       // 保存可能等待很久；目录在这期间失效时，仍不能先清空旧标签。
       if (!await projectAvailable(p)) return false;
       if(!saveProjectState())return false; // 保存失败时保留当前视图，不能先关标签再离开。
+      const sessionSidebar = root ? { selected: sideTool === 'sessions', collapsed: sideCollapsed } : null;
+      window.AiPanel?.beforeProjectChange?.(p);
       if (p !== root) Viewer.closeAll();
-      await activateProject(p);
+      await activateProject(p, sessionSidebar);
       return true;
     });
   }
@@ -1124,10 +1136,8 @@ const App = (() => {
   }
   // 内部显式setRoot也用于刷新当前项目；保留刷新语义，但仍先保护正文和检查目录。
   function setRoot(p) { return openProject(p, true); }
-  async function activateProject(p) {
+  async function activateProject(p, sessionSidebar) {
     const t0 = performance.now();
-    // 恢复标签和工具面板可能异步等待；先托管原项目任务，避免恢复期间的隐藏面板通知取消它。
-    window.AiPanel?.beforeProjectChange?.(p);
     root = p;
     window.Bookshelf?.projectChanged?.();
     window.BrowserPanel?.setProject?.(p);
@@ -1150,11 +1160,8 @@ const App = (() => {
     renderProjectBar();
     renderEmptyRecent();
     await Session.restore();
-    const sessionsPanel = document.getElementById('panel-sessions');
-    const keepSessions = sessionsPanel && !sessionsPanel.classList.contains('hidden') &&
-      !document.body.classList.contains('sidebar-collapsed');
-    restoreToolState(keepSessions);
-    if (window.AiPanel && AiPanel.onProjectChange) AiPanel.onProjectChange(); // AI 会话跟着项目走
+    restoreToolState(sessionSidebar);
+    window.AiPanel?.onEditorProjectChange?.();
     // 选择目录和预检都不算激活；原项目的保存/恢复流程结束后才更新成功记录。
     pushRecent(p);
     renderEmptyRecent();

@@ -620,13 +620,31 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     await until(()=>reads===1);assert(container.querySelector('.ai-welcome'));assert.equal(f.w.AiPanel.aiState().current,id);assert(!f.element('#ai-usage'));f.element('#ai-context-details').click();assert(f.element('.ai-context-usage').textContent.includes('Σ 输入 321'));assert(f.element('.ai-context-usage').textContent.includes('输出 12'));f.element('#cb-x').click();
     assert.equal(f.historyReads?.length||0,0);assert.equal(f.w.localStorage.getItem(key),raw);assert.equal(f.w.localStorage.getItem(key+':draft'),id);
   });
-  await test('Harness在项目恢复前进入后台，恢复期间隐藏面板也不取消且迟到输出保留',async()=>{
+  await test('DSH切编辑项目保留原会话、运行和草稿，续聊只使用原工作区',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;f.send('恢复期间继续');await until(()=>f.calls.length===1);
-    f.w.AiPanel.beforeProjectChange(f.B);f.w.App.root=f.B;f.w.AiPanel.syncVisible(false);f.w.AiPanel.onPageChange();
-    f.chunk(0,'恢复期间A正文');assert.equal(f.aborts.length,0);
-    f.w.AiPanel.onProjectChange();assert(!f.text().includes('恢复期间A正文'));f.switchRoot(f.A);
+    const source=f.calls[0].context;
+    const input=f.element('#ai-input');
+    input.value='原会话草稿';
+    input.dispatchEvent(new f.w.Event('input',{bubbles:true}));
+    const firstRow=f.element('#ai-msgs .ai-user');
+    f.w.AiPanel.beforeProjectChange(f.B);f.w.App.root=f.B;f.w.AiPanel.onPageChange();f.w.AiPanel.onEditorProjectChange();
+    f.chunk(0,'恢复期间A正文');
+    assert.equal(f.w.AiPanel.dshView().rootId,f.A);
+    assert.equal(f.w.AiPanel.dshView().sessionId,source.sessionId);
+    assert.equal(f.w.AiPanel.dshView().page.projectContext,false);
+    assert.equal(input.value,'原会话草稿');
+    assert.equal(f.element('#ai-msgs .ai-user'),firstRow);
     assert(f.text().includes('恢复期间A正文'));assert.equal(f.element('#ai-send').textContent,'⏹');
+    assert.equal(f.aborts.length,0);
     f.done(0,{ok:true,text:'恢复期间A正文'});assert.equal(f.element('#ai-send').textContent,'➤');
+    f.send('切到B后继续A');await until(()=>f.calls.length===2);
+    assert.equal(f.calls[1].context.rootId,f.A);
+    assert.equal(f.calls[1].context.sessionId,source.sessionId);
+    assert.equal(f.calls[1].context.page.projectContext,false);
+    f.done(1,{ok:true,text:'续聊仍属于A'});
+    f.element('#ai-new').click();
+    assert.equal(f.w.AiPanel.dshView().rootId,f.B);
+    assert.notEqual(f.w.AiPanel.dshView().sessionId,source.sessionId);
   });
   await test('Harness切换项目继续后台输出，B项目另开任务不混入A历史，切回恢复并可停止',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;
@@ -1528,14 +1546,18 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     f.element('[data-hist-refresh]').click();await tick();await tick();assert.equal(f.element('.ai-hist-dock'),pop);assert(!f.element('[data-id="host:session-foreign"]').closest('.ai-hist-items').hidden);assert(!f.element('.ai-hist-status'));assert(!pop.textContent.includes('网络暂时不可用'));assert.equal(f.notifications.filter(item=>item.type==='err'&&item.message.includes('网络暂时不可用')).length,1);assert(f.element('[data-id="host:session-foreign"]'));
     f.catalogRead=async()=>({ok:true,items:f.dshCatalog});f.element('[data-hist-refresh]').click();await tick();await tick();assert(!f.element('.ai-hist-status'));f.element('[data-hist-close]').click();assert(f.element('#panel-sessions').classList.contains('hidden'));assert.equal(f.aborts.length,0);
   });
-  await test('打开所属工程直接走正常项目切换，切换成功才选中原会话',async()=>{
+  await test('打开所属工程只切编辑项目，右侧保留原会话身份',async()=>{
     for(const canOpen of [false,true]){
       const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});
       const switched=[],hostId='session-project-switch';
       f.w.Modal.confirm=()=>{assert.fail('打开所属工程不需要额外确认');};
       f.w.App.openProject=async root=>{
         switched.push(root);
-        if(canOpen)f.switchRoot(root);
+        if(canOpen){
+          f.w.AiPanel.beforeProjectChange(root);
+          f.w.App.root=root;
+          f.w.AiPanel.onEditorProjectChange();
+        }
         return canOpen;
       };
       f.dshCatalog=[{sessionId:hostId,title:'会话所属工程',cwd:f.B,rootDir:f.B}];
@@ -1546,8 +1568,9 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
       f.element('#ai-session-open-project').click();
       assert.deepEqual(switched,[f.B]);
       if(canOpen){
-        await until(()=>f.w.App.root===f.B&&f.w.AiPanel.dshView().sessionId===hostId);
-        assert(!f.w.AiPanel.dshView().foreignHostId);
+        await until(()=>f.w.App.root===f.B&&!f.element('#ai-session-open-project'));
+        assert.equal(f.w.AiPanel.dshView().sessionId,'host:'+hostId);
+        assert.equal(f.w.AiPanel.dshView().foreignHostId,hostId);
       }else{
         await tick();
         assert.equal(f.w.App.root,f.A);

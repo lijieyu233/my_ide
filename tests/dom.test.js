@@ -9171,14 +9171,14 @@ assert_(panel, 'CM6 搜索面板出现');
     click(chips[0]);
     await tick();
     assert_($allIn($(dom, '#ai-chips'), '.ai-ctx-chip').length === chips.length, '点 chip 本体不会误删');
-    click($(dom, '#ai-chips .ai-ctx-chip .ai-ctx-x'));
+    click(chips[0].querySelector('.ai-ctx-x'));
     await tick();
-    assert_($allIn($(dom, '#ai-chips'), '.ai-ctx-chip').length === 0, '点 ✕ 才移除');
+    assert_(!$(dom, '#ai-chips .ai-ctx-chip.follow'), '点 ✕ 后移除跟随项');
     await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
     aiScript = [];
   });
 
-  await okAsync('AI 面板：会话跟着项目走（换项目不再串味）', async () => {
+  await okAsync('切项目保留会话栏与 AI 对话，新建时才使用新项目', async () => {
     const P2 = P + '_proj2';
     await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
     key(dom, '8', { ctrl: true });
@@ -9193,24 +9193,33 @@ assert_(panel, 'CM6 搜索面板出现');
     const keyA = await g(dom, 'localStorage.getItem("myide-ai-sessions:" + App.root)');
     assert_(!!keyA && String(keyA).includes('A 项目的私事'), 'A 项目的会话存在自己项目的 key 下');
 
-    // 换项目
+    await g(dom, 'App.showTool("sessions")');
+    const dock = $(dom, '.ai-hist-dock');
+    const row = $(dom, '#ai-msgs .ai-user');
+    const sessionId = g(dom, 'AiPanel.dshView().sessionId');
+    const draft = $(dom, '#ai-input');
+    draft.value = 'A 的草稿';
+    draft.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+
     FAKE_FS[P2] = { type: 'dir', children: [] };
     await g(dom, 'App.openProject(' + JSON.stringify(P2) + ')');
     await tick(); await tick();
-    const nowMsgs = $allIn($(dom, '#ai-msgs'), '.ai-msg').length;
-    assert_(nowMsgs === 0, '换项目后对话被清空（不挂着上一个项目的内容）: ' + nowMsgs);
-    assert_($allIn($(dom, '#ai-chips'), '.ai-ctx-chip').length === 0, '上下文也被清空');
-    const keyB = await g(dom, 'localStorage.getItem("myide-ai-sessions:" + App.root)');
-    assert_(!keyB || !String(keyB).includes('A 项目的私事'), 'B 项目看不到 A 项目的会话: ' + String(keyB).slice(0, 30));
+    assert_(g(dom, 'App.root') === P2, '顶部已切到项目 B');
+    assert_(dock === $(dom, '.ai-hist-dock') && !$(dom, '#panel-sessions').classList.contains('hidden'), '会话栏保持打开');
+    assert_(row === $(dom, '#ai-msgs .ai-user') && draft.value === 'A 的草稿', '保留原消息节点和输入');
+    assert_(g(dom, 'AiPanel.dshView().sessionId') === sessionId && g(dom, 'AiPanel.dshView().rootId') === P, '仍是 A 的同一会话');
+    assert_(!g(dom, 'AiPanel.dshView().page.projectContext'), '续聊不读取 B 的编辑器上下文');
 
-    // 切回去：历史还在（会话跟项目走，不是被删了）
+    click($(dom, '#ai-new'));
+    await tick();
+    assert_(g(dom, 'AiPanel.dshView().rootId') === P2 && !$(dom, '#ai-msgs').textContent.includes('A 项目的私事'), '新对话才使用项目 B');
+    click($(dom, '#tool-sessions'));
     await g(dom, 'App.openProject(' + JSON.stringify(P) + ')');
     await tick(); await tick();
-    click($(dom, '#tool-sessions'));
-    await tick(); await tick();
-    assert_($(dom, '.ai-hist-dock').textContent.includes('A 项目的私事'), '切回 A 项目还能翻到当时的会话');
-    click($(dom, '#tool-sessions'));
-    await tick();
+    assert_($(dom, '#panel-sessions').classList.contains('hidden'), '手动收起会话栏后，切项目不会展开');
+    assert_(g(dom, 'AiPanel.dshView().rootId') === P2, '切回 A 也保留 B 的新会话');
+    click($(dom, '#ai-new'));
+    await g(dom, 'App.showTool("project")');
     await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
     aiScript = [];
   });

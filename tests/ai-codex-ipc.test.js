@@ -13,6 +13,7 @@ const codex={abort:id=>aborts.push(id),status:async launcher=>({ok:true,launcher
     assert.equal(rootDir,root);
     return {items:[{threadId:'fixture-thread',projectId:'fixture-project'}],projects:[{id:'fixture-project',title:'Fixture'}]};
   },
+  changeInput:async(_cfg,context,target,action)=>{calls.push({kind:'input',context,target,action});return {ok:true};},
   renameProject:async(_cfg,projectId,title)=>{calls.push({kind:'rename-project',projectId,title});return {title};},
   openHistory:async(_cfg, threadId, archived)=>({threadId,archived,messages:[]}),
   setHistoryArchived:async (_cfg,threadId,archived)=>calls.push({kind:'archive',threadId,archived}),
@@ -85,9 +86,17 @@ const settled=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
       assert.equal((await invoke('ai:codex-'+op,{...nativeContext,round:9},'server-id',value)).ok,false);
       assert.equal((await handlers.get('ai:codex-'+op)(fake,nativeContext,'server-id',value)).ok,false);assert.equal(calls.length,count);
     }
+    state.page={id:'project',projectContext:false};
+    assert.equal((await invoke('ai:codex-input',cfg,{sessionId:c.sessionId,run:c},{kind:'list'})).ok,true);
+    const input=calls.at(-1);
+    assert.equal(input.context.page.projectContext,false);
+    assert.equal(input.target.run.page.projectContext,true);
+    state.page=page;
     const standard=context('standard',2);assert.equal((await invoke('ai:chat',{engine:'standard'},[],[],standard)).ok,true);
     assert.equal((await invoke('ai:codex-permission-result',standard,'server-id','accept')).ok,false);
-    const dsh=context('dsh',2);assert.equal((await invoke('ai:chat',{engine:'dsh'},[],[],dsh)).ok,true);
+    const dsh={...context('dsh',2),page};state.engine='dsh';
+    assert.equal((await invoke('ai:chat',{engine:'dsh'},[],[],dsh)).ok,true);
+    state.engine='codex';
     assert.equal((await invoke('ai:codex-tool-result',dsh,'server-id',{ok:true})).ok,false);
     assert.equal((await invoke('ai:abort',c)).ok,true);assert(aborts.includes(c.requestId));
     const before=sent.length;run.onEvent({type:'text',delta:'late'});assert.equal(sent.length,before);

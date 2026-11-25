@@ -895,8 +895,9 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
   if(cfg?.engine==='dsh'){
     try{
       const page = foreignHostId ? (await dshForeignView(e,context,foreignHostId)).page
-        : nativeStart ? await dshInputPage(e,context,nativeStart.page) : await e.sender.executeJavaScript('App.getPageContext()');
+        : await dshInputPage(e,context,nativeStart?.page || requestedPage);
       aiRuns.assert(aiSender(e,context),context);
+      record.nativePage = page;
       r=await DSH.chat(cfg,messages,foreignHostId ? [] : tools||[],{...context,page,...(foreignHostId ? {foreign:true,expectedHostId:foreignHostId} : nativeStart ? {expectedHostId:nativeStart.hostId} : {})},event=>{
         if(record.status!=='active')return;
         if(event.type==='text')send('ai:chunk',{delta:event.delta,messageId:event.messageId,context});else send('ai:dsh-event',{...event,context});
@@ -907,6 +908,7 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
     try{
       const { page, foreignHostId: expectedThreadId } = codexView;
       assertCodexRun(e,context);
+      record.nativePage = page;
       // Codex 回包核验包含页面；aiRuns 的规范化身份不含页面，事件必须保留这份原生身份。
       context={...context,page,...(expectedThreadId ? {expectedThreadId} : {})};
       r=await CODEX.chat({...cfg,codexPermission:aiPermissionsBridge.codexPermission()},messages,expectedThreadId ? [] : tools||[],context,event=>{
@@ -976,8 +978,8 @@ ipcMain.handle('ai:codex-input', async (event, cfg, target, action) => {
     aiSender(event, state);
     if (target.run) {
       if (target.run.sessionId !== state.sessionId || target.run.rootId !== state.rootId) throw Error('Codex 当前轮次已切换');
-      const run = { ...target.run, page: state.page };
-      assertCodexRun(event, run);
+      const record = assertCodexRun(event, target.run);
+      const run = { ...target.run, page: record.nativePage };
       target = { ...target, run };
     }
     const result = await CODEX.changeInput(cfg, state, target, action);
@@ -1086,7 +1088,9 @@ ipcMain.handle('ai:dsh-options',async(event,cfg,sessionId,tools,apply,foreignHos
       const view = await dshForeignView(event,{sessionId},foreignHostId);
       return await DSH.inspect(cfg,{...view,foreign:true,expectedHostId:foreignHostId},[],apply===true);
     }
-    const state=await event.sender.executeJavaScript('({page:App.getPageContext(),rootId:App.root||""})');
+    const { engine, rootId, page, sessionId: selected }=await event.sender.executeJavaScript('AiPanel.dshView()');
+    if(engine!=='dsh'||selected!==sessionId)throw Error('Harness 会话身份已变化');
+    const state={rootId,page};
     const allowed=(tools||[]).filter(tool=>tool?.function?.name&&(!['list_files','read_file','search_files','write_file','replace_edit','run_command',...require('./renderer/ai-project-tools').projectOnly].includes(tool.function.name)||state.page.projectContext));
     return await DSH.inspect(cfg,{sessionId,...state},allowed,apply===true);
   }catch(error){return {ok:false,error:error.message};}
@@ -1168,15 +1172,17 @@ async function ownedDshInput(event,cfg,target){
   const context=target.context;
   aiRuns.assert(aiSender(event,context),context);
   const page=await dshInputPage(event,context,target.page);
-  aiRuns.assert(aiSender(event,context),context);
-  return {context:{...context,page}};
+  const record=aiRuns.assert(aiSender(event,context),context);
+  if (!record.nativePage || record.nativePage.id !== page.id) throw Error('原生输入运行或页面归属已变化');
+  return {context:{...context,page:record.nativePage},
+    inputPage:{...page,projectContext:page.projectContext && record.nativePage.projectContext}};
 }
 ipcMain.handle('ai:dsh-input',async(event,cfg,target,input)=>{
   try{
     const owned=await ownedDshInput(event,cfg,target);
     if(!owned.context)throw Error('外部运行的新输入须建立独立 MyIDE 运行');
     if(!input||Object.keys(input).some(key=>!['requestId','mode','messages'].includes(key)))throw Error('原生输入参数无效');
-    return {ok:true,accepted:true,...await DSH.submitInput(owned.context,input.requestId,input.mode,input.messages)};
+    return {ok:true,accepted:true,...await DSH.submitInput(owned.context,input.requestId,input.mode,input.messages,owned.inputPage)};
   }catch(error){return {ok:false,error:error.message,errorCode:error.code};}
 });
 ipcMain.handle('ai:dsh-queue',async(event,cfg,target)=>{

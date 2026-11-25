@@ -325,7 +325,22 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  await js(()=>document.querySelector('#ai-message-nav > button').dispatchEvent(new PointerEvent('pointerover',{bubbles:true})));
  await capture('codex-message-navigation');
  await js(()=>document.getElementById('ai-message-nav').dispatchEvent(new PointerEvent('pointerleave')));
- await js(()=>AiPanel.ask('HOLD_CODEX 后台隔离'));await until(()=>fixture.requests.filter(r=>r.method==='turn/start').length===3,'held turn');await js(async root=>{await App.setRoot(root);return true;},roots[1]);await until(()=>js(()=>AiPanel.aiState().dshState==='ready'),'project B ready');check('changing project parks Codex without cancelling or leaking A output',!fixture.requests.some(r=>r.method==='turn/interrupt')&&await js(()=>AiPanel.__testParked().backgroundRuns===1&&!document.getElementById('ai-msgs').textContent.includes('HOLD_CODEX')));await js(async root=>{await App.setRoot(root);return true;},roots[0]);await until(()=>js(()=>AiPanel.__testParked().currentRun==='active'),'restore held');
+ await js(()=>AiPanel.ask('HOLD_CODEX 后台隔离'));
+ await until(()=>fixture.requests.filter(r=>r.method==='turn/start').length===3,'held turn');
+ await js(()=>{
+   App.showTool('sessions');
+   const input=document.getElementById('ai-input');input.value='保留草稿';input.dispatchEvent(new Event('input',{bubbles:true}));
+   window.__heldSession={id:AiPanel.dshView().sessionId,row:document.querySelector('#ai-msgs .ai-user'),sidebar:document.querySelector('.ai-hist-dock')};
+ });
+ await js(async root=>{await App.setRoot(root);return true;},roots[1]);
+ check('Switching editor projects keeps the Codex turn, transcript, sidebar and draft active',
+   !fixture.requests.some(r=>r.method==='turn/interrupt')&&await js((original,editor)=>{
+     const view=AiPanel.dshView(),held=window.__heldSession;
+     return App.root===editor&&view.rootId===original&&view.sessionId===held.id&&!view.page.projectContext&&
+       AiPanel.__testParked().currentRun==='active'&&AiPanel.__testParked().backgroundRuns===0&&
+       held.row===document.querySelector('#ai-msgs .ai-user')&&held.sidebar===document.querySelector('.ai-hist-dock')&&
+       !document.querySelector('#panel-sessions').classList.contains('hidden')&&document.getElementById('ai-input').value==='保留草稿';
+   },roots[0],roots[1]));
  await js(()=>{const input=document.getElementById('ai-input');input.value='补充当前轮';input.dispatchEvent(new Event('input',{bubbles:true}));});
  await until(()=>js(()=>!document.getElementById('ai-steer-submit').disabled),'native steer available');
  await js(()=>document.getElementById('ai-input').dispatchEvent(
@@ -333,6 +348,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  await until(()=>js(()=>document.getElementById('ai-msgs').textContent.includes('补充当前轮')&&!document.getElementById('ai-input').value),'steer consumption');
  check('MyIDE inserts into the exact active Codex turn without starting another turn',
    fixture.requests.filter(r=>r.method==='turn/steer').length===1&&fixture.requests.filter(r=>r.method==='turn/start').length===3);
+ await js(async root=>{await App.setRoot(root);return true;},roots[0]);
  await js(()=>{
    const input = document.getElementById('ai-input');
    input.value = '从待发队列插入当前轮';
@@ -685,7 +701,8 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
      const preview=document.querySelector(selector);
      const img=preview.querySelector('img');
      const bounds=img.getBoundingClientRect();
-     return bounds.width===256&&bounds.height===144&&preview.closest('.ai-md').scrollWidth<=preview.closest('.ai-md').clientWidth;
+     const paragraph=preview.parentElement.getBoundingClientRect();
+     return bounds.width===256&&bounds.height===144&&bounds.left>=paragraph.left&&bounds.right<=paragraph.right;
    },thumbnail));
  await js(selector=>{ const preview=document.querySelector(selector); preview.scrollIntoView({block:'center'}); preview.focus(); preview.click(); },thumbnail);
  await until(()=>js(()=>document.querySelector('.img-lightbox[open] img')?.getBoundingClientRect().width>256),'wide Markdown image expanded');

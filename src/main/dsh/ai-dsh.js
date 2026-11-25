@@ -183,11 +183,11 @@ function createService(options={}){
     return run;
   }
   function hasRun(context){return [...runs.values()].some(run=>run.context.sessionId===context?.sessionId&&run.context.rootId===context?.rootId);}
-  async function submitInput(context,requestId,mode,messages){
+  async function submitInput(context,requestId,mode,messages,inputPage=context.page){
     const run=ownedInputRun(context);
     if(typeof requestId!=='string'||!requestId||requestId.length>200||!['queue','steer'].includes(mode))throw Error('原生输入身份或模式无效');
     if(!Array.isArray(messages)||messages.length!==1||messages[0]?.role!=='user')throw Error('原生补充输入只接受一条用户消息');
-    const prompt=promptContent(messages,context.page);live(run);
+    const prompt=promptContent(messages,inputPage);live(run);
     const result=await run.conn.rpc.request('session/input',{sessionId:run.session.id,requestId,mode,prompt});
     if(result?.accepted!==true)throw Error('原生 DSH 未确认接受输入');
     return result;

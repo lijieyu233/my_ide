@@ -237,7 +237,10 @@ const AiPanel = (() => {
   let curSessionId = null;   // 当前会话 id（历史会话列表用）
   // 正文身份与可续聊身份必须一起确认；只读/加载中不能退回 inspect 自动创建另一条会话。
   let dshSessionAccess = null;
-  const sessionRoot = () => dshSessionAccess?.foreign ? dshSessionAccess.rootDir : window.App?.root || '';
+  const editorRoot = () => window.App?.root || '';
+  let conversationRoot = null, conversationPage = null;
+  const workspaceRoot = () => conversationRoot ?? editorRoot();
+  const sessionRoot = () => dshSessionAccess?.foreign ? dshSessionAccess.rootDir : workspaceRoot();
   function dshView() {
     return { rootId: sessionRoot(), page: currentPage(), sessionId: curSessionId, engine: getConfig().engine, scope: dshScope(),
       ...(dshSessionAccess?.foreign ? { foreignHostId: dshSessionAccess.hostId, access: dshSessionAccess.state } : {}) };
@@ -261,10 +264,12 @@ const AiPanel = (() => {
 
   const PROJECT_TOOLS = new Set(['list_files','read_file','search_files','write_file','replace_edit','run_command',...(window.AiProjectTools?.projectOnly||[])]);
   function isProjectTool(name){const d=window.AiWorkbenchTools?.definitions[name];return PROJECT_TOOLS.has(name)||(['reader','bookshelf'].includes(currentPage().id)&&!!d&&(d.project||['project','editor','markdown','git','tasks'].includes(d.module)));}
-  let pageKey = null, pageEpoch = 0, followTask = null;
+  let pageKey = null, pageEpoch = 0, followTask = null, pageEditorRoot;
   function currentPage() {
     if (dshSessionAccess?.foreign) return { id:'project', name:'会话工作区', projectContext:false };
     // 测试/早期初始化没有 App 时，不将隐藏编辑器误判为项目页。
+    if (conversationPage && pathKey(workspaceRoot()) !== pathKey(editorRoot()))
+      return { ...conversationPage, projectContext: false };
     return window.App?.getPageContext?.() || { id:window.App?.root ? 'project' : 'welcome',
       name:window.App?.root ? '项目' : '欢迎页', projectContext:!!window.App?.root };
   }
@@ -274,7 +279,9 @@ const AiPanel = (() => {
     MI.toast('当前页面不附带项目文件，回到项目页面后可引用', 'err');
   }
   function onPageChange() {
-    const page = currentPage(), key = page.id + ':' + page.projectContext + ':' + (window.App?.root || '');
+    const page = currentPage(), root = editorRoot(), editorChanged = pageEditorRoot !== root;
+    pageEditorRoot = root;
+    const key = page.id + ':' + page.projectContext + ':' + workspaceRoot();
     if (key === pageKey) return;
     pageKey = key; pageEpoch++;
     if(getConfig().engine==='codex'&&loadedSessionKey!==sessKey()){onProjectChange();return;}
@@ -288,14 +295,13 @@ const AiPanel = (() => {
     // 侧边栏工具（项目/大纲/Git/任务/数据库/浏览器…）只是换主区视图，**会话本身没变**：
     // 右侧 AI 面板还是同一个，历史、进行中的生成都该原样留着。页面身份只影响「下一条消息
     // 附带什么上下文」（由 usesProjectContext() 在发送时决定），不需要动会话视图。
-    // 会话级的迁移（挂起/恢复）只在切换项目时发生，见 beforeProjectChange / onProjectChange。
     followPath = null;
     ctxFiles = ctxFiles.filter(f => !f.auto);
     closeMention();
     renderChips(); renderUsage();
     if (dshWatch && (!dshWatchWanted(dshWatch) || dshScopeMismatch())) resetDshWatch();
     if (page.projectContext) followActive();
-    refreshDshOptions();
+    if (!editorChanged || conversationRoot === null || dshOptionsState === 'loading') refreshDshOptions();
   }
   function userContent(text, images) {
     if (!images?.length) return text;
@@ -3508,9 +3514,8 @@ const AiPanel = (() => {
   // 每次一轮对话结束自动存一条（localStorage，最多 30 条），标题取第一条用户发言。
   const LS_SESS = 'myide-ai-sessions';
   const SESS_LIMIT = 30;
-  // ⚠ key 必须带项目根：以前是全局的，A 项目的对话切到 B 项目还挂在那儿 ——
-  // 历史里翻出来的会话带着另一个项目的文件路径，模型会当成当前项目的上下文。
-  function sessKey() { return backgroundView?.scope || LS_SESS + ':' + ((window.App && App.root) || '')+(nativeEngine()?':'+getConfig().engine+(getConfig().engine==='codex'&&dshScope()==='reader'?':reader':''):''); }
+  // 历史和运行身份始终使用会话工作区，编辑器切换不会迁移会话。
+  function sessKey() { return backgroundView?.scope || LS_SESS + ':' + workspaceRoot()+(nativeEngine()?':'+getConfig().engine+(getConfig().engine==='codex'&&dshScope()==='reader'?':reader':''):''); }
   /**
    * 后台运行记录的键：挂起与恢复**必须用同一个算法**。
    *
@@ -3527,7 +3532,7 @@ const AiPanel = (() => {
   function runKeyOf(scope, sessionId) { return JSON.stringify([String(scope || ''), String(sessionId || '')]); }
   const sessionCache = new Map();
   const codexProjectSessionKey = root => LS_SESS + ':' + root + ':codex';
-  const codexHistoryKey = root => pathKey(root) === pathKey(window.App?.root) ? sessKey() : codexProjectSessionKey(root);
+  const codexHistoryKey = root => pathKey(root) === pathKey(workspaceRoot()) ? sessKey() : codexProjectSessionKey(root);
   function loadSessions(key = sessKey()) {
     try {
       const raw=localStorage.getItem(key)||'[]';let entry=sessionCache.get(key);
@@ -3792,15 +3797,16 @@ const AiPanel = (() => {
     renderCurrentSessionTitle();
     const origin = document.getElementById('ai-session-origin'), bar = document.getElementById('ai-session-preview-bar');
     const foreign = dshSessionAccess?.foreign;
+    const root = sessionRoot(), detached = pathKey(root) !== pathKey(editorRoot());
     if (origin) {
-      const root = window.App?.root || '', page = currentPage();
+      const page = currentPage();
       origin.classList.remove('hidden');
-      const label = foreign ? sessionRootLabel(dshSessionAccess.rootDir) : page.projectContext ? sessionRootLabel(root) : page.name;
-      origin.title = foreign ? '会话工程：'+dshSessionAccess.rootDir+'\nIDE 工程：'+root : page.projectContext ? '当前工程：'+(root || '未打开工程') : page.name+'（未附带项目文件）';
+      const label = foreign || detached || page.projectContext ? sessionRootLabel(root) : page.name;
+      origin.title = foreign || detached ? '会话工程：'+root : page.projectContext ? '当前工程：'+(root || '未打开工程') : page.name+'（未附带项目文件）';
       origin.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h5l2 2h5v7H2zM2 4V2h5l2 2h5v2"/></svg><span>'+(foreign && getConfig().engine === 'dsh' ? '<span class="ai-origin-scope">会话工程 · </span>' : '')+'<b>'+esc(label)+'</b></span>';
     }
     if (bar) {
-      const openDshProject = foreign && getConfig().engine === 'dsh';
+      const openDshProject = foreign && detached && getConfig().engine === 'dsh';
       bar.classList.toggle('hidden', !openDshProject);
       bar.innerHTML = openDshProject ? '<button id="ai-session-open-project" type="button">打开所属工程</button>' : '';
       const button = bar.querySelector('#ai-session-open-project');
@@ -3809,7 +3815,7 @@ const AiPanel = (() => {
         button.disabled = true;
         try {
           const opened = await App.openProject(rootDir);
-          if (opened && getConfig().engine === 'dsh' && pathKey(window.App?.root) === pathKey(rootDir)) openSession(hostId);
+          if (opened && getConfig().engine === 'dsh' && dshSessionAccess?.hostId === hostId) renderSessionOrigin();
         } catch (error) { MI.toast('未切换工程：'+(error?.message || '项目打开失败'),'err'); }
         finally { button.disabled = false; }
       };
@@ -3820,7 +3826,7 @@ const AiPanel = (() => {
   // 也据此把「还没落盘但正在跑」的会话语补进列表 —— 见 sessionsForHist 的注释。
   function runningSessionIds() {
     const ids = new Set();
-    const root = (window.App && App.root) || '';
+    const root = workspaceRoot();
     if (currentRun?.status === 'active' && currentRun.identity.rootId === root) ids.add(currentRun.identity.sessionId);
     for (const record of backgroundRuns.values()) {
       if (record.scope === sessKey() && record.run?.status === 'active' && record.run.identity.rootId === root) ids.add(record.run.identity.sessionId);
@@ -4093,7 +4099,7 @@ const AiPanel = (() => {
     const config = getConfig();
     return config.engine === 'dsh' && dshCatalog.launcher === (config.dshPath || '');
   }
-  const bindingsOf = item => (item.bindings || []).filter(binding => binding.scope !== 'reader' && pathKey(binding.rootId) === pathKey(window.App?.root));
+  const bindingsOf = item => (item.bindings || []).filter(binding => binding.scope !== 'reader' && pathKey(binding.rootId) === pathKey(workspaceRoot()));
   function catalogOf(sessionId) {
     if (!catalogUsable()) return null;
     // 原生 ID 不能被历史错误映射吞成别条会话的本地别名；正文保存的 hostId 也优先于 saved bindings。
@@ -4117,7 +4123,7 @@ const AiPanel = (() => {
     const byId = new Map(local.map(s => [s.id, s]));
     const all = [];
     const running = new Set();
-    const root = (window.App && App.root) || '';
+    const root = workspaceRoot();
     const live = runningSessionIds(), seen = new Set(), owners = new Map();
     const hostCatalog = catalogUsable() ? dshCatalog : null;
     const catalog = hostCatalog?.items || [];
@@ -4678,7 +4684,7 @@ const AiPanel = (() => {
 
     const groups = new Map(), runningGroups = new Set(), unreadGroups = new Set();
     const unreadSessions = new Set();
-    const root = pathKey(window.App?.root);
+    const editor = pathKey(editorRoot()), root = pathKey(workspaceRoot());
     const flat = dsh && historyPrefs.group === 'flat', tree = dsh && historyPrefs.group === 'tree';
     const query = historySearch.toLowerCase();
     const narrow = !!query || (dsh && historyPrefs.archive === 'archived') || (codex && codexArchiveOnly);
@@ -4687,6 +4693,8 @@ const AiPanel = (() => {
     const bindings = new Map((catalog?.bindings || []).map(entry => [pathKey(entry.rootDir), entry]));
     const currentBinding = (catalog?.workspaceRoot === root ? catalog.activeBinding : null) || bindings.get(root);
     const currentProject = currentBinding ? codexProjectKey(currentBinding.projectId) : null;
+    const editorBinding = (catalog?.workspaceRoot === editor ? catalog.activeBinding : null) || bindings.get(editor);
+    const editorProject = editorBinding ? codexProjectKey(editorBinding.projectId) : null;
     const expandCurrent = currentProject && expandedCodexBinding !== currentProject;
     expandedCodexBinding = currentProject;
     const boundRoots = new Map([...bindings.values()].map(entry => [entry.projectId, entry.rootDir]));
@@ -4744,6 +4752,7 @@ const AiPanel = (() => {
         ? boundRoots.get(workspace?.id) || workspace?.roots[0] || ''
         : unassigned ? '' : items[0]?.rootDir || opened.get(key) || workspace?.rootDir || '';
       const current = codex ? key === currentProject : !unassigned && key === root;
+      const editorCurrent = codex ? key === editorProject : !unassigned && key === editor;
       const savedExpansion = codex ? codexExpansion.get(codexExpansionId(key)) : undefined;
       if (!historyWorkspaces.has(key)) historyWorkspaces.set(key, {
         index: historyWorkspaces.size,
@@ -4771,14 +4780,14 @@ const AiPanel = (() => {
         (recent ? ' data-codex-recent' : codex ? ' data-codex-project="' + esc(workspace.id) + '"' : '') +
         (depth ? ' style="padding-inline-start:' + depth * 14 + 'px"' : '') +
         (collapsed || isOther && !showOther ? ' hidden' : '') + '>' +
-        (flat ? '' : '<div class="ai-hist-group-head"' + (codex && !recent && !narrow ? codexSortAttributes('projects', key) : '') + '><button type="button" class="ai-hist-group-title" data-hist-toggle aria-expanded="' + expanded + '" aria-controls="' + childId + '"' + (current ? ' aria-current="location"' : '') +
+        (flat ? '' : '<div class="ai-hist-group-head"' + (codex && !recent && !narrow ? codexSortAttributes('projects', key) : '') + '><button type="button" class="ai-hist-group-title" data-hist-toggle aria-expanded="' + expanded + '" aria-controls="' + childId + '"' + (editorCurrent ? ' aria-current="location"' : '') +
           (groupState ? ' aria-label="' + esc(groupName + '，' + groupState) + '"' : '') + (items.length || hasChildren ? '' : ' disabled') + ' title="' + esc(
           workspace?.createdAt ? groupRoot + '\n创建于 ' + new Date(workspace.createdAt).toLocaleString() :
           groupRoot || (unassigned ? 'DSH 未提供可用的工作区目录' : groupName)) + '">' +
         '<span class="ai-hist-workspace-icon">' + historyIcon(historyGroupIcon(expanded, recent)) + '</span>' +
         '<span class="ai-hist-workspace-name">' + esc(groupName) + '</span>' +
         (!recent && !groupState ? '<span class="ai-hist-workspace-count">' + items.length + '</span>' : '') + '</button>' +
-        (groupRoot && !current ? '<button type="button" class="ai-hist-b" data-hist-jump="' + esc(groupRoot) + '" title="打开工程" aria-label="打开工程：' + esc(groupName) + '">' + historyIcon('M6 3H3v10h10v-3M8 3h5v5m0-5L7 9') + '</button>' : '') +
+        (groupRoot && !editorCurrent ? '<button type="button" class="ai-hist-b" data-hist-jump="' + esc(groupRoot) + '" title="打开工程" aria-label="打开工程：' + esc(groupName) + '">' + historyIcon('M6 3H3v10h10v-3M8 3h5v5m0-5L7 9') + '</button>' : '') +
         historyStatusIcon(groupRunning, groupUnread) + '</div>') + '<div class="ai-hist-items" id="' + childId + '"' + (expanded ? '' : ' hidden') + '>';
       for (const session of orderedItems) {
         const selected = isHistorySessionSelected(session), isRunning = running.has(session.id);
@@ -5239,8 +5248,8 @@ const AiPanel = (() => {
     return null;
   }
   async function openForeignSession(target) {
-    if (!target.rootDir || pathKey(target.rootDir) === pathKey(window.App?.root)) return;
-    const ticket = ++sessionLoadTicket, root = window.App?.root || '';
+    if (!target.rootDir || pathKey(target.rootDir) === pathKey(workspaceRoot())) return;
+    const ticket = ++sessionLoadTicket, root = workspaceRoot();
     const hostId = target.hostId, id = 'host:' + hostId;
     if (dshSessionAccess?.foreign && dshSessionAccess.hostId === hostId && pathKey(sessionRoot()) === pathKey(target.rootDir) && dshSessionAccess.state === 'ready' && currentRun?.status === 'active') return true;
     const hit = foreignParked(hostId, target.rootDir);
@@ -5253,7 +5262,7 @@ const AiPanel = (() => {
     }
     beginDshSessionLoad(id,hostId,target);
     // 会话使用自己的工作区，当前 IDE 工具页变化不会作废读取。
-    const wanted = () => ticket === sessionLoadTicket && getConfig().engine === 'dsh' && curSessionId === id && dshSessionAccess?.foreign && (window.App?.root || '') === root;
+    const wanted = () => ticket === sessionLoadTicket && getConfig().engine === 'dsh' && curSessionId === id && dshSessionAccess?.foreign && workspaceRoot() === root;
     const result = await window.myIDE.ai.dshHistory({...getConfig(),catalogScope:'all',catalogRoot:target.rootDir},hostId).catch(error => ({ok:false,error:error.message}));
     if (!wanted()) return false;
     if (!result?.ok || result.readOnly !== true || pathKey(result.rootDir) !== pathKey(target.rootDir) || result.sessionId !== hostId) {
@@ -5281,7 +5290,7 @@ const AiPanel = (() => {
     const catalog = currentCodexCatalog();
     const item = catalog?.items.find(item => item.threadId === threadId);
     if (item) item.title = result.title;
-    if (pathKey(window.App?.root) === pathKey(target.rootDir)) {
+    if (pathKey(workspaceRoot()) === pathKey(target.rootDir)) {
       const sessions = loadSessions();
       const local = sessions.find(item => item.id === target.id);
       if (local) {
@@ -5378,10 +5387,10 @@ const AiPanel = (() => {
   }
 
   function openSession(id, showNotice = true, codexHistory = null) {
-    const ideRoot = window.App?.root || '', root = codexHistory?.rootDir || ideRoot;
+    const localRoot = workspaceRoot(), root = codexHistory?.rootDir || localRoot;
     if (id === curSessionId && currentRun?.status === 'active' && pathKey(currentRun.identity.rootId) === pathKey(root)) return;
     const ticket = ++sessionLoadTicket;
-    const foreign = codexHistory && pathKey(root) !== pathKey(ideRoot);
+    const foreign = codexHistory && pathKey(root) !== pathKey(localRoot);
     const access = foreign ? { foreign: true, rootDir: root, sessionId: id, hostId: codexHistory.threadId,
       title: codexHistory.title, state: 'ready', scope: 'project', epoch: pageEpoch } : null;
     const cacheKey = foreign ? codexHistoryKey(root) : sessKey();
@@ -5397,14 +5406,14 @@ const AiPanel = (() => {
       if (rest) { rememberSession(); if (!foreign) localStorage.removeItem(sessKey()+':draft'); refreshDshOptions(); renderUsage(); MI.toast('已接回运行中的会话', 'ok'); return; }
     }
     const host = catalogOf(id);
-    if (host && (!host.cwd || pathKey(host.cwd) !== pathKey(window.App?.root))) {
+    if (host && (!host.cwd || pathKey(host.cwd) !== pathKey(localRoot))) {
       const rootDir = host.rootDir || (/^(?:[a-z]:[\\/]|\/|\\\\)/i.test(host.cwd || '') ? host.cwd : '');
       if (rootDir) openForeignSession({hostId:host.sessionId,rootDir,title:host.title});
       else MI.toast('宿主未确认会话工作区，不能在当前工程打开','err');
       return;
     }
-    if (host && host.cwd && pathKey(host.cwd) === pathKey(window.App?.root)) { loadHostSession(id, host.sessionId, ticket); return; }
-    const draftKey = JSON.stringify([window.App?.root || '', id]);
+    if (host && host.cwd && pathKey(host.cwd) === pathKey(localRoot)) { loadHostSession(id, host.sessionId, ticket); return; }
+    const draftKey = JSON.stringify([localRoot, id]);
     const se = loadSessions(cacheKey).find(x => x.id === id) || (sessionDrafts.has(draftKey) && id === localStorage.getItem(sessKey()+':active') ? {id,title:'新会话',msgs:[]} : null);
     if (getConfig().engine === 'dsh' && se && (se.hostId || se.msgs?.length || /^(session-|myide-|host:)/.test(id))) {
       restoreDshSession(id,ticket);return;
@@ -5752,7 +5761,7 @@ const AiPanel = (() => {
     // 选择一变就放开旧视图并锁住发送；不能等网络返回后才切身份，让新输入仍落到上一条。
     releaseSessionPermissions(detachRun());
     dshOptionsTicket++;dshOptionsState='loading';
-    switchSessionDraft(id,foreign?.rootDir || window.App?.root || '',!!foreign);
+    switchSessionDraft(id,foreign?.rootDir || workspaceRoot(),!!foreign);
     curSessionId=id;
     dshSessionAccess={sessionId:id,hostId:hostId||'',state:'loading',scope:foreign?'project':dshScope(),epoch:pageEpoch,error:'',
       ...(foreign ? {foreign:true,rootDir:foreign.rootDir,title:foreign.title} : {})};
@@ -5768,10 +5777,10 @@ const AiPanel = (() => {
     const info=document.getElementById('ai-dsh-info');if(info){info.textContent='DSH 会话未连接';info.title=error;}
   }
   async function restoreDshSession(id,ticket,retry = false) {
-    const root=window.App?.root||'',epoch=pageEpoch;
+    const root=workspaceRoot(),scope=dshScope();
     beginDshSessionLoad(id,'');
     await (retry ? refreshDshCatalog() : ensureDshCatalog());
-    if(ticket!==sessionLoadTicket||getConfig().engine!=='dsh'||root!==(window.App?.root||'')||epoch!==pageEpoch)return false;
+    if(ticket!==sessionLoadTicket||getConfig().engine!=='dsh'||root!==workspaceRoot()||scope!==dshScope())return false;
     const saved=loadSessions().find(item=>item.id===id),host=catalogOf(id);
     if(host&&(!host.cwd||pathKey(host.cwd)!==pathKey(root))){
       blockDshSession('该会话属于其他工作区，不能在当前项目续聊');clearMessageView();MI.toast(dshSessionAccess.error,'err');return false;
@@ -5781,16 +5790,14 @@ const AiPanel = (() => {
     if(hostId)return loadHostSession(id,hostId,ticket);
     blockDshSession('无法确认这条历史的 DSH 会话身份，请重新连接或新建对话');
     msgs=repairToolHistory((saved?.msgs||[]).slice());
-    await replayHistory(()=>ticket===sessionLoadTicket&&root===(window.App?.root||'')&&epoch===pageEpoch);
+    await replayHistory(()=>ticket===sessionLoadTicket&&root===workspaceRoot()&&scope===dshScope());
     return false;
   }
   async function loadHostSession(id, hostId, ticket) {
-    const root = (window.App && App.root) || '';
+    const root = workspaceRoot();
     beginDshSessionLoad(id,hostId);
-    const page = currentPage();
-    // 读取期间用户可能又切了项目/会话：epoch + id 双重校验，避免慢响应覆盖新选择。
-    const epoch = pageEpoch;
-    const stillWanted = () => ticket === sessionLoadTicket && getConfig().engine === 'dsh' && epoch === pageEpoch && ((window.App && App.root) || '') === root && currentPage().id === page.id;
+    const scope = dshScope();
+    const stillWanted = () => ticket === sessionLoadTicket && getConfig().engine === 'dsh' && workspaceRoot() === root && dshScope() === scope;
     MI.toast('正在读取 DSH 会话…', 'ok');
     const result = await window.myIDE.ai.dshHistory(getConfig(), hostId).catch(error => ({ ok: false, error: error.message }));
     if (!stillWanted()) return;
@@ -5799,7 +5806,7 @@ const AiPanel = (() => {
       clearMessageView();MI.toast(error,'err');return false;
     }
     // 先绑定再读取模型选项，否则选项预取会以尚未绑定的身份创建另一条空会话。
-    const bound = await window.myIDE.ai.dshBind(getConfig(), { sessionId:id, rootId: root, page: { id: page.id, projectContext: !!page.projectContext } }, hostId).catch(error => ({ ok: false, error: error.message }));
+    const bound = await window.myIDE.ai.dshBind(getConfig(), { sessionId:id, rootId: root, page: currentPage() }, hostId).catch(error => ({ ok: false, error: error.message }));
     if (!stillWanted()) return;
     const canContinue=bound?.ok===true && bound.canContinue!==false;
     const accessError=canContinue?'':bound?.error||'未能确认当前 DSH 会话可续聊，请重新连接或新建对话';
@@ -5920,7 +5927,13 @@ const AiPanel = (() => {
       const record = hit.record;
       // 先把当前前台会话挂起，否则它的 DOM 会被这次接回顶掉。
       if (currentRun && currentRun.status === 'active') detachRun();
-      switchSessionDraft(record.view.curSessionId,record.run.identity.rootId,!!record.view.dshSessionAccess?.foreign);
+      const changeWorkspace = !record.view.dshSessionAccess?.foreign && pathKey(workspaceRoot()) !== pathKey(record.run.identity.rootId);
+      switchSessionDraft(record.view.curSessionId,record.run.identity.rootId,changeWorkspace || !!record.view.dshSessionAccess?.foreign);
+      if (changeWorkspace) {
+        conversationRoot = record.run.identity.rootId;
+        conversationPage = record.run.stream.context.page || { id: record.run.pageId, projectContext: false };
+        loadedSessionKey = record.scope;
+      }
       backgroundRuns.delete(hit.key);
       const container=msgsEl;moveActivityObservers(record.view.msgsEl,container);container.replaceChildren(...record.view.msgsEl.childNodes);
       applyRunView({...record.view,msgsEl:container});record.run.background=null;
@@ -5972,16 +5985,29 @@ const AiPanel = (() => {
             return;
           }
         }
-        if (record.run.engine === 'dsh' && access?.hostId && pathKey(record.run.identity.rootId) !== pathKey(window.App?.root)) {
-          await openForeignSession({hostId:access.hostId,rootDir:record.run.identity.rootId,title:access.title||sessTitle(record.view.msgs)});
-        } else if (await App.setRoot(record.run.identity.rootId) !== false && curSessionId!==record.run.identity.sessionId) openSession(record.run.identity.sessionId);
+        const entry = [...backgroundRuns.entries()].find(([, value]) => value === record);
+        if (entry) restoreBackgroundRun({ sessionId: record.view.curSessionId, hit: { key: entry[0], record } });
       };
       status.appendChild(button);
     }
     refreshHistInPlace();
   }
-  function beforeProjectChange(nextRoot) { if(pathKey(window.App?.root)!==pathKey(nextRoot))resetDshWatch();if(dshSessionAccess?.foreign||currentRun?.identity.rootId!==nextRoot)detachRun(); }
-  // 项目切换清理当前上下文和临时授权；Harness 从目标项目自己的历史恢复，避免跨项目混用文件。
+  function beforeProjectChange(nextRoot) {
+    const root = editorRoot();
+    if (conversationRoot === null && pathKey(root) !== pathKey(nextRoot) &&
+        (root || currentRun || msgs.length || inputEl?.value || pendingImages.length)) {
+      conversationPage = currentPage();
+      conversationRoot = root;
+    }
+  }
+  function onEditorProjectChange() {
+    if (conversationRoot === null && loadedSessionKey !== sessKey()) onProjectChange();
+    else {
+      onPageChange();
+      refreshHistInPlace();
+    }
+  }
+  // 恢复首次连接或用户主动切换的会话范围。
   function onProjectChange() {
     const nextKey=sessKey(),harness=nativeEngine(),codex=getConfig().engine==='codex';
     // 同一项目重复通知不能重置对话；重启后恢复明确的当前选择，项目之间仍保持独立历史。
@@ -6949,9 +6975,13 @@ const AiPanel = (() => {
     // 挂起后它会出现在输入框上方的后台状态条里，点一下即可回去接着看。
     releaseSessionPermissions(detachRun());
     persistSession();          // 先把当前这轮存进历史，再开新的
-    switchSessionDraft(null);
+    const changingRoot = pathKey(sessionRoot()) !== pathKey(editorRoot());
+    switchSessionDraft(null, editorRoot(), changingRoot);
+    conversationRoot = null;
+    conversationPage = null;
     curSessionId = nativeEngine()?'s-'+window.crypto.randomUUID():null;
     dshSessionAccess=null;dshOptionsTicket++;dshOptionsState='idle';
+    loadedSessionKey = sessKey();
     refreshModelSel();setBusyUI(false);
     rememberSession();
     if(nativeEngine())localStorage.setItem(sessKey()+':draft',curSessionId);
@@ -7259,6 +7289,6 @@ const AiPanel = (() => {
   };
   const __testParked = () => ({ backgroundRuns: backgroundRuns.size, currentRun: currentRun ? currentRun.status : null });
 
-  return {aiAfterResult,aiState,aiInspect,aiControl,dshView,syncSessionSidebar,onProjectsChange:refreshHistInPlace, init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, pathsMoved, loadPerms, savePerms, sessionPerm, fromEditor, loadProjectRules, showCtxBreakdown, runNeedsConfirm, writeNeedsConfirm, dangerousCmd, pathAllowed, permWrite, permRun, syncPermBtn, beforeProjectChange, onProjectChange, onPageChange, __testBeginRun, __testRun, __testFinish, __testInjectDshRun, __testParked };
+  return {aiAfterResult,aiState,aiInspect,aiControl,dshView,syncSessionSidebar,onProjectsChange:refreshHistInPlace, init, syncVisible, getConfig, setConfig, PROVIDERS, providerOf, ask, followActive, unfollowActive, pathsMoved, loadPerms, savePerms, sessionPerm, fromEditor, loadProjectRules, showCtxBreakdown, runNeedsConfirm, writeNeedsConfirm, dangerousCmd, pathAllowed, permWrite, permRun, syncPermBtn, beforeProjectChange, onEditorProjectChange, onProjectChange, onPageChange, __testBeginRun, __testRun, __testFinish, __testInjectDshRun, __testParked };
 })();
 window.AiPanel = AiPanel;
