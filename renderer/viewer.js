@@ -155,9 +155,10 @@ const Viewer = (() => {
     const controls=document.createElement('div');controls.className='editor-pane-actions';
     for(const [direction,title]of [['horizontal',paneLayout?.visible?'左右排列':'向右拆分'],['vertical',paneLayout?.visible?'上下排列':'向下拆分']]){
       const button=document.createElement('button');button.className='vt-btn';button.title=title;button.setAttribute('aria-label',title);button.setAttribute('aria-pressed',String(paneLayout?.visible&&paneLayout.orientation===direction));button.innerHTML=EditorPanes.icon(direction);
-      button.onclick=()=>Shortcuts.execute('editor-split-'+direction);controls.append(button);
+      button.dataset.shortcutAction='editor-split-'+direction;
+      button.onclick=()=>Shortcuts.execute(button.dataset.shortcutAction);controls.append(button);
     }
-    if(paneLayout?.visible){const button=document.createElement('button');button.className='vt-btn';button.title='合并编辑区';button.setAttribute('aria-label','合并编辑区');button.innerHTML=EditorPanes.icon('merge');button.onclick=()=>Shortcuts.execute('editor-unsplit');controls.append(button);}
+    if(paneLayout?.visible){const button=document.createElement('button');button.className='vt-btn';button.title='合并编辑区';button.setAttribute('aria-label','合并编辑区');button.innerHTML=EditorPanes.icon('merge');button.dataset.shortcutAction='editor-unsplit';button.onclick=()=>Shortcuts.execute('editor-unsplit');controls.append(button);}
     tabActions.append(controls);
   }
   function characterCount(text) {
@@ -1122,7 +1123,7 @@ const Viewer = (() => {
     fileActions.prepend(filePath);
     const acts = document.createElement('div');
     acts.className = 'ed-actions';
-    if(tab.retention==='preview'){const keep=document.createElement('button');keep.className='tb-btn';keep.textContent='保留标签';keep.onclick=()=>Shortcuts.execute('keep-tab',Shortcuts.context(tab));tabActions.appendChild(keep);}
+    if(tab.retention==='preview'){const keep=document.createElement('button');keep.className='tb-btn';keep.textContent='保留标签';keep.dataset.shortcutAction='keep-tab';keep.onclick=()=>Shortcuts.execute('keep-tab',Shortcuts.context(tab));tabActions.appendChild(keep);}
     if (tab.saveError) {
       const recover = document.createElement('button'); recover.className = 'tb-btn save-recovery-button';
       recover.textContent = tab.saveErrorCode === 'VERSION_CONFLICT' ? '保存冲突' : '保存失败';
@@ -1134,7 +1135,7 @@ const Viewer = (() => {
       const label=document.createElement('span');label.className='reader-tab-label';label.textContent='只读阅读';acts.append(label);
       fileActions.append(acts);return;
     }
-    if(/\.txt$/i.test(tab.name)){const read=document.createElement('button');read.className='vt-btn';read.textContent='阅读';read.onclick=()=>Reader.open(tab.path);acts.append(read);}
+    if(/\.txt$/i.test(tab.name)){const read=document.createElement('button');read.className='vt-btn';read.textContent='阅读';read.dataset.editorShortcut='read-text';read.onclick=()=>Reader.open(tab.path);acts.append(read);}
     const isMarkdown = /\.(md|markdown)$/i.test(tab.name);
     const ext = extOf(tab.name);
 
@@ -1154,6 +1155,7 @@ const Viewer = (() => {
         b.className = 'vt-btn' + (cur === m ? ' active' : '');
         b.innerHTML = ic + label;
         b.title = tip;
+        b.dataset.editorShortcut = 'md-mode-' + m;
         b.onclick = (e) => {
           e.stopPropagation();
           if (tab.mode !== m) {
@@ -1166,13 +1168,14 @@ const Viewer = (() => {
         seg.appendChild(b);
       }
       if(paneLayout?.visible){
-        const choice=document.createElement('button');choice.className='vt-btn active';choice.setAttribute('aria-label','Markdown显示模式');choice.setAttribute('aria-haspopup','menu');choice.textContent=MODES.find(item=>item[0]===cur)[2]+' ▾';
+        const choice=document.createElement('button');choice.className='vt-btn active';choice.setAttribute('aria-label','Markdown显示模式');choice.dataset.editorShortcut='md-mode-menu';choice.setAttribute('aria-haspopup','menu');choice.textContent=MODES.find(item=>item[0]===cur)[2]+' ▾';
         choice.onclick=e=>{e.stopPropagation();const menu=document.getElementById('ctx-menu');menu.replaceChildren();for(const button of seg.children){const row=document.createElement('div');row.className='ctx-item';row.textContent=button.textContent;row.onclick=()=>{menu.classList.add('hidden');if(currentTab()===tab)button.click();};menu.append(row);}const r=choice.getBoundingClientRect();menu.style.left=Math.min(r.left,window.innerWidth-190)+'px';menu.style.top=r.bottom+'px';menu.classList.remove('hidden');};acts.append(choice);
       }else acts.appendChild(seg);
       // 导出为 HTML：放在模式切换按钮右边（用户明确要求的位置）。
       // 默认导出到 md 文件所在目录、同名 .html —— 不再弹保存框。
       const ex = document.createElement('button');
       ex.className = 'vt-btn';
+      ex.dataset.editorShortcut = 'md-export';
       ex.innerHTML = ACT_IC.export + '导出 HTML';
       ex.title = '导出为单文件 HTML，保存在当前 md 所在目录（同名 .html）';
       ex.onclick = (e) => { e.stopPropagation(); if (window.MdExport) void MdExport.exportTab(tab, { nextToSource: true }); };
@@ -1181,6 +1184,7 @@ const Viewer = (() => {
       const source = tab.mode === 'drawio';
       const toggle = document.createElement('button');
       toggle.className = 'vt-btn drawio-mode-toggle';
+      toggle.dataset.editorShortcut = 'drawio-mode';
       toggle.innerHTML = source ? ACT_IC.code + '查看源码' : ACT_IC.edit + 'draw.io 画布';
       toggle.onclick = () => {
         if (!source) {
@@ -1196,12 +1200,13 @@ const Viewer = (() => {
       acts.append(toggle);
     } else if (tab.htmlDiskPreview) {
       const label=document.createElement('span');label.className='vt-note';label.textContent='只读预览 · '+fmtSize(tab.size);acts.appendChild(label);
-      const refresh=document.createElement('button');refresh.className='vt-btn';refresh.textContent='刷新预览';refresh.onclick=()=>{if(tab===currentTab())tab.loadPromise=loadTab(tab);};acts.appendChild(refresh);
+      const refresh=document.createElement('button');refresh.className='vt-btn';refresh.textContent='刷新预览';refresh.dataset.editorShortcut='refresh-preview';refresh.onclick=()=>{if(tab===currentTab())tab.loadPromise=loadTab(tab);};acts.appendChild(refresh);
     } else if (PREVIEW_EXTS.has(ext) && tab.mode === 'preview') {
       const btnToggle = document.createElement('button');
       btnToggle.className = 'vt-btn';
       btnToggle.innerHTML = ACT_IC.code + '查看源码';
       btnToggle.title = '以源码方式编辑';
+      btnToggle.dataset.editorShortcut = 'preview-source';
       btnToggle.onclick = (e) => { e.stopPropagation(); tab.mode = 'edit'; renderView(); };
       acts.appendChild(btnToggle);
     } else if (PREVIEW_EXTS.has(ext) && tab.mode === 'edit' && !tab.binary && !tab.tooLarge) {
@@ -1210,6 +1215,7 @@ const Viewer = (() => {
       btnBack.className = 'vt-btn';
       btnBack.innerHTML = ACT_IC.eye + '预览';
       btnBack.title = '切回预览渲染';
+      btnBack.dataset.editorShortcut = 'source-preview';
       btnBack.onclick = (e) => { e.stopPropagation(); tab.mode = 'preview'; renderView(); };
       acts.appendChild(btnBack);
     }
@@ -1221,6 +1227,7 @@ const Viewer = (() => {
       btnInner.className = 'vt-btn';
       btnInner.innerHTML = ACT_IC.globe + '内置浏览器';
       btnInner.title = '在 IDE 内置浏览器中打开该页面';
+      btnInner.dataset.editorShortcut = 'internal-browser';
       btnInner.onclick = (e) => { e.stopPropagation(); if (window.BrowserPanel) BrowserPanel.open(fileUrl); };
       acts.appendChild(btnInner);
 
@@ -1228,6 +1235,7 @@ const Viewer = (() => {
       btnBrowser.className = 'vt-btn';
       btnBrowser.innerHTML = ACT_IC.external + '浏览器打开';
       btnBrowser.title = '用系统默认浏览器打开该页面';
+      btnBrowser.dataset.editorShortcut = 'external-browser';
       btnBrowser.onclick = (e) => { e.stopPropagation(); try { window.myIDE.shell.openExternal(fileUrl); } catch {} };
       acts.appendChild(btnBrowser);
     }

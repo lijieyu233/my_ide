@@ -52,20 +52,23 @@ window.ToolStrip = (() => {
     try { localStorage.setItem(key,bytes);if(localStorage.getItem(key)!==bytes)throw Error('未确认读回');apply(ids); }
     catch(error){MI.toast('功能栏排序未保存，原顺序保留：'+error.message,'err');}
   }
-  function menu(button,name,x,y) {
-    closeMenu();const menu=document.getElementById('ctx-menu'),actionId=name==='sidebar'?'toggle-sidebar':actions[name];
+  function menu(button,name,x,y,fixedAction) {
+    closeMenu();const menu=document.getElementById('ctx-menu');
+    const actionId=fixedAction || (name==='sidebar'?'toggle-sidebar':actions[name]);
     const binding=Shortcuts.bindings().find(item=>item.id===actionId);if(!binding)return;
     const events=new AbortController();let observer;
-    closeMenu=(focus=false)=>{events.abort();observer?.disconnect();if(menu.dataset.toolOwner===button.id){menu.classList.add('hidden');menu.classList.remove('tool-strip-menu');delete menu.dataset.toolOwner;}if(focus&&button.isConnected)button.focus({preventScroll:true});};
-    menu.className='tool-strip-menu';menu.replaceChildren();menu.dataset.toolOwner=button.id;menu.setAttribute('role','menu');menu.setAttribute('aria-label',(labels[name]||'侧栏')+'设置');
-    const heading=document.createElement('div');heading.className='tool-menu-heading';heading.textContent=labels[name]||'收起 / 展开侧栏';
+    const owner = button.id || actionId;
+    closeMenu=(focus=false)=>{events.abort();observer?.disconnect();if(menu.dataset.toolOwner===owner){menu.classList.add('hidden');menu.classList.remove('tool-strip-menu');delete menu.dataset.toolOwner;}if(focus&&button.isConnected)button.focus({preventScroll:true});};
+    const label = fixedAction ? binding.desc : (labels[name] || '收起 / 展开侧栏');
+    menu.className='tool-strip-menu';menu.replaceChildren();menu.dataset.toolOwner=owner;menu.setAttribute('role','menu');menu.setAttribute('aria-label',fixedAction ? label : (labels[name] || '侧栏') + '设置');
+    const heading=document.createElement('div');heading.className='tool-menu-heading';heading.textContent=label;
     const item=document.createElement('button');item.className='ctx-item';item.type='button';item.setAttribute('role','menuitem');item.dataset.toolShortcut=actionId;
-    const title=document.createElement('span');title.textContent=name==='sidebar'?'⌨ 设置快捷键…':'⌨ 设置跳转快捷键…';
+    const title=document.createElement('span');title.textContent=(fixedAction || name==='sidebar')?'设置快捷键…':'⌨ 设置跳转快捷键…';
     const keys=document.createElement('kbd');keys.textContent=binding.effectiveCombos.join(' / ')||'未设置';item.append(title,keys);menu.append(heading,item);
-    item.onclick=event=>{event.stopPropagation();if(!item.isConnected||!menu.contains(item)||menu.dataset.toolOwner!==button.id||menu.classList.contains('hidden'))return;closeMenu();Settings.editShortcut(actionId,button);};
+    item.onclick=event=>{event.stopPropagation();if(!item.isConnected||!menu.contains(item)||menu.dataset.toolOwner!==owner||menu.classList.contains('hidden'))return;closeMenu();Settings.editShortcut(actionId,button);};
     // 「隐藏这个工具」：侧栏开关（tool-sidebar）不提供 —— 它是收起侧栏的唯一入口，
     // 藏了就没有替代路径了。其余工具都可隐藏，且隐藏后快捷键仍然有效。
-    if(name!=='sidebar'){
+    if(!fixedAction && name!=='sidebar'){
       const hide=document.createElement('button');hide.className='ctx-item';hide.type='button';hide.setAttribute('role','menuitem');
       hide.textContent='👁 隐藏「'+(labels[name]||name)+'」';
       hide.onclick=event=>{event.stopPropagation();closeMenu();hideTool(name);};
@@ -76,7 +79,7 @@ window.ToolStrip = (() => {
     document.addEventListener('pointerdown',event=>{if(!menu.contains(event.target))closeMenu();},{capture:true,signal:events.signal});
     document.addEventListener('keydown',event=>{if(['Escape','Tab'].includes(event.key)){event.preventDefault();event.stopImmediatePropagation();closeMenu(true);}else if(['ArrowDown','ArrowUp','Home','End'].includes(event.key)){event.preventDefault();event.stopImmediatePropagation();item.focus();}},{capture:true,signal:events.signal});
     window.addEventListener('blur',()=>closeMenu(),{signal:events.signal});window.addEventListener('resize',()=>closeMenu(),{signal:events.signal});
-    observer=new MutationObserver(()=>{if(menu.classList.contains('hidden')||menu.dataset.toolOwner!==button.id||!menu.contains(item)){events.abort();observer.disconnect();}});observer.observe(menu,{attributes:true,childList:true});
+    observer=new MutationObserver(()=>{if(menu.classList.contains('hidden')||menu.dataset.toolOwner!==owner||!menu.contains(item)){events.abort();observer.disconnect();}});observer.observe(menu,{attributes:true,childList:true});
   }
   // ---------- 隐藏不用的工具按钮 ----------
   // 隐藏只影响「图标是否画出来」，不改 App.ALL_TOOLS —— 快捷键、命令面板、
@@ -198,6 +201,92 @@ window.ToolStrip = (() => {
     if(collapse&&sidebar)collapse.title='收起 / 展开侧栏（'+(sidebar.effectiveCombos.join(' / ')||'未设置快捷键')+'）';
     void syncBrowserToolKeys(native);
   }
+  const fixedAliases = {
+    'btn-open': 'open-folder', 'btn-open2': 'open-folder', 'btn-commands': 'command-palette',
+    'btn-search': 'search', 'btn-settings': 'settings', 'btn-help': 'help',
+    'navigation-back': 'navigation-back', 'navigation-forward': 'navigation-forward',
+    'ai-close': 'ai-toggle', 'gl-close': 'hide-log',
+  };
+  const fixedLabels = { 'btn-editor-collapse': '收起 / 展开编辑区' };
+  const editorButtons = {
+    'md-mode-live': 'Markdown 实时预览', 'md-mode-split': 'Markdown 源码对照',
+    'md-mode-source': 'Markdown 源码', 'md-mode-preview': 'Markdown 只读预览',
+    'md-mode-menu': 'Markdown 显示模式', 'md-export': '导出 HTML 到文件所在目录',
+    'drawio-mode': '切换 draw.io 画布 / 源码', 'read-text': '阅读文本',
+    'preview-source': '查看源码', 'source-preview': '切回预览', 'refresh-preview': '刷新文件预览',
+    'internal-browser': '在内置浏览器中打开文件', 'external-browser': '在默认浏览器中打开文件',
+  };
+  const generatedPanelButtons = [
+    ['session-project', '切换项目', '#panel-sessions button[data-project-picker]'],
+    ['session-options', '会话列表选项', '#panel-sessions button[data-hist-options]'],
+    ['session-refresh', '刷新会话目录', '#panel-sessions button[data-hist-refresh]'],
+    ['session-close', '收起会话', '#panel-sessions button[data-hist-close]'],
+    ['outline-sync', '大纲同步折叠', '#outline-sync'],
+  ];
+  function buttonUsable(button) {
+    if (!button || button.matches(':disabled,[aria-disabled=true]') || button.closest('[hidden],.hidden,[inert]')) return false;
+    if (button.checkVisibility && !button.checkVisibility({ visibilityProperty: true })) return false;
+    const modal = window.Modal?.stack.at(-1) || document.querySelector('dialog[open]');
+    return !modal || modal.contains(button);
+  }
+
+  function initFixedShortcuts() {
+    const known = new Set(Shortcuts.bindings().map(binding => binding.id));
+    const commands = [];
+    const add = (key, desc, locate, palette = false) => {
+      const id = 'button:' + key;
+      commands.push({ id, desc, keys: [], palette, category: '固定按钮',
+        bindingGuard: combo => /^(?:ctrl\+|alt\+|f(?:[1-9]|1[0-2])$)/.test(combo),
+        isEnabled: () => buttonUsable(locate()) || '按钮当前不可用',
+        run: () => { const button = locate(); if (buttonUsable(button)) button.click(); },
+      });
+    };
+    const fixed = document.querySelectorAll('#toolbar button, #main button, #statusbar button');
+    const keys = ['treeView', 'hideMode', 'clipFilter', 'goalAction'];
+    for (const button of fixed) {
+      if (button.closest('#tool-strip,#tool-strip-right,dialog')) continue;
+      let key = button.id;
+      let locate = () => document.getElementById(key);
+      if (!key) {
+        const dataKey = keys.find(name => button.dataset[name]);
+        if (!dataKey) continue;
+        key = dataKey + '-' + button.dataset[dataKey];
+        locate = () => document.querySelector('button[data-fixed-shortcut="' + key + '"]');
+      }
+      const title = (fixedLabels[key] || button.getAttribute('aria-label') || button.title || button.textContent).trim();
+      if (!title) continue;
+      button.dataset.fixedShortcut = key;
+      const alias = fixedAliases[key];
+      if (!known.has(alias)) add(key, title, locate, key === 'btn-editor-collapse');
+    }
+    for (const [key, label] of Object.entries(editorButtons)) {
+      add(key, label, () => [...document.querySelectorAll('button[data-editor-shortcut="' + key + '"]')].find(buttonUsable));
+    }
+    for (const [key, label, selector] of generatedPanelButtons) add(key, label, () => document.querySelector(selector));
+    Shortcuts.syncActions('button:', commands);
+    const bindingFor = button => {
+      if (button.closest('#tool-strip,#tool-strip-right')) return null;
+      const key = button.dataset.fixedShortcut || button.dataset.editorShortcut ||
+        generatedPanelButtons.find(([, , selector]) => button.matches(selector))?.[0];
+      const alias = button.dataset.shortcutAction || fixedAliases[key];
+      return known.has(alias) ? alias : key ? 'button:' + key : null;
+    };
+    const handle = (event, keyboard = false) => {
+      const button = event.target.closest?.('button');
+      if (!button || event.defaultPrevented) return;
+      const binding = bindingFor(button);
+      if (!binding) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const bounds = button.getBoundingClientRect();
+      menu(button, null, keyboard ? bounds.left : event.clientX, keyboard ? bounds.bottom : event.clientY, binding);
+    };
+    document.addEventListener('contextmenu', handle);
+    document.addEventListener('keydown', event => {
+      if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) handle(event, true);
+    });
+  }
+
   function init() {
     if(strip)return;strip=document.getElementById('tool-strip');if(!strip)return;
     nodes=new Map([...strip.children].filter(node=>node.id!=='tool-sidebar').map(node=>[node.classList.contains('tool-strip-gap')?gapId:node.id,node]));defaults=[...nodes.keys()];
@@ -205,6 +294,7 @@ window.ToolStrip = (() => {
     // 隐藏项必须在拖拽/右键绑定之前应用：后面 syncRestoreButton 会往 strip 里
     // prepend 兜底按钮，而 nodes 只收 strip 的原始子节点，顺序不能错。
     readHidden();applyHidden();
+    initFixedShortcuts();
     Shortcuts.markToolJumps(Object.values(actions));Shortcuts.onChanged(syncKeys);syncKeys();
     window.myIDE?.browser?.onToolShortcut?.(id=>{if(Object.values(actions).includes(id)&&!Modal.stack.length)Shortcuts.execute(id);});
     for(const [name,id] of Object.entries(actions)) {
@@ -253,7 +343,7 @@ window.ToolStrip = (() => {
   function rightMenu(button,focusMenu=false){
     if(!button)return;
     const isCollapse=button.id==='tool-sidebar-r';
-    const actionId=isCollapse?'toggle-right-sidebar':rightActions[button.id.replace(/^tool-/,'')];
+    const actionId=isCollapse?'toggle-sidebar-right':rightActions[button.id.replace(/^tool-/,'')];
     const name=button.id.replace(/^tool-/,'');
     const menu=document.getElementById('ctx-menu');
     menu.className='tool-strip-menu';menu.replaceChildren();delete menu.dataset.toolOwner;

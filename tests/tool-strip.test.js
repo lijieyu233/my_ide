@@ -26,6 +26,24 @@ function fixture(saved){
 }
 async function test(name,fn){const f=fixture();try{await fn(f);passed++;console.log('PASS '+name);}finally{f.close();}}
 (async()=>{
+ await test('固定按钮右键绑定、重启读回，且不可用按钮不能执行',async f=>{
+  const {w,q,fire,key}=f, id='button:btn-editor-collapse', button=q('#btn-editor-collapse');
+  let presses=0;button.onclick=()=>presses++;
+  assert.equal(fire('#btn-editor-collapse','contextmenu',{clientX:35,clientY:25}).defaultPrevented,true);
+  assert.equal(q('[data-tool-shortcut]').dataset.toolShortcut,id);
+  q('[data-tool-shortcut]').click();
+  assert(w.Shortcuts.isCapturing());
+  key('j',{ctrlKey:true,altKey:true});await tick();w.Modal.hide();
+  key('j',{ctrlKey:true,altKey:true});await tick();assert.equal(presses,1);
+  button.disabled=true;key('j',{ctrlKey:true,altKey:true});await tick();assert.equal(presses,1);
+  const restored=fixture({'myide-keys':w.localStorage.getItem('myide-keys')});
+  try{assert.deepEqual([...restored.w.Shortcuts.bindings().find(b=>b.id===id).combos],['ctrl+alt+j']);}finally{restored.close();}
+  fire('#btn-settings','contextmenu');assert.equal(q('[data-tool-shortcut]').dataset.toolShortcut,'settings');
+  fire('#tool-sidebar-r','contextmenu');assert(q('#ctx-menu button').textContent.includes('设置快捷键'));
+  q('#ctx-menu button').click();assert(q('[data-key-action=toggle-sidebar-right] .listening'));w.Modal.hide();
+  const generated=w.document.createElement('button');generated.dataset.editorShortcut='md-export';generated.id='fixture-export';
+  q('#tab-actions').append(generated);fire('#fixture-export','contextmenu');assert.equal(q('[data-tool-shortcut]').dataset.toolShortcut,'button:md-export');
+ });
  await test('拖动跨上下分组保存顺序，移动现有节点、不切换功能，重载恢复',async f=>{
   const {q,drag,order,calls,w}=f,button=q('#tool-remote');drag('remote','project');assert.equal(order()[0],'tool-sidebar');assert.equal(order()[1],'tool-remote');assert.equal(q('#tool-remote'),button);assert.equal(calls.length,0);
   drag('project','log',true);assert(order().indexOf('tool-project')>order().indexOf('@gap'));button.click();assert.equal(calls.length,0);await new Promise(r=>setTimeout(r,270));button.click();assert.equal(calls.at(-1),'click:remote');
