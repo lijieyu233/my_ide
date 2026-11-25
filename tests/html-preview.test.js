@@ -49,6 +49,23 @@ const {createService}=require('../src/main/browser/html-preview');
       await assert.rejects(access(path.join(link,'other.html')),/可视化文件路径无效/);
       service.close(1,widget.id);
     });
+    await test('Codex 可视化支持会话工程 outputs 下的演示，并拒绝其他工程和重定向目录',async()=>{
+      const outputs=path.join(root,'outputs'), demo=path.join(outputs,'statistics-demo','index.html');
+      await fs.mkdir(path.dirname(demo),{recursive:true});
+      await fs.writeFile(demo,'<button id="snapshot">统计快照</button><script>window.ready=true;</script>');
+      const access=(target, workspace)=>service.open(1,{path:target,disk:true,visualization:true},null,()=>workspace);
+      const widget=await access(demo,root);
+      const response=await service.handle(request(widget.url));
+      assert.equal(response.status,200);
+      assert.match(await response.text(),/统计快照/);
+      assert.match(response.headers.get('Content-Security-Policy'),/default-src 'none'/);
+      await assert.rejects(access(demo,temp),/可视化文件路径无效/);
+      await assert.rejects(access(demo,''),/可视化文件路径无效/);
+      const outside=path.join(temp,'other-project');
+      await fs.symlink(outputs,path.join(outside,'outputs'),'junction');
+      await assert.rejects(access(path.join(outside,'outputs','statistics-demo','index.html'),outside),/可视化文件路径无效/);
+      service.close(1,widget.id);
+    });
     console.log('HTML预览：'+passed+' 通过 / 0 失败');
   }finally{if(path.dirname(temp)!==path.resolve(os.tmpdir())||!path.basename(temp).startsWith('myide-html-test-'))throw Error('清理越界');await fs.rm(temp,{recursive:true,force:true});}
 })().catch(error=>{console.error(error);process.exitCode=1;});

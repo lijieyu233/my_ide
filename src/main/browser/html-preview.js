@@ -17,11 +17,14 @@ async function visualizationAllowed(file, visualizationRoot, getProjectRoot) {
   const workspace = await getProjectRoot?.();
   if (!workspace || !path.isAbsolute(workspace)) return false;
   const root = await fs.realpath(workspace);
-  const expected = path.join(root, 'artifacts');
-  if (!inside(expected, file)) return false;
-  const artifacts = await fs.realpath(expected).catch(() => '');
-  // A redirected artifacts directory must not grant access to another directory.
-  return !!artifacts && path.relative(expected, artifacts) === '';
+  for (const folder of ['artifacts', 'outputs']) {
+    const expected = path.join(root, folder);
+    if (!inside(expected, file)) continue;
+    const actual = await fs.realpath(expected).catch(() => '');
+    // A redirected output directory must not grant access to another directory.
+    if (actual && path.relative(expected, actual) === '') return true;
+  }
+  return false;
 }
 function createService() {
   const entries=new Map();
@@ -72,7 +75,7 @@ function createService() {
       }
       const type=MIME[path.extname(file).slice(1).toLowerCase()]||'application/octet-stream';
       const headers={'Content-Type':type+(/^(text\/|application\/json)/.test(type)?'; charset=utf-8':''),'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'};
-      if(entry.visualization)headers['Content-Security-Policy']="sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; base-uri 'none'; form-action 'none'";
+      if(entry.visualization)headers['Content-Security-Policy']="sandbox allow-scripts allow-forms; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; base-uri 'none'; form-action 'none'";
       return new Response(request.method==='HEAD'?null:content,{headers});
     }catch{return fail(404);}
   }

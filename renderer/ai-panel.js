@@ -2062,7 +2062,7 @@ const AiPanel = (() => {
     widget.classList.toggle('ai-visualization-wide',mode==='wide');
     const frame=document.createElement('iframe');
     frame.title=path.split(/[\\/]/).pop()||'可视化预览';
-    frame.setAttribute('sandbox','allow-scripts');
+    frame.setAttribute('sandbox','allow-scripts allow-forms');
     frame.setAttribute('allow','fullscreen');
     frame.loading='lazy';
     const surface=document.createElement('div');

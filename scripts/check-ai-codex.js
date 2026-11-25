@@ -54,7 +54,7 @@ async function verifyVisualization() {
  check('Codex visualization marker renders inline and the sandboxed demo is interactive',
    await widgetFrame.executeJavaScript('document.querySelector("#increment").click(); document.querySelector("#increment").textContent==="计数 1"')&&
    await js(()=>!document.getElementById('ai-msgs').textContent.includes('\uE200visualize')&&
-     document.querySelector('.ai-visualization iframe').getAttribute('sandbox')==='allow-scripts'));
+     document.querySelector('.ai-visualization iframe').getAttribute('sandbox')==='allow-scripts allow-forms'));
  const savedWidth=await js(()=>{
    const panel=document.getElementById('ai-panel'),old=panel.style.width;
    panel.style.width='1050px';
@@ -87,6 +87,23 @@ async function verifyVisualization() {
  fs.writeFileSync(outside,'<p>outside artifact directory</p>');
  check('Codex visualization preview rejects files outside the artifact directory',
    !(await js(file=>window.myIDE.htmlPreview.open({path:file,disk:true,visualization:true}),outside)).ok);
+ const formResult = await widgetFrame.executeJavaScript(`(() => {
+   const dialog = document.createElement('dialog');
+   dialog.innerHTML = '<form method="dialog"><button>Close</button></form>';
+   document.body.append(dialog);
+   dialog.showModal();
+   dialog.querySelector('button').click();
+   return !dialog.open;
+ })()`);
+ check('Visualization dialogs can close through a local form', formResult);
+ await widgetFrame.executeJavaScript(`(() => {
+   const form = document.createElement('form');
+   form.action = 'https://visualization.invalid/form';
+   document.body.append(form);
+   form.requestSubmit();
+ })()`);
+ await sleep(80);
+ check('A visualization form cannot navigate or send data', widgetFrame.url.startsWith('myide-preview:') && !network.length);
  await widgetFrame.executeJavaScript('location.href="https://visualization.invalid/"');
  await sleep(80);
  check('a visualization cannot navigate outside its sandboxed preview',
