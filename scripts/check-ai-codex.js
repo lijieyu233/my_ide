@@ -1039,11 +1039,11 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  await js(()=>AiPanel.ask('HOLD_CODEX 接着讨论'));
  await until(()=>js(()=>AiPanel.__testParked().currentRun==='occupied'&&document.getElementById('ai-input').value==='HOLD_CODEX 接着讨论'),'original writer locked again');
  const beforeFork=fixture.requests.filter(r=>r.method==='turn/start').length;
- await js(name=>{
-   const row=[...document.querySelectorAll('.ai-hist-nm')].find(el=>el.textContent===name).closest('button');
+ await js(id=>{
+   const row=document.querySelector('[data-id="codex:'+id+'"] .ai-hist-open');
    row.dispatchEvent(new MouseEvent('contextmenu',{button:2,bubbles:true,cancelable:true}));
    [...document.querySelectorAll('#ctx-menu button')].find(el=>el.textContent==='分叉').click();
- },renamedThreadTitle);
+ },externalId);
  const forkId='019caa00-0000-7000-8000-000000000004';
  await until(()=>js(id=>AiPanel.aiState().current==='codex:'+id&&AiPanel.aiState().dshState==='ready',forkId),'native fork opened');
  check('manual fork opens copied history as a separate session, preserving the draft',
