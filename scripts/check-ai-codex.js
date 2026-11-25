@@ -34,12 +34,89 @@ const until=async(fn,name)=>{const deadline=Date.now()+20000;while(Date.now()<de
 const check=(name,ok,data)=>{checks.push({name,ok,data});console.log((ok?'PASS ':'FAIL ')+name+(data?' '+JSON.stringify(data):''));assert(ok,name);};
 async function capture(name){await js(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true)))));let timer;const image=await Promise.race([win.capturePage(undefined,{stayHidden:true,stayAwake:true}),new Promise(resolve=>timer=setTimeout(()=>resolve(null),2500))]);clearTimeout(timer);if(image&&!image.isEmpty())fs.writeFileSync(path.join(out,name+'.png'),image.toPNG());}
 async function finish(code,error){if(done)return;done=true;clearTimeout(watchdog);await service?.dispose();fs.writeFileSync(path.join(out,'report.json'),JSON.stringify({code,error,checks,network,requests:fixture.requests.map(r=>({method:r.method,...r.method==='turn/start'?{threadId:r.params.threadId}:r.method==='thread/start'?{cwd:r.params.cwd,sandbox:r.params.sandbox}:{} })),receipts:fixture.receipts,temp},null,2));console.log('CODEX_UI_REPORT '+path.join(out,'report.json'));app.exit(code);}
+function createVisualizationMarker() {
+ const visualizationDir=path.join(process.env.CODEX_HOME,'visualizations','fixture');
+ fs.mkdirSync(visualizationDir,{recursive:true});
+ const visualizationFile=path.join(visualizationDir,'interactive demo.html');
+ fs.writeFileSync(visualizationFile,'<style>body{color:#e5edf6;background:#121923;font:22px system-ui;padding:32px}</style><h2>互动预览</h2><button id="increment">计数 0</button><script>const button=document.querySelector("button");button.onclick=()=>{window.openai.setWidgetState(1);button.textContent="计数 "+window.openai.widgetState;};</script>');
+ return '\uE200visualize\uE202'+JSON.stringify({path:visualizationFile,mode:'wide'})+'\uE201';
+}
+async function verifyVisualization() {
+ await until(()=>js(()=>!!document.querySelector('.ai-visualization iframe[src^="myide-preview:"]')),'visualization preview lease');
+ await js(()=>document.querySelector('.ai-visualization iframe').scrollIntoView());
+ let widgetFrame;
+ await until(async()=>{
+   widgetFrame=win.webContents.mainFrame.frames.find(frame=>frame.url.startsWith('myide-preview:'));
+   return widgetFrame&&await widgetFrame.executeJavaScript('!!document.querySelector("#increment")').catch(()=>false);
+ },'visualization frame rendered');
+ check('Codex visualization marker renders inline and the sandboxed demo is interactive',
+   await widgetFrame.executeJavaScript('document.querySelector("#increment").click(); document.querySelector("#increment").textContent==="计数 1"')&&
+   await js(()=>!document.getElementById('ai-msgs').textContent.includes('\uE200visualize')&&
+     document.querySelector('.ai-visualization iframe').getAttribute('sandbox')==='allow-scripts'));
+ const savedWidth=await js(()=>{
+   const panel=document.getElementById('ai-panel'),old=panel.style.width;
+   panel.style.width='1050px';
+   document.querySelector('.ai-visualization').scrollIntoView({block:'center'});
+   return old;
+ });
+ check('Wide previews use the chat width without moving or widening the surrounding prose',await js(()=>{
+   const preview=document.querySelector('.ai-visualization'), md=preview.closest('.ai-md'), transcript=document.getElementById('ai-msgs');
+   const a=preview.getBoundingClientRect(),b=md.getBoundingClientRect(),c=transcript.getBoundingClientRect();
+   return a.width>b.width+60&&a.left>=c.left&&a.right<=c.right&&transcript.scrollWidth===transcript.clientWidth&&
+     preview.querySelector('button').getBoundingClientRect().bottom<preview.querySelector('iframe').getBoundingClientRect().top;
+ }));
+ await capture('codex-inline-visualization');
+ await js(()=>document.querySelector('.ai-visualization button').click());
+ await until(()=>js(()=>!!document.querySelector('.ai-visualization-surface:popover-open')),'preview expanded');
+ check('Expanded preview fills the window with a visible return button and keeps the same running demo',
+   await js(()=>{
+     const surface=document.querySelector('.ai-visualization-surface:popover-open'), back=surface.querySelector('button');
+     return surface.clientWidth>innerWidth-40&&surface.clientHeight>innerHeight-40&&
+       back.textContent==='返回对话'&&back.getAttribute('aria-expanded')==='true';
+   })&&await widgetFrame.executeJavaScript('document.querySelector("#increment").textContent==="计数 1"'));
+ await capture('codex-expanded-visualization');
+ await js(()=>document.querySelector('.ai-visualization button').click());
+ check('Returning restores inline placement and focus without restarting the demo',await js(()=>{
+   const button=document.querySelector('.ai-visualization button');
+   return !document.querySelector('.ai-visualization-surface:popover-open')&&button===document.activeElement&&button.textContent==='放大查看';
+ })&&await widgetFrame.executeJavaScript('document.querySelector("#increment").textContent==="计数 1"'));
+ await js(width=>{document.getElementById('ai-panel').style.width=width;},savedWidth);
+ const outside=path.join(temp,'outside.html');
+ fs.writeFileSync(outside,'<p>outside artifact directory</p>');
+ check('Codex visualization preview rejects files outside the artifact directory',
+   !(await js(file=>window.myIDE.htmlPreview.open({path:file,disk:true,visualization:true}),outside)).ok);
+ await widgetFrame.executeJavaScript('location.href="https://visualization.invalid/"');
+ await sleep(80);
+ check('a visualization cannot navigate outside its sandboxed preview',
+   widgetFrame.url.startsWith('myide-preview:')&&!network.includes('https://visualization.invalid/'));
+}
 const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
 (async()=>{await app.whenReady();await until(()=>{win=BrowserWindow.getAllWindows().find(w=>!w.webContents.isLoading()&&w.webContents.getURL().includes('renderer/index.html'));return win;},'window');await until(()=>js(()=>!!window.App&&!!window.AiPanel&&!!document.getElementById('btn-open').onclick),'app init');win.setContentSize(1440,900);
  const lifecycleOnly = process.argv.includes('--codex-lifecycle-only');
  let releaseStatus;
  if (lifecycleOnly) statusGate = new Promise(resolve => { releaseStatus = resolve; });
  await js(async root=>{Object.defineProperty(document,'hidden',{value:false,configurable:true});await App.setRoot(root);App.showAi();await AiPanel.setConfig({engine:'codex',autoIdeContext:false,injectMyideRules:false});return true;},roots[0]);await until(()=>js(()=>AiPanel.aiState().dshState==='ready'),'Codex options');check('Codex connects in existing mode selector and shows native model',await js(()=>document.getElementById('ai-engine').value==='codex'&&document.getElementById('ai-model').textContent.includes('Codex offline fixture')));check('inspect never creates a thread or starts a turn',!fixture.requests.some(r=>['thread/start','turn/start'].includes(r.method)));
+ if (process.argv.includes('--codex-visualization-only')) {
+   const id = '019caa00-0000-7000-8000-000000000003';
+   fixture.projects.push({id:'viz-project',name:'演示项目',roots:[{path:roots[0]}]});
+   fixture.threads.set(id,{id,projectId:'viz-project',cwd:roots[0],model:'offline-codex',historyMode:'paginated',
+     name:'可视化会话',updatedAt:1710000000,running:false,items:[
+       {type:'userMessage',content:[{type:'text',text:'演示预览'}]},
+       {type:'agentMessage',text:'资源库演示\n\n'+createVisualizationMarker()+'\n\n可在演示中点击操作。'},
+     ]});
+   await js(()=>App.showTool('sessions'));
+   await until(()=>js(id=>{
+     const row=document.querySelector('[data-id="codex:'+id+'"]');
+     if(!row)return false;
+     const toggle=row.closest('.ai-hist-group').querySelector('[data-hist-toggle]');
+     if(toggle.getAttribute('aria-expanded')==='false')toggle.click();
+     row.querySelector('.ai-hist-open').click();
+     return true;
+   },id),'open Codex visualization history');
+   await verifyVisualization();
+   await finish(0);
+   return;
+ }
  if (process.argv.includes('--codex-questions-only')) {
   for (const skip of [false, true]) {
    await js(()=>AiPanel.ask('ASK_USER_CODEX'));
@@ -315,11 +392,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  fs.writeFileSync(widePicture,nativeImage.createFromBitmap(Buffer.alloc(1280*720*4,255),{width:1280,height:720}).toPNG());
  const markdownPicture='![Wide preview]('+widePicture.replace(/\\/g,'/')+')';
  const mixedMessage='带图片的历史消息\n保留 <标签> 和 & 符号';
- const visualizationDir=path.join(process.env.CODEX_HOME,'visualizations','fixture');
- fs.mkdirSync(visualizationDir,{recursive:true});
- const visualizationFile=path.join(visualizationDir,'interactive demo.html');
- fs.writeFileSync(visualizationFile,'<style>body{color:#e5edf6;background:#121923;font:22px system-ui;padding:32px}</style><h2>互动预览</h2><button id="increment">计数 0</button><script>const button=document.querySelector("button");button.onclick=()=>{window.openai.setWidgetState(1);button.textContent="计数 "+window.openai.widgetState;};</script>');
- const visualizationMarker='\uE200visualize\uE202'+JSON.stringify({path:visualizationFile,mode:'wide'})+'\uE201';
+ const visualizationMarker=createVisualizationMarker();
  fixture.threads.set(externalId,{id:externalId,projectId:'desktop-empty',cwd:roots[1],model:'offline-codex',historyMode:'paginated',name:'桌面 Codex 外部会话',updatedAt:1710000000,running:false,queueListUnavailable:true,
   items:[{type:'userMessage',content:[{type:'text',text:'CODEX_PREVIOUS_QUESTION'}]},
    {type:'imageGeneration',id:'generated-cover',status:'completed',savedPath:picture},
@@ -612,26 +685,7 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
    return sameSource&&!document.querySelector('.img-lightbox')&&document.activeElement===preview;
  },thumbnail));
  await capture('codex-markdown-thumbnail');
- await until(()=>js(()=>!!document.querySelector('.ai-visualization iframe[src^="myide-preview:"]')),'visualization preview lease');
- await js(()=>document.querySelector('.ai-visualization iframe').scrollIntoView());
- let widgetFrame;
- await until(async()=>{
-   widgetFrame=win.webContents.mainFrame.frames.find(frame=>frame.url.startsWith('myide-preview:'));
-   return widgetFrame&&await widgetFrame.executeJavaScript('!!document.querySelector("#increment")').catch(()=>false);
- },'visualization frame rendered');
- check('Codex visualization marker renders inline and the sandboxed demo is interactive',
-   await widgetFrame.executeJavaScript('document.querySelector("#increment").click(); document.querySelector("#increment").textContent==="计数 1"')&&
-   await js(()=>!document.getElementById('ai-msgs').textContent.includes('\uE200visualize')&&
-     document.querySelector('.ai-visualization iframe').getAttribute('sandbox')==='allow-scripts'));
- const outside=path.join(temp,'outside.html');
- fs.writeFileSync(outside,'<p>outside artifact directory</p>');
- check('Codex visualization preview rejects files outside the artifact directory',
-   !(await js(file=>window.myIDE.htmlPreview.open({path:file,disk:true,visualization:true}),outside)).ok);
- await widgetFrame.executeJavaScript('location.href="https://visualization.invalid/"');
- await sleep(80);
- check('a visualization cannot navigate outside its sandboxed preview',
-   widgetFrame.url.startsWith('myide-preview:')&&!network.includes('https://visualization.invalid/'));
- await capture('codex-inline-visualization');
+ await verifyVisualization();
  await capture('codex-history-sidebar');
  const renamedThreadTitle='桌面 Codex 新名称';
  await js(id=>{

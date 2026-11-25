@@ -2038,7 +2038,7 @@ const AiPanel = (() => {
   const visualizationLeases=new Map();
   let visualizationObserver;
   function createVisualization({path,mode}) {
-    const widget=document.createElement('span');
+    const widget=document.createElement('div');
     widget.className='ai-visualization';
     widget.classList.toggle('ai-visualization-wide',mode==='wide');
     const frame=document.createElement('iframe');
@@ -2046,12 +2046,44 @@ const AiPanel = (() => {
     frame.setAttribute('sandbox','allow-scripts');
     frame.setAttribute('allow','fullscreen');
     frame.loading='lazy';
+    const surface=document.createElement('div');
+    surface.className='ai-visualization-surface';
+    const toolbar=document.createElement('div');
+    toolbar.className='ai-visualization-toolbar';
     const expand=document.createElement('button');
     expand.type='button';
-    expand.className='ai-visualization-expand';
-    expand.textContent='全屏';
-    expand.onclick=()=>frame.requestFullscreen().catch(()=>{});
-    widget.append(frame,expand);
+    expand.className='vt-btn';
+    expand.textContent='放大查看';
+    expand.disabled=true;
+    expand.setAttribute('aria-expanded','false');
+    function syncExpanded() {
+      const open=surface.matches(':popover-open');
+      const wasOpen=expand.getAttribute('aria-expanded')==='true';
+      if(open){
+        surface.setAttribute('role','dialog');
+        surface.setAttribute('aria-label',frame.title);
+      }else{
+        surface.removeAttribute('popover');
+        surface.removeAttribute('role');
+        surface.removeAttribute('aria-label');
+      }
+      expand.setAttribute('aria-expanded',String(open));
+      expand.textContent=open?'返回对话':'放大查看';
+      if(open!==wasOpen&&expand.isConnected)expand.focus({preventScroll:true});
+    }
+    surface.addEventListener('toggle',syncExpanded);
+    expand.onclick=()=>{
+      if(surface.matches(':popover-open'))surface.hidePopover();
+      else{
+        // 顶层显示同一个 iframe，切换尺寸时保留演示中的输入和滚动位置。
+        surface.setAttribute('popover','auto');
+        surface.showPopover();
+      }
+      syncExpanded();
+    };
+    toolbar.append(expand);
+    surface.append(toolbar,frame);
+    widget.append(surface);
     queueMicrotask(async()=>{
       const mounted=()=>!!widget.closest('.ai-msg')?.parentNode;
       if(!mounted())return;
@@ -2070,6 +2102,7 @@ const AiPanel = (() => {
       }
       visualizationLeases.set(widget,lease.id);
       frame.src=lease.url;
+      expand.disabled=false;
       if(!visualizationObserver){
         visualizationObserver=new MutationObserver(()=>{
           for(const [preview,id] of visualizationLeases){
