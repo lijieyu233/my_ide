@@ -26,7 +26,7 @@ function fixture(){
     abort:async context=>{f.aborts.push(context);return {ok:true};},finish:async()=>({ok:true}),clearSession:async()=>({ok:true}),
   }};
   w.eval(source);w.AiPanel.init();w.App.showAi();
-  f.enable=async()=>{await w.AiPanel.setConfig({engine:'antigravity',antigravityEnabled:true});await until(()=>w.AiPanel.aiState().dshState==='ready');};
+  f.enable=async()=>{const engine=w.document.getElementById('ai-engine');engine.value='antigravity';await engine.onchange();await until(()=>w.AiPanel.aiState().dshState==='ready');};
   f.type=text=>{const input=w.document.getElementById('ai-input');input.value=text;input.dispatchEvent(new w.Event('input',{bubbles:true}));};
   f.enter=(extras={})=>w.document.getElementById('ai-input').dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true,...extras}));
   f.finish=(i,result={})=>{const call=f.calls[i];call.resolve({ok:true,status:'completed',complete:true,finishReason:'stop',text:'回复 '+i,...result,context:call.context});};
@@ -38,7 +38,10 @@ const fixtures=[];let passed=0;
 async function test(name,fn){const f=fixture();fixtures.push(f);await fn(f);passed++;console.log('  ok '+name);await f.close();}
 (async()=>{
  await test('Antigravity 默认关闭，独立配置来自实际回执且不会派发 DSH/Codex',async f=>{
-  assert(f.w.document.querySelector('#ai-engine [value="antigravity"]').disabled);await f.enable();
+  const choice=f.w.document.querySelector('#ai-engine [value="antigravity"]');
+  assert.equal(choice.hidden,false);assert.equal(choice.disabled,false);
+  assert.notEqual(f.w.AiPanel.getConfig().antigravityEnabled,true);assert.equal(f.options.length,0);
+  await f.enable();assert.equal(f.w.AiPanel.getConfig().antigravityEnabled,true);
   assert.equal(f.w.AiPanel.aiState().model,'gemini-test');assert.match(f.w.document.getElementById('ai-dsh-info').textContent,/无沙箱/);assert.match(f.w.document.getElementById('ai-dsh-info').title,/沙箱不可用/);
   const select=f.w.document.getElementById('ai-model');select.value='gemini-next';select.dispatchEvent(new f.w.Event('change'));await until(()=>f.w.AiPanel.aiState().model==='gemini-next');
   assert(f.options.some(item=>item.apply?.configId==='model-selector'&&item.apply.value==='gemini-next'));

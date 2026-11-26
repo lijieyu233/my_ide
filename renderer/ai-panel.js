@@ -1709,7 +1709,7 @@ const AiPanel = (() => {
     const sel = document.getElementById('ai-model');
     if (!sel) return;
     const cfg = getConfig();
-    const engine=document.getElementById('ai-engine');if(engine){const option=engine.querySelector('[value="antigravity"]');if(option)option.hidden=option.disabled=cfg.antigravityEnabled!==true;}if(engine)engine.value=nativeEngine(cfg.engine)?cfg.engine:'standard';
+    const engine=document.getElementById('ai-engine');if(engine)engine.value=nativeEngine(cfg.engine)?cfg.engine:'standard';
     document.getElementById('ai-dsh-options')?.classList.toggle('hidden',!nativeEngine(cfg.engine));
     document.querySelector('.ai-dsh-status')?.classList.toggle('hidden',!nativeEngine(cfg.engine));
     syncCodexLifecycle();
@@ -7610,7 +7610,11 @@ const AiPanel = (() => {
   }
 
   function init() {
-    const engine=document.getElementById('ai-engine');if(engine)engine.onchange=async()=>{await setConfig({engine:engine.value});};
+    const engine = document.getElementById('ai-engine');
+    if (engine) engine.onchange = async () => {
+      const selected = engine.value;
+      await setConfig({ engine: selected, ...(selected === 'antigravity' && { antigravityEnabled: true }) });
+    };
     document.getElementById('ai-dsh-reasoning')?.addEventListener('change', event => { void changeNativeEffort(event.target.value); });
     document.getElementById('ai-dsh-reconnect')?.addEventListener('click',()=>{
       if(getConfig().engine==='antigravity'){void reconnectAntigravity();return;}

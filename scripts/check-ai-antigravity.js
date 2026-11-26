@@ -113,7 +113,12 @@ const watchdog = setTimeout(() => { console.error('Antigravity UI watchdog expir
     if (!pilot.ok) return pilot;
     await App.setRoot(pilot.rootDir);
     App.showAi();
-    await AiPanel.setConfig(cfg);
+    const engine = document.getElementById('ai-engine');
+    const choice = engine.querySelector('[value="antigravity"]');
+    if (choice.hidden || choice.disabled || AiPanel.getConfig().antigravityEnabled === true) throw Error('Antigravity 模式首次显示不正确');
+    await AiPanel.setConfig({ antigravityProjectMcpEnabled: projectMcpEnabled });
+    engine.value = 'antigravity';
+    await engine.onchange();
     return pilot;
   }, verifyMcp);
   assert.equal(pilot.ok, true, JSON.stringify(pilot));
