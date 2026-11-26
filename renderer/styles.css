@@ -3931,6 +3931,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   border: 1px solid var(--text-dim); border-right-color: var(--text-bright);
   animation: ai-hist-spin .75s linear infinite;
 }
+.ai-hist-group-head:has(> [data-hist-toggle][aria-expanded="true"]) > .ai-hist-indicator > .ai-hist-run { display: none; }
 .ai-hist-unread { width: 6px; height: 6px; border-radius: 50%; background: var(--ok-text, #4caf7d); }
 @keyframes ai-hist-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .ai-hist-run { animation: none; } }

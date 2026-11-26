@@ -978,13 +978,12 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  }));
  await capture('codex-running-project-collapsed');
  await js(()=>document.querySelector('[data-codex-project="desktop-b"] [data-hist-toggle][aria-expanded="false"]').click());
- check('Project and session spinners use the same right edge without visible status labels',await js(()=>{
+ check('An expanded project shows the running marker on the active session only',await js(()=>{
    const group=document.querySelector('[data-codex-project="desktop-b"]');
    const projectIcon=group.querySelector('.ai-hist-group-head .ai-hist-run');
    const active=group.querySelector('.ai-hist-row.cur.running');
    const chatIcon=active?.querySelector('.ai-hist-indicator .ai-hist-run');
-   return projectIcon?.checkVisibility()&&chatIcon?.checkVisibility()&&
-     Math.abs(projectIcon.parentElement.getBoundingClientRect().left-chatIcon.parentElement.getBoundingClientRect().left)<1&&
+   return projectIcon&&!projectIcon.checkVisibility()&&chatIcon?.checkVisibility()&&
      !active.textContent.includes('运行中')&&getComputedStyle(chatIcon).animationName==='ai-hist-spin'&&
      !group.querySelector('.ai-hist-unread');
  }));
