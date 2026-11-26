@@ -312,6 +312,7 @@ let bwView = null; // 复用实例：隐藏仅 removeChildView，persist partiti
 const browserTabViews = require('./src/main/browser/browser-tab-views').createService({createView:createBwView,getWindow:()=>mainWindow});
 let bwVisibilityRevision = 0;
 const bwNavigationRevision = new WeakMap();
+const bwPendingUrls = new WeakMap();
 const browserToolKeys=require('./src/main/browser/tool-shortcuts').createService();
 ipcMain.handle('browser:tool-keys',(event,entries)=>{
   if(event.sender!==mainWindow?.webContents||event.senderFrame!==event.sender.mainFrame)return {ok:false};
@@ -333,9 +334,10 @@ ipcMain.handle('browser:fullscreen', (e,enabled)=>{
 ipcMain.handle('browser:open-default', async e=>{
   try{
     if(!mainWindow||e.sender!==mainWindow.webContents)throw Error('只能由MyIDE窗口打开当前网页');
-    const wc=bwView?.webContents,url=wc&&!wc.isDestroyed()?wc.getURL():'';
+    const view=bwView,wc=view?.webContents;
+    // 导航提交前 getURL() 仍可能返回空值或上一页。
+    const url=wc&&!wc.isDestroyed()?(bwPendingUrls.get(view)??wc.getURL()):'';
     if(!url||!['http:','https:'].includes(new URL(url).protocol))throw Error('当前没有可用的网页地址');
-    // 地址栏可能正在编辑，也可能还未收到重定向回推；以实际网页视图为准。
     await shell.openExternal(url);return {ok:true,url};
   }catch(error){return {ok:false,error:error.message};}
 });
@@ -396,12 +398,23 @@ function createBwView(tabId) {
       }, extra || {}));
     } catch {}
   };
-  wc.on('did-navigate', (_e, url) => push({ navigated: true, url }));
+  const trackNavigation = (_e, url, inPlace, mainFrame) => {
+    if (mainFrame && !inPlace) bwPendingUrls.set(view, url);
+  };
+  wc.on('did-start-navigation', trackNavigation);
+  wc.on('did-redirect-navigation', trackNavigation);
+  wc.on('did-navigate', (_e, url) => {
+    bwPendingUrls.delete(view);
+    push({ navigated: true, url });
+  });
   wc.on('did-navigate-in-page', (_e, url) => push({ navigated: true, inPage: true, url }));
   wc.on('page-title-updated', (_e, title) => push({ title }));
   wc.on('page-favicon-updated', (_e, icons) => push({favicon:icons[0] || ''}));
   wc.on('did-start-loading', () => push({ loading: true }));
-  wc.on('did-stop-loading', () => push({ loading: false }));
+  wc.on('did-stop-loading', () => {
+    bwPendingUrls.delete(view);
+    push({ loading: false });
+  });
   wc.on('loadProgress', (_e, p) => push({ progress: p }));
   wc.on('did-fail-load', (_e, code, desc, _u, mainFrame) => {
     if (mainFrame && code !== -3) push({ err: desc || ('错误码 ' + code) }); // -3 = ERR_ABORTED
@@ -418,8 +431,12 @@ ipcMain.handle('browser:view-open', (_e, url, tabId) => {
     if (url) {
       const revision = (bwNavigationRevision.get(v) || 0) + 1;
       bwNavigationRevision.set(v, revision);
-      v.webContents.loadURL(url).catch(e => {
-        if (e.code === 'ERR_ABORTED' || e.errno === -3 || bwNavigationRevision.get(v) !== revision || v.webContents.isDestroyed()) return;
+      const requestedUrl = String(url);
+      bwPendingUrls.set(v, requestedUrl);
+      v.webContents.loadURL(requestedUrl).catch(e => {
+        if (bwNavigationRevision.get(v) !== revision || v.webContents.isDestroyed()) return;
+        if (e.code === 'ERR_ABORTED' || e.errno === -3) return;
+        if (bwPendingUrls.get(v) === requestedUrl) bwPendingUrls.delete(v);
         if (mainWindow) mainWindow.webContents.send('browser:state', { tabId, err: String(e.message || e) });
       });
     }

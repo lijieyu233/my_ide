@@ -5,6 +5,7 @@ const {app,BrowserWindow,webContents,shell,Menu,ipcMain,nativeImage}=require('el
 const menus=[];Menu.prototype.popup=function(){menus.push(this);};
 const opened=[];let externalFailure=false;shell.openExternal=async target=>{if(externalFailure)throw Error('默认浏览器启动失败夹具');opened.push(target);};
 const translationCalls=[];
+const heldNavigations=new Map();
 let win,page,server,url,passed=0,closing=false;require('../main');require('../src/main/launch/launch-service').saveConfig({apiOrigins:[],entries:[],keepOnExit:false});
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));async function until(fn){const end=Date.now()+30000;while(Date.now()<end){if(await fn())return;await sleep(30);}throw Error('浏览器UI验证超时');}const js=async code=>{const result=await win.webContents.executeJavaScript('(async()=>{try{return await eval('+JSON.stringify(code)+')}catch(error){return {checkError:error.stack};}})()');if(result?.checkError)throw Error(result.checkError);return result;};
 const test=async(name,fn)=>{await fn();passed++;console.log('PASS '+name);};
@@ -17,7 +18,16 @@ async function capture(name){
 const watchdog=setTimeout(()=>cleanup(2),120000);
 function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);server?.close();if(path.dirname(temp)!==path.resolve(os.tmpdir())||!path.basename(temp).startsWith('myide-browser-ui-check-'))throw Error('清理越界');const node=require('child_process').execFileSync('node',['-p','process.execPath'],{encoding:'utf8'}).trim();require('child_process').spawn(node,['-e','const fs=require("fs");setTimeout(()=>fs.rmSync(process.argv[1],{recursive:true,force:true,maxRetries:8,retryDelay:300}),1200)',temp],{detached:true,stdio:'ignore',windowsHide:true}).unref();app.exit(code);}
 (async()=>{
-  server=http.createServer((_req,res)=>{if(_req.url.endsWith('/chat/completions')){let body='';_req.on('data',chunk=>body+=chunk);_req.on('end',()=>{const data=JSON.parse(body);translationCalls.push({url:_req.url,key:_req.headers.authorization,...data});res.setHeader('Content-Type','application/json');res.end(JSON.stringify({choices:[{message:{content:'实际HTTP译文：'+data.model}}]}));});return;}if(_req.url==='/redirect'){res.writeHead(302,{Location:'/landing'});res.end();return;}res.setHeader('Content-Type','text/html; charset=utf-8');res.end('<title>浏览器全屏验证</title><h1>浏览器全屏验证</h1><input placeholder="网页输入框"><p>退出全屏后保持当前页面</p>');});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));url='http://127.0.0.1:'+server.address().port;
+  server=http.createServer((_req,res)=>{if(_req.url.endsWith('/chat/completions')){let body='';_req.on('data',chunk=>body+=chunk);_req.on('end',()=>{const data=JSON.parse(body);translationCalls.push({url:_req.url,key:_req.headers.authorization,...data});res.setHeader('Content-Type','application/json');res.end(JSON.stringify({choices:[{message:{content:'实际HTTP译文：'+data.model}}]}));});return;}
+    if(_req.url.startsWith('/slow-')){
+      heldNavigations.set(_req.url,()=>{
+        heldNavigations.delete(_req.url);
+        res.writeHead(302,{Location:'/landing'});
+        res.end();
+      });
+      return;
+    }
+    if(_req.url==='/redirect'){res.writeHead(302,{Location:'/landing'});res.end();return;}res.setHeader('Content-Type','text/html; charset=utf-8');res.end('<title>浏览器全屏验证</title><h1>浏览器全屏验证</h1><input placeholder="网页输入框"><p>退出全屏后保持当前页面</p>');});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));url='http://127.0.0.1:'+server.address().port;
   await app.whenReady();await until(()=>{win=BrowserWindow.getAllWindows().find(w=>w.webContents.getURL().includes('renderer/index.html')&&!w.webContents.isLoading());return win;});assert(!win.isVisible());win.setContentSize(1440,900);
   await test('设置即时保存后经生产IPC和真实HTTP使用当前地址模型Key，设置返回保留原文',async()=>{
     await js('Translate.setConfig({baseUrl:'+JSON.stringify(url+'/first/v1')+',model:"first",apiKey:"fixture-first"});Translate.run("granite");true');
@@ -249,6 +259,33 @@ function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);ser
     // 隐藏窗口没有OS键盘焦点，直接送入真实WebContents上的输入事件回调，核对跨进程转发。
     let prevented=false;page.emit('before-input-event',{preventDefault:()=>{prevented=true;}},{type:'keyDown',key:'Escape'});await until(()=>js('!BrowserPanel.fullscreen'));assert(prevented);
     page.emit('before-input-event',{preventDefault:()=>{}},{type:'keyDown',key:'F11',control:false,alt:false,shift:false});await until(()=>js('BrowserPanel.fullscreen'));await js('App.showTool("project");true');await until(()=>js('!BrowserPanel.fullscreen&&!document.body.classList.contains("browser-fullscreen")'));assert(!win.isVisible());await js('App.showTool("browser");true');assert(await js('document.getElementById("bw-dd").classList.contains("hidden")'));
+  });
+  await test('网页加载期间用默认浏览器打开当前标签的目标地址',async()=>{
+    const previousTab=await js('BrowserPanel.activeTabId');
+    try {
+      for(const route of ['/slow-new-tab','/slow-same-tab']){
+        const target=url+route;
+        const existing=route==='/slow-same-tab';
+        await js('BrowserPanel.'+(existing?'go':'newTab')+'('+JSON.stringify(target)+');true');
+        await until(()=>heldNavigations.has(route));
+        const activePage=win.contentView.children[0].webContents;
+        assert.equal(activePage.getURL(),existing?url+'/landing':'');
+        assert.equal(await js('document.getElementById("bw-url").value'),target);
+        assert.equal(await js('document.getElementById("bw-open-default").disabled'),false);
+        await js('document.getElementById("bw-open-default").click();true');
+        await until(()=>opened.length>0||js('!document.getElementById("bw-open-default").disabled'));
+        assert.equal(opened.pop(),target);
+        heldNavigations.get(route)();
+        await until(()=>activePage.getURL()===url+'/landing'&&!activePage.isLoading());
+      }
+      const committed=await js('myIDE.browser.openDefault()');
+      assert.equal(committed.ok,true);
+      assert.equal(opened.pop(),url+'/landing');
+    } finally {
+      for(const finish of heldNavigations.values())finish();
+      const activeTab=await js('BrowserPanel.activeTabId');
+      if(activeTab!==previousTab)await js('BrowserPanel.closeTabs('+JSON.stringify([activeTab])+');BrowserPanel.activateTab('+JSON.stringify(previousTab)+');true');
+    }
   });
   await test('默认浏览器按钮打开重定向后的真实网址，不打开草稿，启动失败能反馈',async()=>{
     await js('BrowserPanel.go('+JSON.stringify(url+'/redirect')+');true');await until(()=>page.getURL()===url+'/landing'&&!page.isLoading());await until(()=>js('!document.getElementById("bw-open-default").disabled'));
