@@ -115,6 +115,62 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  let releaseStatus;
  if (lifecycleOnly) statusGate = new Promise(resolve => { releaseStatus = resolve; });
  await js(async root=>{Object.defineProperty(document,'hidden',{value:false,configurable:true});await App.setRoot(root);App.showAi();await AiPanel.setConfig({engine:'codex',autoIdeContext:false,injectMyideRules:false});return true;},roots[0]);await until(()=>js(()=>AiPanel.aiState().dshState==='ready'),'Codex options');check('Codex connects in existing mode selector and shows native model',await js(()=>document.getElementById('ai-engine').value==='codex'&&document.getElementById('ai-model').textContent.includes('Codex offline fixture')));check('inspect never creates a thread or starts a turn',!fixture.requests.some(r=>['thread/start','turn/start'].includes(r.method)));
+ if (process.argv.includes('--codex-project-archive-only')) {
+   const project='archive-project', empty='empty-archive-project';
+   const active='019caa00-0000-7000-8000-000000000074', archived='019caa00-0000-7000-8000-000000000075';
+   fixture.projects.push({id:project,name:'Project with chats',roots:[{path:roots[0]}]},
+     {id:empty,name:'Empty project',roots:[{path:roots[1]}]});
+   for (const [id, isArchived] of [[active,false],[archived,true]]) {
+     fixture.threads.set(id,{id,projectId:project,cwd:roots[0],model:'offline-codex',historyMode:'paginated',
+       name:isArchived?'Archived chat':'Active chat',updatedAt:1710000000,running:false,archived:isArchived,
+       items:[{type:'agentMessage',text:'Original transcript'}]});
+   }
+   const hasGroup=id=>js(id=>!!document.querySelector('[data-codex-project="'+id+'"]'),id);
+   const menuAction=(label, projectId)=>js((label,id)=>{
+     if (id) {
+       const target=document.querySelector('[data-codex-project="'+id+'"] [data-hist-toggle]');
+       const bounds=target.getBoundingClientRect();
+       target.dispatchEvent(new MouseEvent('contextmenu',{button:2,bubbles:true,cancelable:true,
+         clientX:bounds.left+16,clientY:bounds.top+6}));
+     } else document.querySelector('[data-hist-options]').click();
+     [...document.querySelectorAll('#ctx-menu button')].find(button=>button.textContent===label).click();
+   },label,projectId);
+   await js(()=>App.showTool('sessions'));
+   await until(()=>hasGroup(empty),'project catalog');
+   await js((project,id)=>{
+     const toggle=document.querySelector('[data-codex-project="'+project+'"] [data-hist-toggle]');
+     if(toggle.getAttribute('aria-expanded')==='false')toggle.click();
+     document.querySelector('[data-id="codex:'+id+'"] .ai-hist-open').click();
+   },project,active);
+   await until(()=>js(id=>AiPanel.aiState().current==='codex:'+id&&AiPanel.aiState().dshState==='ready',active),'existing conversation ready');
+   await menuAction('归档',project);
+   await menuAction('归档',empty);
+   check('Archiving populated and empty projects hides them without switching or moving the open chat',
+     await js((ids,session,root)=>ids.every(id=>!document.querySelector('[data-codex-project="'+id+'"]'))&&
+       !document.querySelector('[data-id="codex:'+session+'"]')&&AiPanel.aiState().current==='codex:'+session&&App.root===root,
+       [project,empty],active,roots[0]));
+   await menuAction('查看已归档');
+   check('Archived projects keep their original grouping, including an empty project',
+     await js((project,empty,ids)=>!!document.querySelector('[data-codex-project="'+empty+'"]')&&
+       ids.every(id=>document.querySelector('[data-id="codex:'+id+'"]').closest('[data-codex-project]').dataset.codexProject===project),
+       project,empty,[active,archived]));
+   await capture('codex-project-archive');
+   await win.webContents.reload();
+   await until(()=>js(()=>typeof App?.showTool==='function'&&!!document.getElementById('btn-open').onclick).catch(()=>false),'renderer reloaded');
+   await js(()=>App.showTool('sessions'));
+   await until(()=>js(()=>!document.querySelector('[data-hist-refresh]').disabled),'archive catalog refreshed');
+   await menuAction('查看已归档');
+   await until(()=>hasGroup(empty),'archived empty project survived reload');
+   await menuAction('取消归档',empty);
+   await menuAction('取消归档',project);
+   await menuAction('返回会话列表');
+   check('Restoring projects restores active chats and keeps individual archived chats archived',
+     await hasGroup(empty)&&await js((project,live,archived)=>!!document.querySelector('[data-codex-project="'+project+'"] [data-id="codex:'+live+'"]')&&
+       !document.querySelector('[data-id="codex:'+archived+'"]'),project,active,archived)&&
+     !fixture.requests.some(request=>['thread/archive','thread/unarchive','project/update','project/delete'].includes(request.method)));
+   await finish(0);
+   return;
+ }
  if (process.argv.includes('--codex-visualization-only')) {
    const id = '019caa00-0000-7000-8000-000000000003';
    fixture.projects.push({id:'viz-project',name:'演示项目',roots:[{path:roots[1]}]});

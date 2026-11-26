@@ -4133,7 +4133,7 @@ const AiPanel = (() => {
     const running = new Set();
     for (const item of catalog) {
       const archived = item.archived === true;
-      if (archived !== codexArchiveOnly) continue;
+      if ((archived || codexArchivedProjects.has(item.projectId)) !== codexArchiveOnly) continue;
       all.push({ id: item.localId, codexThreadId: item.threadId, codexProjectId: item.projectId,
         title: item.title, archived, rootDir: item.rootDir, ts: item.ts, virtual: true });
       if (!archived && (item.running || currentRun?.status === 'active' && curSessionId === item.localId ||
@@ -4253,6 +4253,21 @@ const AiPanel = (() => {
   const historyRowsMarkup = new WeakMap();
   const otherWorkspacesKey = Symbol(), flatHistoryKey = Symbol(), codexRecentKey = Symbol();
   const codexProjectKey = id => 'codex-project:' + id;
+  const codexProjectArchiveKey = 'myide-codex-archived-projects';
+  let codexArchivedProjects = new Set();
+  try {
+    const saved = JSON.parse(localStorage.getItem(codexProjectArchiveKey));
+    if (Array.isArray(saved)) codexArchivedProjects = new Set(saved.filter(id => typeof id === 'string' && id));
+  } catch {}
+
+  function setCodexProjectArchived(projectId, archived) {
+    const next = new Set(codexArchivedProjects);
+    if (archived) next.add(projectId);
+    else next.delete(projectId);
+    localStorage.setItem(codexProjectArchiveKey, JSON.stringify([...next]));
+    codexArchivedProjects = next;
+    refreshHistInPlace();
+  }
   const codexExpansionKey = 'myide-codex-sidebar-expansion';
   const codexExpansionId = key => key === codexRecentKey ? 'recent' : key;
   const codexExpansion = new Map();
@@ -4636,21 +4651,24 @@ const AiPanel = (() => {
 
   function showHistoryWorkspaceMenu(head, x, y) {
     const group = head.closest('.ai-hist-group'), rootDir = group?.dataset.root;
-    if (!rootDir || !histSidebarVisible || head.closest('[hidden], .hidden')) return false;
+    const projectId = group?.dataset.codexProject;
+    if ((!rootDir && !projectId) || !histSidebarVisible || head.closest('[hidden], .hidden')) return false;
     const anchor = head.querySelector('[data-hist-toggle]:enabled, [data-hist-jump]') || head.querySelector('button');
     const scope = sessKey(), engine = getConfig().engine;
     const sameScope = () => histSidebarVisible && scope === sessKey() && engine === getConfig().engine;
     const current = anchor => sameScope() && anchor.isConnected;
-    const actions = [{ label: '在资源管理器中显示', run: () => window.myIDE.shell.showInFolder(rootDir) }];
-    if (engine === 'codex' && group.dataset.codexProject) {
-      const projectId = group.dataset.codexProject;
-      actions.unshift({ label: '在 Codex 中打开', run: async () => {
-        const result = await window.myIDE.ai.codexDesktopProject(getConfig(), projectId);
-        if (!result?.ok) MI.toast(result?.error || '无法打开 Codex 项目', 'err');
-      } });
+    const actions = rootDir ? [{ label: '在资源管理器中显示', run: () => window.myIDE.shell.showInFolder(rootDir) }] : [];
+    if (engine === 'codex' && projectId) {
       const project = currentCodexCatalog()?.projects.find(item => item.id === projectId);
-      if (project?.roots[0]) actions.unshift({ label: '新建会话', run: () => startNewSession(project) });
-      if (project) actions.push({ label: '重命名', run: async anchor => {
+      const archived = codexArchivedProjects.has(projectId);
+      const archiveAction = { label: archived ? '取消归档' : '归档', run: () => setCodexProjectArchived(projectId, !archived) };
+      if (!archived && project?.roots[0]) actions.unshift({ label: '新建会话', run: () => startNewSession(project) }, {
+        label: '在 Codex 中打开', run: async () => {
+          const result = await window.myIDE.ai.codexDesktopProject(getConfig(), projectId);
+          if (!result?.ok) MI.toast(result?.error || '无法打开 Codex 项目', 'err');
+        },
+      });
+      if (!archived && project) actions.push({ label: '重命名', run: async anchor => {
         const title = (await editHistoryName(anchor, '项目名称', project.title))?.trim();
         if (!title || title === project.title || !sameScope()) return;
         const config = getConfig(), launcher = config.codexPath || '';
@@ -4664,6 +4682,7 @@ const AiPanel = (() => {
         refreshHistInPlace();
         void refreshCodexCatalog({ background: true });
       } });
+      actions.push(archiveAction);
     }
     if (engine === 'dsh') {
       const workspace = catalogUsable() && dshCatalog.workspaces.get(pathKey(rootDir));
@@ -4752,6 +4771,7 @@ const AiPanel = (() => {
           const draftProject = binding && codexProjectKey(binding.projectId);
           if (registered.has(draftProject)) key = draftProject;
         }
+        if (!codexArchiveOnly && codexArchivedProjects.has(registered.get(key)?.id)) continue;
       }
       if (running.has(session.id)) runningGroups.add(key);
       if (historyReplyUnread(config.engine, session)) {
@@ -4764,7 +4784,12 @@ const AiPanel = (() => {
     }
     if (!flat && !narrow) {
       for (const key of [...opened.keys(), ...registered.keys()]) {
-        if (!groups.has(key)) groups.set(key, []);
+        if (!groups.has(key) && (!codex || !codexArchivedProjects.has(registered.get(key)?.id))) groups.set(key, []);
+      }
+    }
+    if (codex && codexArchiveOnly) {
+      for (const [key, project] of registered) {
+        if (codexArchivedProjects.has(project.id) && !groups.has(key) && project.title.toLowerCase().includes(query)) groups.set(key, []);
       }
     }
     const manual = dsh && historyPrefs.sort === 'manual';
@@ -4820,7 +4845,7 @@ const AiPanel = (() => {
         (depth ? ' style="padding-inline-start:' + depth * 14 + 'px"' : '') +
         (collapsed || isOther && !showOther ? ' hidden' : '') + '>' +
         (flat ? '' : '<div class="ai-hist-group-head"' + (codex && !recent && !narrow ? codexSortAttributes('projects', key) : '') + '><button type="button" class="ai-hist-group-title" data-hist-toggle aria-expanded="' + expanded + '" aria-controls="' + childId + '"' + (editorCurrent ? ' aria-current="location"' : '') +
-          (groupState ? ' aria-label="' + esc(groupName + '，' + groupState) + '"' : '') + (items.length || hasChildren ? '' : ' disabled') + ' title="' + esc(
+          (groupState ? ' aria-label="' + esc(groupName + '，' + groupState) + '"' : '') + (codex || items.length || hasChildren ? '' : ' disabled') + ' title="' + esc(
           workspace?.createdAt ? groupRoot + '\n创建于 ' + new Date(workspace.createdAt).toLocaleString() :
           groupRoot || (unassigned ? 'DSH 未提供可用的工作区目录' : groupName)) + '">' +
         '<span class="ai-hist-workspace-icon">' + historyIcon(historyGroupIcon(expanded, recent)) + '</span>' +
@@ -5031,6 +5056,7 @@ const AiPanel = (() => {
       if (toggle) {
         const group = toggle.closest('.ai-hist-group');
         const items = group.querySelector('.ai-hist-items');
+        if (codexProjectHistory() && !items.childElementCount) return;
         if (getConfig().engine === 'dsh' && historyPrefs.group === 'tree' && !historySearch && historyPrefs.archive !== 'archived') {
           const state = historyWorkspaces.get(historyGroupKey(group));
           state.expanded = !state.expanded;
