@@ -16,11 +16,8 @@ const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myide-antigr
 const profile = path.join(temp, 'profile');
 const unrelated = path.join(temp, '编辑目录');
 fs.mkdirSync(unrelated);
-if (!live) {
-  os.homedir = () => temp;
-  process.env.HOME = process.env.USERPROFILE = temp;
-}
-process.env.CODEX_HOME = path.join(temp, 'codex-home');
+// Isolate the MyIDE settings mirror without changing the official CLI login environment.
+os.homedir = () => temp;
 app.setPath('userData', profile);
 process.argv.push('--headless');
 for (const flag of ['disable-background-timer-throttling', 'disable-renderer-backgrounding', 'disable-backgrounding-occluded-windows']) {
@@ -120,6 +117,9 @@ const watchdog = setTimeout(() => { console.error('Antigravity UI watchdog expir
     return pilot;
   }, verifyMcp);
   assert.equal(pilot.ok, true, JSON.stringify(pilot));
+  const storage = await page(() => window.myIDE.settings.probe());
+  assert.equal(storage.userData, profile);
+  assert.equal(storage.mirror, path.join(temp, '.myide', 'settings.json'));
   await until(() => page(() => AiPanel.aiState().dshState === 'ready'), 'ACP connected');
   assert.equal(await page(() => document.getElementById('ai-engine').value), 'antigravity');
   if (verifyMcp) {

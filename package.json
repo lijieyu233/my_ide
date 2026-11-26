@@ -38,6 +38,7 @@
     "check:ai-stream": "node scripts/run-electron-check.js check-ai-stream-responsiveness.js",
     "check:ai-codex": "node scripts/run-electron-check.js check-ai-codex.js",
     "check:ai-codex-live": "node scripts/check-ai-codex-live.js",
+    "preview:antigravity": "electron --disable-gpu --no-sandbox scripts/start-antigravity-preview.js",
     "check:ai-antigravity": "node scripts/run-electron-check.js check-ai-antigravity.js",
     "check:ai-antigravity-live": "node scripts/check-ai-antigravity-live.js",
     "test:antigravity": "node --test tests/antigravity-runtime.test.js tests/antigravity-transport.test.js tests/antigravity-ipc.test.js tests/antigravity-project-mcp.test.js && node tests/ai-antigravity.test.js && node tests/ai-antigravity-panel.test.js && node tests/ai-antigravity-settings.test.js",
