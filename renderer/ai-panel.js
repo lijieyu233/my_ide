@@ -301,6 +301,7 @@ const AiPanel = (() => {
     followPath = null;
     ctxFiles = ctxFiles.filter(f => !f.auto);
     closeMention();
+    closeSkill();
     renderChips(); renderUsage();
     if (dshWatch && (!dshWatchWanted(dshWatch) || dshScopeMismatch())) resetDshWatch();
     if (page.projectContext) followActive();
@@ -2865,7 +2866,8 @@ const AiPanel = (() => {
       // 原生会话已有历史；这里只发送本次原话和明确选中的资料，不拼接自动跟随文件、系统提示或旧工具。
       return latest?[{role:'user',content:latest._text!==undefined
         ? userContent(latest._text, latest._imgs)
-        : latest.content,_dshAttachments:latest._dshAttachments||[]}]:[];
+        : latest.content,_dshAttachments:latest._dshAttachments||[],
+        ...(getConfig().engine === 'codex' && latest._codexSkills ? { _codexSkills: latest._codexSkills } : {}) }]:[];
     }
     msgs=repairToolHistory(msgs);
     const cfg = getConfig();
@@ -2940,7 +2942,7 @@ const AiPanel = (() => {
     const text = inputEl.value.trim();
     if (!hasInputDraft(text)) return null;
     const files=effectiveCtxFiles().filter(file=>!file.auto).map(file=>({...file})),imgs=pendingImages.slice();
-    return {key:inputViewKey(),scope:inputScopeKey(),page:{...currentPage()},revision:inputDraftRevision,raw:inputEl.value,text,imgs,message:{role:'user',content:userContent(text, imgs),_text:text,_imgs:imgs,_dshAttachments:files.map(file=>({path:file.path,kind:file.special==='clip'?'clipboard':file.isDir?'directory':'file',content:file.content}))}};
+    return {key:inputViewKey(),scope:inputScopeKey(),page:{...currentPage()},revision:inputDraftRevision,raw:inputEl.value,text,imgs,message:{role:'user',content:userContent(text, imgs),_text:text,_imgs:imgs,...skillMessageFields(),_dshAttachments:files.map(file=>({path:file.path,kind:file.special==='clip'?'clipboard':file.isDir?'directory':'file',content:file.content}))}};
   }
   function clearAcceptedDraft(draft){
     if(!draft||draft.cleared||draft.key!==inputViewKey())return;
@@ -2973,6 +2975,9 @@ const AiPanel = (() => {
     renderSendButton(b);
     renderObservedCodexQuestion();
     const codex = getConfig().engine === 'codex';
+    if (inputEl) inputEl.placeholder = codex && window.myIDE.ai.codexSkills
+      ? '发送消息，@ 引用文件，/ 命令，$ 技能'
+      : '发送消息，@ 引用文件，/ 使用命令';
     if (codex) {
       const effort = document.getElementById('ai-dsh-reasoning');
       if (effort) effort.disabled = !effort.options.length || !codexEffortEditable();
@@ -3212,6 +3217,7 @@ const AiPanel = (() => {
     const text = continuation ? '继续' : (inputEl.value || '').trim();
     if (!hasInputDraft(text)) return;
     const cfg = getConfig();
+    const skills = skillMessageFields();
     if (!nativeEngine(cfg.engine)&&(!cfg.baseUrl || !cfg.model)) {
       MI.toast('请先配置服务地址与模型', 'err');
       Settings.open('ai');
@@ -3235,6 +3241,7 @@ const AiPanel = (() => {
     messageNavigation?.resume();
     agentRounds = 0;   // 新任务重置 Agent 循环计数
     closeSlash();
+    closeSkill();
     if (!run.initialInputDraft) compressHistory(); // 补充消息已锁定自己的附件，由宿主管理历史
     renderUsage();
     if (cfg.engine === 'codex') {
@@ -3265,6 +3272,7 @@ const AiPanel = (() => {
     const contextFreeText = clips.concat(text).join('\n\n');
     const hasProjectContext = files.some(f=>f.special !== 'clip');
     const userMessage = { role: 'user', content, _ui: mid, _text: text, _imgs: imgs,
+      ...skills,
       ...(nativeEngine(cfg.engine)?{_dshAttachments:files.map(f=>({path:f.path,kind:f.special==='clip'?'clipboard':f.isDir?'directory':'file',content:f.content}))}:{}),
       _hasProjectContext:hasProjectContext, ...(hasProjectContext ? {_contextFreeContent:userContent(contextFreeText, imgs)} : {}) };
     msgs.push(userMessage);
@@ -5824,7 +5832,7 @@ const AiPanel = (() => {
     const draft = sessionDrafts.get(newKey);
     if (inputEl) inputEl.value = draft?.text || '';
     pendingImages = draft?.images || []; ctxFiles = draft?.files || []; followPath = null;
-    closeMention(); closeSlash(); autoGrowInput(); renderImages(); renderChips();
+    closeMention(); closeSlash(); closeSkill(); autoGrowInput(); renderImages(); renderChips();
   }
   function beginDshSessionLoad(id,hostId,foreign = null) {
     resetDshWatch();
@@ -6093,7 +6101,7 @@ const AiPanel = (() => {
     loadedSessionKey=nextKey;
     if(!retained)clearSessionPermissions();
     refreshPermissions().catch(error=>MI.toast(error.message,'err'));
-    closeMention(); closeSlash(); closePermPop(); aiContextMenu?.close();
+    closeMention(); closeSlash(); closeSkill(); closePermPop(); aiContextMenu?.close();
     msgs = [];
     curSessionId = null;
     dshSessionAccess = null;
@@ -6743,6 +6751,150 @@ const AiPanel = (() => {
     return false;
   }
 
+  let skillMenu = null;
+  const pickedSkills = new Map();
+  const skillScope = () => JSON.stringify([inputScopeKey(), getConfig().codexPath || '']);
+
+  function skillMessageFields() {
+    const picks = getConfig().engine === 'codex' && pickedSkills.get(skillScope());
+    return picks?.size ? { _codexSkills: [...picks.values()] } : {};
+  }
+
+  function activeSkillToken() {
+    if (getConfig().engine !== 'codex' || !window.myIDE.ai.codexSkills ||
+        inputEl.selectionStart !== inputEl.selectionEnd) return null;
+    const caret = inputEl.selectionStart;
+    const match = /(?:^|\s)\$([\p{L}\p{N}_-]*)$/u.exec(inputEl.value.slice(0, caret));
+    if (!match) return null;
+    const tail = /^[\p{L}\p{N}_-]*/u.exec(inputEl.value.slice(caret))[0];
+    return { start: caret - match[1].length - 1, end: caret + tail.length, query: match[1] };
+  }
+
+  function closeSkill() {
+    if (!skillMenu) return;
+    skillMenu.popup.remove();
+    inputEl.removeAttribute('aria-controls');
+    inputEl.removeAttribute('aria-activedescendant');
+    skillMenu = null;
+  }
+
+  function renderSkillMenu(menu) {
+    const query = menu.token.query.toLowerCase();
+    const matches = (menu.catalog || []).filter(skill =>
+      [skill.name, skill.title, skill.description].some(value => value?.toLowerCase().includes(query)));
+    menu.items = matches.slice(0, 50);
+    menu.selected = Math.max(0, Math.min(menu.selected, menu.items.length - 1));
+    menu.list.replaceChildren();
+    inputEl.removeAttribute('aria-activedescendant');
+    if (!menu.items.length) {
+      const status = document.createElement('div');
+      status.className = 'ai-at-empty';
+      status.setAttribute('role', 'status');
+      status.textContent = menu.error || (menu.catalog ? '没有匹配的技能' : '正在读取技能…');
+      menu.list.appendChild(status);
+      return;
+    }
+    for (const [index, skill] of menu.items.entries()) {
+      const selected = index === menu.selected;
+      const source = skill.pluginId ? '来自 ' + skill.pluginId.split('@')[0] :
+        ({ repo: '项目', system: '内置', admin: '管理员' }[skill.scope] || '本地文件');
+      const row = document.createElement('div');
+      row.className = 'ai-at-item' + (selected ? ' sel' : '');
+      row.id = 'ai-skill-option-' + index;
+      row.setAttribute('role', 'option');
+      row.setAttribute('aria-selected', String(selected));
+      row.title = [skill.title, skill.description, source].filter(Boolean).join('\n');
+      row.innerHTML = '<svg class="ic ai-at-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2 14 5 8 8 2 5Z M2 8l6 3 6-3 M2 11l6 3 6-3" fill="none" stroke="currentColor" stroke-linejoin="round"/></svg>' +
+        '<span class="ai-at-name">' + esc(skill.title) + '</span>' +
+        '<span class="ai-at-rel">' + esc(skill.description) + '</span>' +
+        '<span class="ai-at-ic">' + esc(source) + '</span>';
+      row.onclick = () => pickSkill(menu, index);
+      menu.list.appendChild(row);
+      if (selected) inputEl.setAttribute('aria-activedescendant', row.id);
+    }
+    menu.list.children[menu.selected]?.scrollIntoView?.({ block: 'nearest' });
+  }
+
+  function onInputSkill() {
+    const token = activeSkillToken();
+    if (!token) { closeSkill(); return false; }
+    const scope = skillScope();
+    if (skillMenu?.scope === scope) {
+      skillMenu.token = token;
+      skillMenu.selected = 0;
+      renderSkillMenu(skillMenu);
+      return true;
+    }
+    closeSkill();
+    closeMention();
+    closeSlash();
+    const popup = document.createElement('div');
+    popup.className = 'ai-at-pop ai-skill-pop';
+    popup.innerHTML = '<div id="ai-skill-list" class="ai-at-list" role="listbox" aria-label="Codex 技能"></div>';
+    popup.addEventListener('mousedown', event => event.preventDefault());
+    (inputEl.closest('.ai-input-bar') || panel).appendChild(popup);
+    inputEl.setAttribute('aria-controls', 'ai-skill-list');
+    const menu = skillMenu = { popup, list: popup.firstElementChild, token, scope, selected: 0 };
+    renderSkillMenu(menu);
+    const { sessionId, rootId, foreignHostId } = dshView();
+    window.myIDE.ai.codexSkills(getConfig(), { sessionId, rootId, foreignHostId }).then(result => {
+      if (result?.ok && Array.isArray(result.skills)) menu.catalog = result.skills;
+      else menu.error = result?.error || '无法读取 Codex 技能';
+    }).catch(() => { menu.error = '无法读取 Codex 技能'; }).then(() => {
+      if (skillMenu === menu && skillScope() === scope) renderSkillMenu(menu);
+    });
+    return true;
+  }
+
+  function pickSkill(menu, index) {
+    const token = activeSkillToken(), skill = menu.items[index];
+    if (menu !== skillMenu || menu.scope !== skillScope() || !token || !skill) return;
+    if (token.start !== menu.token.start || token.query !== menu.token.query) return;
+    let picks = pickedSkills.get(menu.scope);
+    if (!picks) {
+      picks = new Map();
+      if (pickedSkills.size >= 24) pickedSkills.delete(pickedSkills.keys().next().value);
+      pickedSkills.set(menu.scope, picks);
+    }
+    picks.set(skill.name, { name: skill.name, path: skill.path });
+    closeSkill();
+    const trailingSpace = /^\s/.test(inputEl.value.slice(token.end));
+    inputEl.setRangeText('$' + skill.name + (trailingSpace ? '' : ' '), token.start, token.end, 'end');
+    if (trailingSpace) inputEl.setSelectionRange(inputEl.selectionStart + 1, inputEl.selectionStart + 1);
+    inputEl.focus();
+    inputDraftRevision++;
+    autoGrowInput();
+    renderNativeInputUI();
+  }
+
+  function onKeydownSkill(event) {
+    const menu = skillMenu;
+    if (!menu) return false;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeSkill();
+      return true;
+    }
+    const token = activeSkillToken();
+    if (!token || token.start !== menu.token.start || token.query !== menu.token.query || menu.scope !== skillScope()) {
+      closeSkill();
+      return false;
+    }
+    if (!menu.items.length) return false;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      menu.selected += event.key === 'ArrowDown' ? 1 : -1;
+      renderSkillMenu(menu);
+      return true;
+    }
+    if ((event.key === 'Tab' || event.key === 'Enter') && !event.shiftKey) {
+      event.preventDefault();
+      pickSkill(menu, menu.selected);
+      return true;
+    }
+    return false;
+  }
+
   // ---------- 面板宽度拖拽 ----------
   function initResize() {
     const grip = document.getElementById('ai-resize');
@@ -7190,15 +7342,17 @@ const AiPanel = (() => {
       autoGrowInput();
       // 输入框获得焦点时同步「正在看哪个文件」（用户可能刚切过标签）
       inputEl.addEventListener('focus', () => { followActive(); });
+      inputEl.addEventListener('blur', closeSkill);
       inputEl.addEventListener('input', () => {
         inputDraftRevision++;autoGrowInput();renderNativeInputUI();
+        if (onInputSkill()) return;
         if (onInputSlash()) return;   // 打 / 开头 = 命令补全
         onInputMention();             // 否则看是不是 @ 引用
       });
       inputEl.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && (e.isComposing || e.keyCode === 229 || e.altKey || e.metaKey)) return;
         const insert = e.key === 'Enter' && e.ctrlKey && !e.shiftKey;
-        if (!insert && (onKeydownSlash(e) || onKeydownMention(e))) return;
+        if (!insert && !e.isComposing && e.keyCode !== 229 && (onKeydownSkill(e) || onKeydownSlash(e) || onKeydownMention(e))) return;
         if (e.key !== 'Enter' || e.shiftKey) return;
         e.preventDefault();
         const running = codexRunningInput() || (getConfig().engine === 'dsh' && (busy || dshObservedRunning()));

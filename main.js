@@ -950,6 +950,17 @@ async function codexHistoryConfig(event, cfg) {
   const engine = await event.sender.executeJavaScript('AiPanel.getConfig().engine');
   if (engine !== 'codex' || cfg?.engine !== 'codex') throw Error('当前未连接 Codex');
 }
+ipcMain.handle('ai:codex-skills', async (event, cfg, target) => {
+  try {
+    aiSender(event);
+    if (cfg?.engine !== 'codex') throw Error('当前未连接 Codex');
+    const view = await codexSessionView(event, target);
+    aiSender(event, view);
+    return { ok: true, skills: await CODEX.listSkills(cfg, view) };
+  } catch (error) {
+    return { ok: false, error: error.code === -32601 ? '当前 Codex 版本不支持技能列表' : '无法读取 Codex 技能' };
+  }
+});
 ipcMain.handle('ai:codex-goal', async (event, cfg, target, action) => {
   try {
     aiSender(event);

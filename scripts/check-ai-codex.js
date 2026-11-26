@@ -115,6 +115,59 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  let releaseStatus;
  if (lifecycleOnly) statusGate = new Promise(resolve => { releaseStatus = resolve; });
  await js(async root=>{Object.defineProperty(document,'hidden',{value:false,configurable:true});await App.setRoot(root);App.showAi();await AiPanel.setConfig({engine:'codex',autoIdeContext:false,injectMyideRules:false});return true;},roots[0]);await until(()=>js(()=>AiPanel.aiState().dshState==='ready'),'Codex options');check('Codex connects in existing mode selector and shows native model',await js(()=>document.getElementById('ai-engine').value==='codex'&&document.getElementById('ai-model').textContent.includes('Codex offline fixture')));check('inspect never creates a thread or starts a turn',!fixture.requests.some(r=>['thread/start','turn/start'].includes(r.method)));
+ if (process.argv.includes('--codex-skills-only')) {
+   const input = value => js(value => {
+     const field = document.getElementById('ai-input');
+     field.value = value;
+     field.setSelectionRange(value.length, value.length);
+     field.dispatchEvent(new Event('input', { bubbles: true }));
+   }, value);
+   const key = (key,ctrlKey=false) => js((key,ctrlKey) => document.getElementById('ai-input').dispatchEvent(
+     new KeyboardEvent('keydown', {key,ctrlKey,bubbles:true,cancelable:true})),key,ctrlKey);
+   const options = () => js(() => [...document.querySelectorAll('.ai-skill-pop [role=option]')].map(option => option.textContent));
+   await input('$ui');
+   await until(async()=> (await options()).length===2,'skill choices');
+   check('Skill picker scopes discovery to the active workspace and hides disabled skills',
+     fixture.requests.some(request=>request.method==='skills/list'&&request.params.cwds[0]===roots[0]) &&
+     (await options()).some(option=>option.includes('UI 设计师')&&option.includes('本地文件')) &&
+     (await options()).some(option=>option.includes('来自 design-fixture')));
+   await input('$missing');
+   check('Unmatched text displays an empty skill list',await js(()=>document.querySelector('.ai-skill-pop').textContent.includes('没有匹配的技能')));
+   await key('Escape');
+   check('Escape leaves the draft intact',await js(()=>!document.querySelector('.ai-skill-pop')&&document.getElementById('ai-input').value==='$missing'));
+   await input('$ui');
+   await until(async()=> (await options()).length===2,'reopened skill choices');
+   await capture('codex-skill-picker');
+   await key('ArrowDown');
+   await key('Tab');
+   check('Keyboard selection inserts a token and does not send',await js(()=>document.getElementById('ai-input').value==='$ui-design-expert '&&!document.querySelector('.ai-skill-pop')) &&
+     !fixture.requests.some(request=>request.method==='turn/start'));
+   await input('$ui-design-expert HOLD_CODEX');
+   await key('Enter');
+   await until(()=>fixture.requests.some(request=>request.method==='turn/start'),'turn with skill');
+   const sent = fixture.requests.find(request=>request.method==='turn/start').params.input;
+   check('Turn start sends the exact selected source for duplicate names',
+     sent[0].text==='$ui-design-expert HOLD_CODEX' &&
+     sent.some(item=>item.type==='skill'&&item.name==='ui-design-expert'&&item.path===path.join(roots[0],'plugin','SKILL.md')));
+   await input('$设计师');
+   await until(async()=> (await options()).length===1,'steer skill choices by display name');
+   await js(()=>document.querySelector('.ai-skill-pop [role=option]').click());
+   await input('$ui-design-expert 补充当前轮');
+   await until(()=>js(()=>!document.getElementById('ai-steer-submit').disabled),'turn can receive input');
+   await key('Enter',true);
+   await until(()=>fixture.requests.some(request=>request.method==='turn/steer'),'steer with skill');
+   check('Insertion uses the selected skill without starting a new turn',
+     fixture.requests.filter(request=>request.method==='turn/start').length===1 &&
+     fixture.requests.find(request=>request.method==='turn/steer').params.input.some(item=>item.type==='skill'&&item.path===path.join(roots[0],'personal','SKILL.md')));
+   await until(()=>js(()=>!document.getElementById('ai-input').value),'insertion accepted');
+   await input('$layout-audit 下一轮检查布局');
+   await key('Enter');
+   await until(()=>fixture.requests.some(request=>request.method==='thread/queue/add'),'queue with skill');
+   check('Manually typed unique skills are included in queued messages',
+     fixture.requests.find(request=>request.method==='thread/queue/add').params.input.some(item=>item.type==='skill'&&item.name==='layout-audit'));
+   await finish(0);
+   return;
+ }
  if (process.argv.includes('--codex-project-archive-only')) {
    const project='archive-project', empty='empty-archive-project';
    const active='019caa00-0000-7000-8000-000000000074', archived='019caa00-0000-7000-8000-000000000075';

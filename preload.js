@@ -263,6 +263,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     codexQuestionResult:(context,id,answers)=>ipcRenderer.invoke('ai:codex-question-result',context,id,answers),
     onCodexEvent:callback=>{const listener=(_event,value)=>callback(value);ipcRenderer.on('ai:codex-event',listener);return ()=>ipcRenderer.removeListener('ai:codex-event',listener);},
     codexOptions:(cfg,sessionId,tools,apply)=>ipcRenderer.invoke('ai:codex-options',cfg,sessionId,tools,apply),
+    codexSkills:(cfg,target)=>ipcRenderer.invoke('ai:codex-skills',cfg,target),
     codexSessions:cfg=>ipcRenderer.invoke('ai:codex-sessions',cfg),
     codexGoal:(cfg,target,action)=>ipcRenderer.invoke('ai:codex-goal',cfg,target,action),
     codexInput:(cfg,target,action)=>ipcRenderer.invoke('ai:codex-input',cfg,target,action),

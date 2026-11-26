@@ -1,5 +1,6 @@
 // Offline app-server fixture. Never starts Codex, reads credentials, or executes displayed native tools.
 const {EventEmitter}=require('events'),{PassThrough,Writable}=require('stream');
+const path=require('path');
 function createServer(){
  const control={resumeRetry:null},threads=new Map(),projects=[],requests=[],receipts=[],children=new Set();let threadSeq=0,turnSeq=0,serverSeq=1000;
  const models=[{id:'offline-codex',model:'offline-codex',displayName:'Codex offline fixture',isDefault:true,defaultReasoningEffort:'medium',supportedReasoningEfforts:[{reasoningEffort:'medium',description:'medium'},{reasoningEffort:'high',description:'high'}]}];
@@ -45,6 +46,12 @@ function createServer(){
    if(message.method==='account/read')return reply(message.id,{account:{type:'apiKey'},requiresOpenaiAuth:false});
    if(message.method==='account/gatewayOAuth/read')return reply(message.id,{providerId:'openai',providerName:'OpenAI',required:false,status:null,error:null});
    if(message.method==='model/list')return reply(message.id,{data:models,nextCursor:null});
+   if(message.method==='skills/list')return reply(message.id,{data:p.cwds.map(cwd=>({cwd,errors:[],skills:[
+    {name:'ui-design-expert',path:path.join(cwd,'personal','SKILL.md'),scope:'user',enabled:true,interface:{displayName:'UI 设计师',shortDescription:'评审界面布局与交互'}},
+    {name:'ui-design-expert',path:path.join(cwd,'plugin','SKILL.md'),scope:'user',enabled:true,pluginId:'design-fixture@local',interface:{displayName:'插件界面专家'}},
+    {name:'ui-disabled',path:path.join(cwd,'disabled','SKILL.md'),scope:'repo',enabled:false},
+    {name:'layout-audit',path:path.join(cwd,'.agents','skills','layout-audit','SKILL.md'),scope:'repo',enabled:true},
+   ]}))});
    if(message.method==='project/list')return reply(message.id,{data:projects,nextCursor:null});
    if(message.method==='project/update'){
     const project=projects.find(item=>item.id===p.projectId);

@@ -420,6 +420,53 @@ function createService(options={}){
   }
   const historyRequest = conn => (method, params) => conn.rpc.request(method, params, options.requestTimeoutMs || 45000);
 
+  async function readSkills(conn, cwd, forceReload = false) {
+    const result = await conn.rpc.request('skills/list', { cwds: [cwd], forceReload }, options.requestTimeoutMs || 6000);
+    const skills = result?.data?.find(entry => typeof entry.cwd === 'string' && norm(entry.cwd) === norm(cwd))?.skills;
+    if (!Array.isArray(skills)) throw Error('Codex 技能列表格式不兼容');
+    return skills.filter(skill => skill?.enabled === true && typeof skill.name === 'string' && /^[\p{L}\p{N}_-]{1,128}$/u.test(skill.name) &&
+        typeof skill.path === 'string' && skill.path && skill.path.length <= 4096)
+      .map(skill => ({
+        name: skill.name,
+        path: skill.path,
+        scope: skill.scope,
+        pluginId: typeof skill.pluginId === 'string' ? skill.pluginId : '',
+        title: String(skill.interface?.displayName || skill.name).slice(0, 200),
+        description: String(skill.interface?.shortDescription || skill.shortDescription || skill.description || '').slice(0, 600),
+      }));
+  }
+
+  async function listSkills(cfg, view) {
+    const root = !reader(view) && view.rootId;
+    const cwd = root || workspace();
+    if (!root) await fs.mkdir(cwd, { recursive: true });
+    return readSkills(await connect(cfg), await canonical(cwd), true);
+  }
+
+  async function addSkillInputs(conn, cwd, input, message) {
+    const text = typeof message.content === 'string' ? message.content :
+      (message.content || []).filter(block => block.type === 'text').map(block => block.text).join('\n');
+    if (!text.includes('$')) return;
+    const mentions = new Set([...text.matchAll(/(?:^|\s)\$([\p{L}\p{N}_-]+)/gu)].map(match => match[1]));
+    if (!mentions.size) return;
+    const picks = new Map();
+    for (const skill of (Array.isArray(message._codexSkills) ? message._codexSkills.slice(0, 50) : [])) {
+      if (mentions.has(skill?.name) && typeof skill.path === 'string') picks.set(skill.name, skill.path);
+    }
+    // Only send a path that the active Codex catalog authorizes for the turn's cwd.
+    const catalog = await readSkills(conn, cwd).catch(error => {
+      if (picks.size) throw Error('无法核对所选 Codex 技能，请用 $ 重新选择', { cause: error });
+      return [];
+    });
+    for (const name of mentions) {
+      const picked = picks.get(name);
+      const candidates = new Set(catalog.filter(skill => skill.name === name).map(skill => skill.path));
+      if (picked && !candidates.has(picked)) throw Error('所选 Codex 技能已不可用，请用 $ 重新选择');
+      const path = picked || (candidates.size === 1 ? candidates.values().next().value : null);
+      if (path) input.push({ type: 'skill', name, path });
+    }
+  }
+
   function localHistoryId(threadId, rootDir) {
     for (const [key, record] of saved) {
       if (record.id !== threadId || norm(record.cwd) !== norm(rootDir)) continue;
@@ -1045,6 +1092,8 @@ function createService(options={}){
     try{
       const input=promptContent(messages,context.page),info=await identity(context);live(run);statusEvent(run,'connecting','正在连接本机 Codex app-server');
       const conn=await connect(cfg);statusEvent(run,'catalog','正在核对 Codex 账号状态与模型目录');const data=await catalog(conn);live(run);if(data.requiresOpenaiAuth&&!data.loggedIn)throw Error('本机 Codex 尚未登录，请在 Codex 官方客户端或 CLI 中登录后重新连接');
+      await addSkillInputs(conn, info.cwd, input, messages.findLast(message => message.role === 'user'));
+      live(run);
       const binding = saved.get(info.key), request = historyRequest(conn);
       if (context.expectedThreadId && binding?.id !== context.expectedThreadId) throw Error('Codex 历史会话身份失配');
       if (binding?.id && info.scope === 'project' && desktopAvailable()) {
@@ -1395,6 +1444,7 @@ function createService(options={}){
     }
     if (!history.inputId(action.requestId)) throw Error('补充消息身份无效');
     const input = promptContent([action.message], context.page);
+    await addSkillInputs(conn, info.cwd, input, action.message);
     const params = { threadId, input, clientUserMessageId: action.requestId };
     if (action.kind === 'steer') {
       const turnId = run?.turnId ?? target.turnId;
@@ -1428,6 +1478,6 @@ function createService(options={}){
   }
   function hasRun(context){return [...runs.values()].some(run=>run.context.sessionId===context?.sessionId&&run.context.rootId===context?.rootId);}
   async function dispose(){if(disposed)return;disposed=true;for(const run of runs.values()){run.aborted=true;run.detached=run.conn?.shared;discardPending(run);resolveRun(run,{status:'interrupted'});}const conn=connection;conn?.rpc.close();conn?.child.kill();if(starting)try{const own=await starting;own.rpc.close();own.child.kill();}catch{}await saving;}
-  return {chat,inspect,listHistory,getHistoryProjectRoot,renameProject,openHistory,openInDesktop,forkHistory,renameHistory,setHistoryArchived,changeInput,changeGoal,status,abort,detach,toolResult,permissionResult,questionResult,dispose,hasRun,stopSharedBackend};
+  return {chat,inspect,listSkills,listHistory,getHistoryProjectRoot,renameProject,openHistory,openInDesktop,forkHistory,renameHistory,setHistoryArchived,changeInput,changeGoal,status,abort,detach,toolResult,permissionResult,questionResult,dispose,hasRun,stopSharedBackend};
 }
 module.exports={createService,promptContent,toolSpecs,configOptions};
