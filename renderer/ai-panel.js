@@ -1656,7 +1656,6 @@ const AiPanel = (() => {
       await window.myIDE.shell.openExternal(target.url);
     } else {
       BrowserPanel.newTab(target.url, '', null, null, { focusPage: false });
-      App.setEditorCollapsed(false);
       App.showTool('browser');
     }
   }
@@ -1781,13 +1780,16 @@ const AiPanel = (() => {
     const href = anchor.getAttribute('href').trim(), target = replyLinkTarget(href);
     if (!target) return;
     const root = window.App?.root;
-    const actions = [
-      { label: '打开链接', run: () => openReplyLink(target) },
-      { label: target.path ? '复制路径' : '复制链接地址', run: async () => {
-        if (!await MI.copyText(target.path ?? target.url)) throw Error('复制失败');
-        MI.toast(target.path ? '已复制路径' : '已复制链接地址', 'ok');
-      } },
-    ];
+    const actions = [{ label: '打开链接', run: () => openReplyLink(target) }];
+    if (target.url && /^https?:\/\//i.test(target.url)) {
+      actions.push({ label: '在外部浏览器打开', run: async () => {
+        if (!await window.myIDE.shell.openExternal(target.url)) throw Error('无法在外部浏览器打开链接');
+      } });
+    }
+    actions.push({ label: target.path ? '复制路径' : '复制链接地址', run: async () => {
+      if (!await MI.copyText(target.path ?? target.url)) throw Error('复制失败');
+      MI.toast(target.path ? '已复制路径' : '已复制链接地址', 'ok');
+    } });
     if (target.path) actions.push({ label: '在资源管理器中显示', run: () => window.myIDE.shell.showInFolder(target.path) });
     showAiContextMenu(anchor, x, y, {
       kind: 'reply', label: '回复链接操作', actions,

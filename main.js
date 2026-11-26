@@ -1508,11 +1508,11 @@ ipcMain.handle('shell:openTerminal', (_e, dir) => {
     return { ok: true };
   } catch (e) { return { error: String(e.message || e) }; }
 });
-ipcMain.handle('shell:openExternal', (_e, url) => {
+ipcMain.handle('shell:openExternal', async (_e, url) => {
   try {
     const u = String(url || '');
     if (/^(https?:|mailto:)/i.test(u)) {
-      shell.openExternal(u);
+      await shell.openExternal(u);
     } else if (/^file:\/\//i.test(u)) {
       // 本地文件（HTML 浏览器打开等）：file:///D:/x/y.html → 系统默认应用打开
       const p = decodeURIComponent(u.replace(/^file:\/\/\/?/i, ''));

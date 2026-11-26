@@ -68,7 +68,7 @@ function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);ser
     assert.equal(await js('BrowserPanel.activeTabId'),tab);
     assert.equal(await page.executeJavaScript('document.querySelector("input").value'),'collapse fixture');
   });
-  await test('会话链接展开编辑区并新开网页，保留会话焦点', async () => {
+  await test('会话链接可用外部浏览器打开，普通点击展开编辑区且保留焦点', async () => {
     const originalTab=await js('BrowserPanel.activeTabId');
     const destination=url+'/chat-link';
     let focusCalls=0;
@@ -91,7 +91,24 @@ function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);ser
       const tab=await js('BrowserPanel.activeTabId');
       assert.notEqual(tab,originalTab);
       await capture('browser-ui-chat-link-focus.png');
-      await js('BrowserPanel.closeTabs(['+JSON.stringify(tab)+']);BrowserPanel.activateTab('+JSON.stringify(originalTab)+');document.getElementById("fixture-chat-link").remove();App.setAiOpen(false);true');
+      const outside=destination+'?source=chat#results';
+      await js('const link=document.querySelector("#fixture-chat-link a");link.href='+JSON.stringify(outside)+';'+
+        'document.getElementById("btn-editor-collapse").click();'+
+        'link.dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true,clientX:1100,clientY:160}));true');
+      assert.equal(await js('App.getTool()'),'browser');
+      assert(await js('document.body.classList.contains("editor-collapsed")'));
+      await capture('browser-ui-chat-link-menu.png');
+      await js('[...document.querySelectorAll("#ctx-menu button")].find(button=>button.textContent==="在外部浏览器打开").click();true');
+      await until(()=>opened.at(-1)===outside);
+      assert.equal(opened.pop(),outside);
+      assert.equal(await js('BrowserPanel.activeTabId'),tab);
+      assert(await js('document.body.classList.contains("editor-collapsed")'));
+      await js('document.querySelector("#fixture-chat-link a").click();true');
+      await until(()=>{const view=win.contentView.children[0];return view?.webContents.getURL()===outside&&!view.webContents.isLoading()&&view.getBounds().width>200;});
+      assert(await js('!document.body.classList.contains("editor-collapsed")&&App.getTool()==="browser"'));
+      assert.equal(focusCalls,0);
+      const reopenedTab=await js('BrowserPanel.activeTabId');
+      await js('BrowserPanel.closeTabs('+JSON.stringify([tab,reopenedTab])+');BrowserPanel.activateTab('+JSON.stringify(originalTab)+');document.getElementById("fixture-chat-link").remove();App.setAiOpen(false);true');
       await until(()=>win.contentView.children[0]?.webContents===page);
     } finally { app.removeListener('web-contents-created',observeFocus); }
   });

@@ -217,6 +217,7 @@ const App = (() => {
     if (!ALL_TOOLS.includes(name)) return;
     if (name!=='bookshelf'&&document.body.classList.contains('sidebar-collapsed')) toggleSidebar(false);
     if (activeTool !== name || sideCollapsed) setToolState(name);
+    if (name === 'browser') setEditorCollapsed(false);
   }
   function hideSideTool(name) {
     if(!SIDE_TOOLS.includes(name)||sideTool!==name)return;
