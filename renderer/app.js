@@ -180,7 +180,10 @@ const App = (() => {
 
   function setToolState(next) {
     const prev = activeTool;
-    if (next === 'browser' && prev !== 'browser') browserReturn = {tool:prev,sideTool,sideCollapsed};
+    if (next === 'browser' && prev !== 'browser') {
+      browserReturn = {tool:prev,sideTool,sideCollapsed};
+      editorCollapsed = false;
+    }
     activeTool = next;
     if (SIDE_TOOLS.includes(next)) sideTool = next;
     // ★ 任何工具激活 = 侧栏面板可见。此前仅 SIDE_TOOLS/db 重置 sideCollapsed，
@@ -423,13 +426,15 @@ const App = (() => {
     const body = document.body;
     const left = !sideCollapsed && !body.classList.contains('sidebar-collapsed');
     const right = isAiVisible();
-    const centerTool = ['browser', 'db', 'remote', 'clipboard', 'launch', 'log', 'quick-launch', 'bookshelf'].includes(activeTool) ||
+    const wasCollapsed = body.classList.contains('editor-collapsed');
+    const centerTool = ['db', 'remote', 'clipboard', 'launch', 'log', 'quick-launch', 'bookshelf'].includes(activeTool) ||
       (activeTool === 'tasks' && window.Tasks?.view === 'dag');
     const canCollapse = (left || right) && !centerTool;
     if (!canCollapse) editorCollapsed = false;
     body.classList.toggle('editor-collapsed', editorCollapsed);
     body.classList.toggle('editor-sidebars-split', editorCollapsed && left && right);
     body.classList.toggle('editor-left-empty', editorCollapsed && !left);
+    if (activeTool === 'browser' && wasCollapsed !== editorCollapsed) window.BrowserPanel?.syncEditorVisibility?.();
     const button = document.getElementById('btn-editor-collapse');
     if (button) {
       button.disabled = !canCollapse;

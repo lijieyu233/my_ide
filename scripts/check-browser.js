@@ -54,6 +54,47 @@ function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);ser
     await js('const input=document.getElementById("bw-url");input.focus();input.value="fixture";input.dispatchEvent(new Event("input",{bubbles:true}));true');await until(()=>win.contentView.children.length===0);assert(!(await js('document.getElementById("bw-dd").classList.contains("hidden")')));assert(await js('document.querySelector(".bw-dd-item").textContent.includes("fixture 收藏")'));await capture('browser-ui-suggestions.png');
     await js('const input=document.getElementById("bw-url");input.value="";input.dispatchEvent(new Event("input",{bubbles:true}));true');await until(()=>win.contentView.children.length===1);assert(await js('document.getElementById("bw-dd").classList.contains("hidden")'));
   });
+  await test('收起编辑区会摘下浏览器原生视图，展开后恢复网页和输入', async () => {
+    const view = win.contentView.children[0];
+    const tab = await js('BrowserPanel.activeTabId');
+    await page.executeJavaScript('document.querySelector("input").value="collapse fixture";true');
+    assert(await js('!document.getElementById("btn-editor-collapse").disabled'));
+    await js('document.getElementById("btn-editor-collapse").click();true');
+    await until(()=>!win.contentView.children.includes(view));
+    assert(await js('document.getElementById("btn-editor-collapse").getAttribute("aria-expanded")==="false"&&getComputedStyle(document.getElementById("content")).display==="none"'));
+    await capture('browser-ui-editor-collapsed.png');
+    await js('document.getElementById("btn-editor-collapse").click();true');
+    await until(()=>win.contentView.children.includes(view)&&view.getBounds().width>200);
+    assert.equal(await js('BrowserPanel.activeTabId'),tab);
+    assert.equal(await page.executeJavaScript('document.querySelector("input").value'),'collapse fixture');
+  });
+  await test('会话链接展开编辑区并新开网页，保留会话焦点', async () => {
+    const originalTab=await js('BrowserPanel.activeTabId');
+    const destination=url+'/chat-link';
+    let focusCalls=0;
+    const observeFocus=(_event,contents)=>{
+      if(contents===win.webContents)return;
+      const focus=contents.focus.bind(contents);
+      contents.focus=()=>{focusCalls++;return focus();};
+    };
+    app.on('web-contents-created',observeFocus);
+    try {
+      await js('App.showAi(); App.closeBrowser(); App.setEditorCollapsed(true); true');
+      await js('const row=document.createElement("div");row.id="fixture-chat-link";row.className="ai-assistant";'+
+        'const body=document.createElement("div");body.className="ai-md";'+
+        'const link=document.createElement("a");link.href='+JSON.stringify(destination)+';link.textContent="打开网页";'+
+        'body.append(link);row.append(body);document.getElementById("ai-msgs").append(row);link.focus();link.click();true');
+      await until(()=>{const view=win.contentView.children[0];return view?.webContents.getURL()===destination&&!view.webContents.isLoading()&&view.getBounds().width>200;});
+      await sleep(150);
+      assert.equal(focusCalls,0);
+      assert(await js('document.activeElement===document.querySelector("#fixture-chat-link a")&&App.getTool()==="browser"&&document.getElementById("btn-editor-collapse").getAttribute("aria-expanded")==="true"'));
+      const tab=await js('BrowserPanel.activeTabId');
+      assert.notEqual(tab,originalTab);
+      await capture('browser-ui-chat-link-focus.png');
+      await js('BrowserPanel.closeTabs(['+JSON.stringify(tab)+']);BrowserPanel.activateTab('+JSON.stringify(originalTab)+');document.getElementById("fixture-chat-link").remove();App.setAiOpen(false);true');
+      await until(()=>win.contentView.children[0]?.webContents===page);
+    } finally { app.removeListener('web-contents-created',observeFocus); }
+  });
   await test('AI 面板占满工作区时网页让位，缩回后恢复原标签', async () => {
     const view = win.contentView.children[0];
     assert.equal(view.webContents, page);

@@ -247,7 +247,7 @@ const BrowserPanel = (() => {
     if (tabStore.error) return { ...tabObservation(), ok: false, changed, committed: changed, errorCode: 'BROWSER_SAVE_FAILED', error: tabStore.error };
     return { ...tabObservation(), changed, committed: changed, note: '标签操作已完成；网页导航仍需 browser_state / browser_read 核对。' };
   }
-  const mountedTabs = new Set(), tabRuntime = new Map(), foldedGroups = new Set();
+  const mountedTabs = new Set(), keepHostFocus = new Set(), tabRuntime = new Map(), foldedGroups = new Set();
   const IC_PAGE = IC('<rect x="3" y="2" width="10" height="12" rx="1.5"/><path d="M5.5 6h5M5.5 9h5"/>');
   const IC_CLOSE = IC('<path d="M4.5 4.5l7 7m0-7l-7 7"/>');
   const IC_OPEN = IC('<path d="M9 2h5v5m0-5L7 9M6 3H3v10h10v-3"/>');
@@ -442,10 +442,11 @@ const BrowserPanel = (() => {
     clearOverlayImage(); overlayHid = false; closeDd(); renderTabs(); renderGroups(); storageStatus(); presentTab();
     syncTabStrip(true);
   }
-  function newTab(url = '', title = '', afterTabId = null, groupId = null) {
+  function newTab(url = '', title = '', afterTabId = null, groupId = null, { focusPage = true } = {}) {
     const normalized = url ? normalizeInput(url) : '';
     if (!BrowserTabs.validURL(normalized)) { MI.toast('不支持的网页地址', 'err'); return; }
     const tab = tabStore.add(normalized, title, true, groupId);
+    if (normalized && !focusPage) keepHostFocus.add(tab.id);
     // 插到指定标签之后：add() 只会追加到末尾，这里用 reorder 把它挪到目标的下一位。
     // reorder(from,to) 的语义是「插到 to 之前」，所以要把目标下一个兄弟当作 to；
     // 目标本来就是最后一个时无需移动。
@@ -463,7 +464,7 @@ const BrowserPanel = (() => {
   function closeTabs(ids) {
     const state = tabStore.state, existing = ids.filter(id => state.tabs.some(t => t.id === id)); if (!existing.length) return;
     const activeChanged = existing.includes(state.active); tabStore.close(existing);
-    existing.forEach(id => { mountedTabs.delete(id); tabRuntime.delete(id); });
+    existing.forEach(id => { mountedTabs.delete(id); keepHostFocus.delete(id); tabRuntime.delete(id); });
     Promise.resolve(B()?.closeTabs?.(existing)).catch(error => MI.toast('标签视图关闭失败：' + error.message, 'err'));
     renderTabs(); renderGroups(); storageStatus(); if (activeChanged) presentTab();
   }
@@ -1068,8 +1069,10 @@ const BrowserPanel = (() => {
       list.append(tabRow(tab, false));
     }
   }
+  const editorCollapsed = () => document.body.classList.contains('editor-collapsed');
+
   function syncBounds() {
-    if (!viewEl || viewEl.classList.contains('hidden')) return;
+    if (!visible || editorCollapsed() || !viewEl || viewEl.classList.contains('hidden')) return;
     const r = viewEl.getBoundingClientRect();
     const b = B(); if (!b) return;
     // 占位区被侧栏挤没时也要更新原生视图，否则网页会以旧尺寸遮住侧栏。
@@ -1084,14 +1087,16 @@ const BrowserPanel = (() => {
     b.viewBounds({ x: r.x, y: r.y, width: r.width, height });
   }
   // 容器刚从 display:none 恢复时 rect 要下一帧才有效
-  function mountView(url) {
-    const b = B(); if (!b) return;
+  function mountView(url, focusPage = true) {
+    const b = B();
+    if (!b || !visible || editorCollapsed()) return;
     const tabId = tabStore?.active.id;
+    const focusOnLoad = url && !keepHostFocus.delete(tabId) && focusPage;
     if (tabId) mountedTabs.add(tabId);
     b.viewOpen(url || null, tabId).then(r => { if (r?.error) { mountedTabs.delete(tabId); if (tabStore?.active.id === tabId) showError(r.error); } }).catch(error => { mountedTabs.delete(tabId); if (tabStore?.active.id === tabId) showError(error.message); });
     requestAnimationFrame(() => requestAnimationFrame(() => {
       syncBounds();
-      if (url) { const bb = B(); if (bb) bb.viewNav('focus'); } // 加载新页后聚焦网页（可立即滚轮/键盘）
+      if (focusOnLoad && visible && !editorCollapsed() && !overlayOpen() && tabStore?.active.id === tabId) b.viewNav('focus');
     }));
   }
 
@@ -1113,8 +1118,22 @@ const BrowserPanel = (() => {
   let overlayHid = false; // 当前因浮层主动摘掉 view（与面板自身隐藏区分开）
   let overlayRevision=0,overlayImage=null;
   function clearOverlayImage(){overlayRevision++;overlayImage?.remove();overlayImage=null;}
-  function syncOverlay() {
+  function syncEditorVisibility() {
     if (!visible || !hasPage) return;
+    if (editorCollapsed()) {
+      clearOverlayImage();
+      overlayHid = false;
+      B()?.viewHide();
+    } else if (overlayOpen()) {
+      syncOverlay();
+    } else {
+      const tab = tabStore?.active;
+      mountView(tab && !mountedTabs.has(tab.id) ? tab.url : null, false);
+    }
+  }
+
+  function syncOverlay() {
+    if (!visible || !hasPage || editorCollapsed()) return;
     const b = B(); if (!b) return;
     if (overlayOpen()) {
       if (!overlayHid) {
@@ -1235,6 +1254,7 @@ const BrowserPanel = (() => {
     if (!BrowserTabs.validURL(u)) { MI.toast('不支持的网页地址', 'err'); return; }
     if (tabStore) { tabStore.update(tabStore.active.id, {url:u, ...(u !== currentUrl ? {title:u} : {})}); tabRuntime.delete(tabStore.active.id); renderTabs(); renderGroups(); storageStatus(); }
     document.getElementById('browser-empty').classList.add('hidden');
+    if (visible) App.setEditorCollapsed(false);
     document.getElementById('browser-error').classList.add('hidden');
     viewEl.classList.remove('hidden');
     hasPage = true;
@@ -1323,7 +1343,8 @@ const BrowserPanel = (() => {
   }
   async function setFullscreen(enabled){
     if(enabled&&!visible)return {error:'浏览器未打开'};fullscreenWanted=!!enabled;closeDd();
-    if(!enabled)applyFullscreen(false);
+    if(enabled)App.setEditorCollapsed(false);
+    else applyFullscreen(false);
     try{const b=B();if(!b?.fullscreen)throw Error('浏览器全屏接口不可用');const result=await b.fullscreen(!!enabled);if(result?.error)throw Error(result.error);if(fullscreenWanted===!!enabled&&(!enabled||visible))applyFullscreen(!!result.fullscreen);return result;}
     catch(error){if(fullscreenWanted===!!enabled){fullscreenWanted=false;applyFullscreen(false);MI.toast(error.message,'err');}return {error:error.message};}
   }
@@ -2016,7 +2037,7 @@ const BrowserPanel = (() => {
       renderDefaultButton();
       document.getElementById('browser-empty').classList.add('hidden');
       document.getElementById('browser-error').classList.add('hidden');viewEl.classList.remove('hidden');
-      App.showTool('browser');if(!overlayOpen())mountView(null);
+      App.showTool('browser');App.setEditorCollapsed(false);if(!overlayOpen())mountView(null);
       // AI导航后解除地址栏焦点，让状态回推能够显示真实的新地址。
       setTimeout(()=>{urlInput.blur();urlInput.value=currentUrl;},0);return {ok:true};
     }
@@ -2030,7 +2051,7 @@ const BrowserPanel = (() => {
   return {
     aiOperation, newTab, activateTab, closeTabs, reopenTab, saveTabGroup, openTabGroup, switchSidebar, setProject, saveTabs,
     get tabs(){return tabStore?.state.tabs || [];}, get activeTabId(){return tabStore?.state.active;},
-    init, show, hide, toggle, open, go, back, forward, reload, home, onState,
+    init, show, hide, toggle, open, go, back, forward, reload, home, onState, syncEditorVisibility,
     normalizeInput, addHistory, clearHistory, addFav, removeFav, isFav, renderEmpty,
     folders, addFolder, removeFolder, moveFav, moveFavTo, renameFav,
     cycleDarkMode, get darkMode() { return darkMode; },

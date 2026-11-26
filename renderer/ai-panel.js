@@ -1655,8 +1655,9 @@ const AiPanel = (() => {
     } else if (target.url.startsWith('mailto:')) {
       await window.myIDE.shell.openExternal(target.url);
     } else {
+      BrowserPanel.newTab(target.url, '', null, null, { focusPage: false });
+      App.setEditorCollapsed(false);
       App.showTool('browser');
-      BrowserPanel.newTab(target.url);
     }
   }
   function positionAiContextMenu(menu, x, y, alignEnd = false) {
