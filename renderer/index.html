@@ -313,12 +313,36 @@
           <input id="bw-url" type="text" placeholder="输入网址或搜索关键词，回车打开…" spellcheck="false" autocomplete="off">
           <button id="bw-fav" class="bw-fav-btn" title="收藏 / 取消收藏当前页">☆</button>
         </div>
+        <button id="bw-proxy" type="button" class="vt-btn" title="浏览器代理" aria-label="浏览器代理" aria-haspopup="dialog" aria-expanded="false" aria-controls="bw-proxy-settings"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5h10M3 11h10"/><circle cx="6" cy="5" r="1.8" fill="var(--bg-panel)"/><circle cx="10" cy="11" r="1.8" fill="var(--bg-panel)"/></svg></button>
         <button id="bw-dark" class="vt-btn" title="网页深色模式"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.2 9.8A5.5 5.5 0 0 1 6.2 2.8a5.5 5.5 0 1 0 7 7z"/></svg></button>
         <button id="bw-immersive" class="vt-btn" title="页内全屏：收起左右侧边栏，让网页占满宽度 (F10)" aria-label="页内全屏" aria-pressed="false"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 3.2v9.6M13.6 3.2v9.6"/><path d="M5.8 8h4.4M5.8 8l1.5-1.5M5.8 8l1.5 1.5M10.2 8l-1.5-1.5M10.2 8l-1.5 1.5"/></svg></button>
         <button id="bw-fullscreen" class="vt-btn" title="浏览器全屏 (F11)" aria-label="浏览器全屏" aria-pressed="false"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2H2v4m8-4h4v4M2 10v4h4m8-4v4h-4"/></svg></button>
         <button id="bw-open-default" class="vt-btn" title="用默认浏览器打开" aria-label="用默认浏览器打开" disabled><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2h5v5m0-5L7 9M6 3H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-3"/></svg></button>
         <button id="bw-close" class="vt-btn" title="关闭内置浏览器">✕</button>
         <div id="bw-dd" class="bw-dd hidden"></div>
+        <form id="bw-proxy-settings" class="bw-proxy-settings" role="dialog" aria-labelledby="bw-proxy-title" hidden>
+          <div class="bw-proxy-title" id="bw-proxy-title">浏览器代理</div>
+          <label class="bw-proxy-field">代理模式
+            <select id="bw-proxy-mode">
+              <option value="system">跟随系统</option>
+              <option value="direct">直连</option>
+              <option value="custom">自定义代理</option>
+            </select>
+          </label>
+          <fieldset id="bw-proxy-custom" hidden>
+            <label class="bw-proxy-field">代理服务器
+              <input id="bw-proxy-server" type="text" placeholder="http://127.0.0.1:10808" spellcheck="false" autocomplete="off" required>
+            </label>
+            <label class="bw-proxy-field">直连域名
+              <textarea id="bw-proxy-bypass" rows="2" placeholder="mh.slradio.cn" spellcheck="false" autocomplete="off"></textarea>
+            </label>
+            <small class="bw-proxy-note">多个域名用换行或逗号分隔，支持 *.example.com</small>
+          </fieldset>
+          <div class="bw-proxy-actions">
+            <button id="bw-proxy-cancel" class="tb-btn m-cancel" type="button">取消</button>
+            <button id="bw-proxy-save" class="tb-btn m-ok" type="submit">保存</button>
+          </div>
+        </form>
       </div>
       <div class="browser-prog"><div id="bw-prog"></div></div>
       <div class="browser-body">

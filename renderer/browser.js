@@ -1119,7 +1119,7 @@ const BrowserPanel = (() => {
     return !!(mask && !mask.classList.contains('hidden'))
       || !!(menu && !menu.classList.contains('hidden'))
       || !!(sub && !sub.classList.contains('hidden'))
-      || !!(ddEl && !ddEl.classList.contains('hidden')) || themePickerOpen() || visualizationOpen();
+      || !!(ddEl && !ddEl.classList.contains('hidden')) || proxySettingsOpen() || themePickerOpen() || visualizationOpen();
   }
   let overlayHid = false; // 当前因浮层主动摘掉 view（与面板自身隐藏区分开）
   let overlayRevision=0,overlayImage=null;
@@ -1151,7 +1151,7 @@ const BrowserPanel = (() => {
         }
       } else if (!overlayHid) {
         overlayHid=true;const revision=++overlayRevision;
-        Promise.resolve(b.viewHide({snapshot:true,focus:!themePickerOpen()&&(!ddEl||ddEl.classList.contains('hidden'))})).then(result=>{
+        Promise.resolve(b.viewHide({snapshot:true,focus:!themePickerOpen()&&!proxySettingsOpen()&&(!ddEl||ddEl.classList.contains('hidden'))})).then(result=>{
           if(revision!==overlayRevision||!visible||!overlayHid||!overlayOpen()||!result?.image)return;
           overlayImage?.remove();overlayImage=document.createElement('img');overlayImage.className='bw-overlay-snapshot';overlayImage.alt='';overlayImage.setAttribute('aria-hidden','true');overlayImage.src=result.image;viewEl.append(overlayImage);
         }).catch(()=>{});
@@ -1228,6 +1228,83 @@ const BrowserPanel = (() => {
     try{const b=B();if(!b?.openDefault)throw Error('默认浏览器接口不可用');const result=await b.openDefault();if(!result?.ok)throw Error(result?.error||'打开默认浏览器失败');return result;}
     catch(error){MI.toast(error.message,'err');return {ok:false,error:error.message};}
     finally{defaultOpening=false;renderDefaultButton();}
+  }
+
+  let proxyForm, proxyButton;
+  const proxySettingsOpen = () => proxyForm?.hidden === false;
+
+  function closeProxySettings(restoreFocus = false) {
+    if (!proxySettingsOpen()) return;
+    proxyForm.hidden = true;
+    proxyButton.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) proxyButton.focus({ preventScroll: true });
+    syncOverlay();
+  }
+
+  function initProxySettings() {
+    proxyForm = document.getElementById('bw-proxy-settings');
+    proxyButton = document.getElementById('bw-proxy');
+    if (!proxyForm || !proxyButton) return;
+    const mode = document.getElementById('bw-proxy-mode');
+    const custom = document.getElementById('bw-proxy-custom');
+    const server = document.getElementById('bw-proxy-server');
+    const bypass = document.getElementById('bw-proxy-bypass');
+    const cancel = document.getElementById('bw-proxy-cancel');
+    const save = document.getElementById('bw-proxy-save');
+    const refresh = () => { custom.hidden = custom.disabled = mode.value !== 'custom'; };
+    let saving = false;
+    mode.onchange = refresh;
+    proxyButton.onclick = async () => {
+      if (saving) return;
+      if (proxySettingsOpen()) { closeProxySettings(true); return; }
+      proxyButton.disabled = true;
+      try {
+        const result = await B()?.getProxy?.();
+        if (!result?.ok) throw Error(result?.error || '读取浏览器代理设置失败');
+        if (!visible) return;
+        mode.value = result.config.mode;
+        server.value = result.config.server;
+        bypass.value = result.config.bypass;
+        refresh();
+        closeDd();
+        proxyForm.hidden = false;
+        proxyButton.setAttribute('aria-expanded', 'true');
+        syncOverlay();
+        mode.focus({ preventScroll: true });
+        if (result.warning) MI.toast(result.warning, 'err');
+      } catch (error) { MI.toast(error.message, 'err'); }
+      finally { proxyButton.disabled = false; }
+    };
+    cancel.onclick = () => closeProxySettings(true);
+    proxyForm.onsubmit = async event => {
+      event.preventDefault();
+      if (saving || !proxySettingsOpen()) return;
+      const config = { mode: mode.value, server: server.value, bypass: bypass.value };
+      saving = mode.disabled = custom.disabled = save.disabled = cancel.disabled = true;
+      save.textContent = '保存中…';
+      try {
+        const result = await B()?.saveProxy?.(config);
+        if (!result?.ok) throw Error(result?.error || '保存浏览器代理失败');
+        closeProxySettings(true);
+        MI.toast('浏览器代理已保存，刷新网页后生效', 'ok');
+      } catch (error) { MI.toast(error.message, 'err'); }
+      finally {
+        saving = mode.disabled = save.disabled = cancel.disabled = false;
+        save.textContent = '保存';
+        refresh();
+      }
+    };
+    document.addEventListener('pointerdown', event => {
+      if (proxySettingsOpen() && !saving && !proxyForm.contains(event.target) && !proxyButton.contains(event.target)) {
+        closeProxySettings();
+      }
+    }, true);
+    document.addEventListener('keydown', event => {
+      if (!proxySettingsOpen() || event.key !== 'Escape' || event.isComposing || window.Modal?.stack.length) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (!saving) closeProxySettings(true);
+    }, true);
   }
 
   // ---------- 网页深色（工具栏按钮三态循环：深色 → 浅色 → 跟随系统） ----------
@@ -1324,6 +1401,7 @@ const BrowserPanel = (() => {
     if (!visible) return;
     saveTabs();
     visible = false;
+    closeProxySettings();
     renderTabs();
     if(fullscreen||fullscreenWanted)setFullscreen(false);
     // 页内全屏也是浏览器专属状态：离开浏览器就把侧栏还回去，
@@ -1889,6 +1967,7 @@ const BrowserPanel = (() => {
     darkBtnEl = document.getElementById('bw-dark');
     if (darkBtnEl) darkBtnEl.onclick = (e) => { e.stopPropagation(); cycleDarkMode(); };
     initDarkMode();
+    initProxySettings();
     initTabStrip();
     tabStore = BrowserTabs.create(localStorage);
     // load 不带项目：作用域恒为 @global。传 null 只为让老数据迁移逻辑知道
@@ -1991,7 +2070,7 @@ const BrowserPanel = (() => {
     const themeMenu = document.getElementById('theme-menu');
     if (themeMenu) overlayMo.observe(themeMenu, { attributes: true, attributeFilter: ['hidden'] });
     document.addEventListener('keydown',event=>{
-      if(!visible||event.isComposing||[document.getElementById('modal-mask'),document.getElementById('ctx-menu')].some(el=>el&&!el.classList.contains('hidden')))return;
+      if(!visible||event.isComposing||proxySettingsOpen()||[document.getElementById('modal-mask'),document.getElementById('ctx-menu')].some(el=>el&&!el.classList.contains('hidden')))return;
       if(event.ctrlKey&&!event.altKey&&['t','w','tab'].includes(event.key.toLowerCase())) {
         event.preventDefault(); event.stopImmediatePropagation();
         const key=event.key.toLowerCase(); if(key==='t'){if(event.shiftKey)reopenTab();else newTab();}else if(key==='w')closeTabs([tabStore.active.id]);else cycleTab(event.shiftKey?-1:1);return;

@@ -338,6 +338,8 @@ contextBridge.exposeInMainWorld('myIDE', {
     viewNav: (cmd) => ipcRenderer.invoke('browser:view-nav', cmd), // back/forward/reload/focus
     fullscreen: (enabled) => ipcRenderer.invoke('browser:fullscreen', enabled),
     openDefault: () => ipcRenderer.invoke('browser:open-default'),
+    getProxy: () => ipcRenderer.invoke('browser:proxy-get'),
+    saveProxy: config => ipcRenderer.invoke('browser:proxy-save', config),
     // 网页深色模式：主进程 nativeTheme.themeSource（'dark'|'light'|'system'）。
     // 是进程级的 —— 网页里的 prefers-color-scheme 跟着变，本 IDE 自己的界面不受影响
     // （styles.css 里没有任何 prefers-color-scheme 规则，主题由 body.theme-* 显式决定）

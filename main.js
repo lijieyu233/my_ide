@@ -1,5 +1,5 @@
 // main.js —— Electron 主进程：窗口 + IPC（文件系统 / Git / 剪贴板）
-const { app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, shell, Menu, net, nativeImage, nativeTheme, safeStorage, protocol } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, dialog, clipboard, shell, Menu, net, nativeImage, nativeTheme, safeStorage, protocol, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -308,6 +308,21 @@ function createWindow() {
 // 弃用 <webview> 标签：其 guest 视口高度同步在 flex 布局下失效（卡默认 150px，
 // 元素 rect 正常但 guest 只渲染顶部一条 → 白屏），CSS/attribute/延迟 src 均无法修复。
 // WebContentsView 由主进程 setBounds 显式控制尺寸，不依赖渲染层 CSS 同步。
+const { PARTITION: BROWSER_PARTITION, createService: createBrowserProxy } = require('./src/main/browser/browser-proxy');
+const browserProxy = createBrowserProxy({
+  configFile: () => path.join(path.dirname(SETTINGS_MIRROR()), 'browser-proxy.json'),
+  getSession: () => session.fromPartition(BROWSER_PARTITION),
+});
+for (const [action, handle] of [['get', browserProxy.read], ['save', browserProxy.save]]) {
+  ipcMain.handle('browser:proxy-' + action, async (event, config) => {
+    if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame) {
+      return { ok: false, error: '只能在 MyIDE 窗口设置浏览器代理' };
+    }
+    try { return { ok: true, ...await handle(config) }; }
+    catch (error) { return { ok: false, error: error.message }; }
+  });
+}
+
 let bwView = null; // 复用实例：隐藏仅 removeChildView，persist partition 登录态保留
 const browserTabViews = require('./src/main/browser/browser-tab-views').createService({createView:createBwView,getWindow:()=>mainWindow});
 let bwVisibilityRevision = 0;
@@ -344,7 +359,7 @@ ipcMain.handle('browser:open-default', async e=>{
 function ensureBwView() { return bwView || (bwView = browserTabViews.activate(browserTabViews.activeId || 'legacy')); }
 function createBwView(tabId) {
   const view = new WebContentsView({
-    webPreferences: { partition: 'persist:myide-browser', contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: { partition: BROWSER_PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   const wc = view.webContents;
   browserColorScheme.bind(wc);
@@ -2013,7 +2028,8 @@ ipcMain.handle('plugins:loadAll', () => {
 });
 
 // ---------- 启动 ----------
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await browserProxy.init();
   protocol.handle(HtmlPreview.SCHEME,request=>htmlPreview.handle(request));
   stateFile = path.join(app.getPath('userData'), 'my-ide-state.json');
   writeUsage(`===== 启动 version=${JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || '?'} electron=${process.versions.electron} node=${process.versions.node} =====\n`);

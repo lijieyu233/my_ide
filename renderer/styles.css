@@ -3276,6 +3276,26 @@ body.bw-group-dragging .bw-live-group-head { cursor: grabbing; }
 #bw-prog { height: 100%; width: 0; background: var(--accent); transition: width .15s; }
 #browser-view { flex: 1; min-height: 0; position: relative; overflow: hidden; } /* 占位区：rect 上报主进程 setBounds（网页由 WebContentsView 原生层渲染） */
 .bw-overlay-snapshot { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
+.bw-proxy-settings {
+  position: absolute; top: calc(100% + 4px); right: 8px; z-index: 51;
+  width: min(310px, calc(100% - 16px)); box-sizing: border-box;
+  padding: 12px; border: 1px solid var(--menu-border); border-radius: 8px;
+  background: var(--bg-panel); color: var(--text);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); font-size: 12px;
+}
+.bw-proxy-settings[hidden], .bw-proxy-settings fieldset[hidden] { display: none; }
+.bw-proxy-title { font-weight: 600; color: var(--text-bright); margin-bottom: 10px; }
+.bw-proxy-settings fieldset { border: 0; margin: 0; min-width: 0; padding: 0; }
+.bw-proxy-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 9px; }
+.bw-proxy-field :is(input, textarea, select) {
+  width: 100%; box-sizing: border-box; color: var(--text); font: inherit; background: var(--bg-input);
+  border: 1px solid var(--btn-border); border-radius: 4px; padding: 5px 7px;
+}
+.bw-proxy-field textarea { resize: vertical; }
+.bw-proxy-field :is(input, textarea, select):focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.bw-proxy-note { color: var(--text-dim); font-size: 11px; }
+.bw-proxy-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 12px; }
+
 /* 地址栏下拉建议 */
 .bw-dd {
   position: absolute; top: calc(100% + 2px); left: 8px; right: 8px;
