@@ -127,6 +127,35 @@ function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);ser
       await until(()=>win.contentView.children[0]?.webContents===page);
     } finally { app.removeListener('web-contents-created',observeFocus); }
   });
+  await test('放大聊天演示时摘下原生浏览器，返回后恢复网页和演示状态', async () => {
+    const html=path.join(temp,'chat-preview.html');
+    fs.writeFileSync(html,'<body style="background:#18314e;color:white"><button onclick="this.textContent=\'已操作\'">测试演示</button></body>');
+    const marker='\uE200visualize\uE202'+JSON.stringify({path:html})+'\uE201';
+    const view=win.contentView.children[0], tab=await js('BrowserPanel.activeTabId');
+    await page.executeJavaScript('document.querySelector("input").value="保留网页输入"');
+    await js('(async()=>{App.showAi();const state=AiPanel.aiState();localStorage.setItem(state.scope,JSON.stringify([{id:"preview-fixture",title:"演示测试",ts:Date.now(),msgs:[{role:"assistant",content:'+JSON.stringify(marker)+'}]}]));'+
+      'await AiPanel.aiControl({args:{operation:"switch",session:"preview-fixture"}},{});return true;})()');
+    const preview='.ai-visualization-surface';
+    await until(()=>js('!!document.querySelector("'+preview+' button:not(:disabled)")'));
+    await js('document.querySelector("'+preview+' button").click();true');
+    await until(()=>!win.contentView.children.includes(view));
+    await until(()=>js('!!document.querySelector("'+preview+':popover-open")'));
+    let demo;
+    await until(()=>{demo=win.webContents.mainFrame.frames.find(frame=>frame.url.startsWith('myide-preview:'));return demo?.executeJavaScript('!!document.querySelector("button")').catch(()=>false);});
+    assert.equal(await demo.executeJavaScript('document.querySelector("button").click();document.querySelector("button").textContent'),'已操作');
+    await capture('browser-ui-chat-preview-uncovered.png');
+    await js('document.querySelector("'+preview+' button").click();true');
+    await until(()=>win.contentView.children.includes(view));
+    assert.equal(await js('BrowserPanel.activeTabId'),tab);
+    assert.equal(await page.executeJavaScript('document.querySelector("input").value'),'保留网页输入');
+    assert.equal(await demo.executeJavaScript('document.querySelector("button").textContent'),'已操作');
+    await js('document.querySelector("'+preview+' button").click();true');
+    await until(()=>!win.contentView.children.includes(view));
+    await js('document.getElementById("ai-new").click();true');
+    await until(()=>win.contentView.children.includes(view));
+    assert.equal(await js('BrowserPanel.activeTabId'),tab);
+    await js('App.setAiOpen(false);true');
+  });
   await test('AI 面板占满工作区时网页让位，缩回后恢复原标签', async () => {
     const view = win.contentView.children[0];
     assert.equal(view.webContents, page);

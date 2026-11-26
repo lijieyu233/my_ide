@@ -2091,7 +2091,10 @@ const AiPanel = (() => {
       }
       expand.setAttribute('aria-expanded',String(open));
       expand.textContent=open?'返回对话':'放大查看';
-      if(open!==wasOpen&&expand.isConnected)expand.focus({preventScroll:true});
+      if(open!==wasOpen){
+        window.BrowserPanel?.syncOverlay?.();
+        if(expand.isConnected)expand.focus({preventScroll:true});
+      }
     }
     surface.addEventListener('toggle',syncExpanded);
     expand.onclick=()=>{
@@ -2122,15 +2125,16 @@ const AiPanel = (() => {
         widget.replaceWith(status);
         return;
       }
-      visualizationLeases.set(widget,lease.id);
+      visualizationLeases.set(widget,{id:lease.id,syncExpanded});
       frame.src=lease.url;
       expand.disabled=false;
       if(!visualizationObserver){
         visualizationObserver=new MutationObserver(()=>{
-          for(const [preview,id] of visualizationLeases){
+          for(const [preview,lease] of visualizationLeases){
+            if(!preview.isConnected)lease.syncExpanded();
             if(preview.closest('.ai-msg')?.parentNode)continue;
             visualizationLeases.delete(preview);
-            window.myIDE.htmlPreview.close(id);
+            window.myIDE.htmlPreview.close(lease.id);
           }
         });
         visualizationObserver.observe(document.body,{childList:true,subtree:true});

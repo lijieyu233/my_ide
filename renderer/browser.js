@@ -1091,6 +1091,11 @@ const BrowserPanel = (() => {
     const b = B();
     if (!b || !visible || editorCollapsed()) return;
     const tabId = tabStore?.active.id;
+    if (visualizationOpen()) {
+      if (url) mountedTabs.delete(tabId);
+      syncOverlay();
+      return;
+    }
     const focusOnLoad = url && !keepHostFocus.delete(tabId) && focusPage;
     if (tabId) mountedTabs.add(tabId);
     b.viewOpen(url || null, tabId).then(r => { if (r?.error) { mountedTabs.delete(tabId); if (tabStore?.active.id === tabId) showError(r.error); } }).catch(error => { mountedTabs.delete(tabId); if (tabStore?.active.id === tabId) showError(error.message); });
@@ -1105,6 +1110,7 @@ const BrowserPanel = (() => {
   // 落到网页区域就被整个盖住（实测：「新建收藏文件夹」弹窗只剩侧栏边上一条）。
   // 通用规避：任何浮层可见期间摘掉 view（实例保留），全部关闭后挂回。
   const themePickerOpen = () => document.getElementById('theme-menu')?.hidden === false;
+  const visualizationOpen = () => !!document.querySelector('.ai-visualization-surface:popover-open');
   function overlayOpen() {
     const mask = document.getElementById('modal-mask');
     const menu = document.getElementById('ctx-menu');
@@ -1113,7 +1119,7 @@ const BrowserPanel = (() => {
     return !!(mask && !mask.classList.contains('hidden'))
       || !!(menu && !menu.classList.contains('hidden'))
       || !!(sub && !sub.classList.contains('hidden'))
-      || !!(ddEl && !ddEl.classList.contains('hidden')) || themePickerOpen();
+      || !!(ddEl && !ddEl.classList.contains('hidden')) || themePickerOpen() || visualizationOpen();
   }
   let overlayHid = false; // 当前因浮层主动摘掉 view（与面板自身隐藏区分开）
   let overlayRevision=0,overlayImage=null;
@@ -1136,7 +1142,14 @@ const BrowserPanel = (() => {
     if (!visible || !hasPage || editorCollapsed()) return;
     const b = B(); if (!b) return;
     if (overlayOpen()) {
-      if (!overlayHid) {
+      if (visualizationOpen()) {
+        if (overlayHid !== 'visualization') {
+          overlayHid = 'visualization';
+          clearOverlayImage();
+          // The enlarged preview covers the browser. Detach immediately so native pixels cannot obscure it.
+          Promise.resolve(b.viewHide()).catch(() => {});
+        }
+      } else if (!overlayHid) {
         overlayHid=true;const revision=++overlayRevision;
         Promise.resolve(b.viewHide({snapshot:true,focus:!themePickerOpen()&&(!ddEl||ddEl.classList.contains('hidden'))})).then(result=>{
           if(revision!==overlayRevision||!visible||!overlayHid||!overlayOpen()||!result?.image)return;
@@ -2051,7 +2064,7 @@ const BrowserPanel = (() => {
   return {
     aiOperation, newTab, activateTab, closeTabs, reopenTab, saveTabGroup, openTabGroup, switchSidebar, setProject, saveTabs,
     get tabs(){return tabStore?.state.tabs || [];}, get activeTabId(){return tabStore?.state.active;},
-    init, show, hide, toggle, open, go, back, forward, reload, home, onState, syncEditorVisibility,
+    init, show, hide, toggle, open, go, back, forward, reload, home, onState, syncEditorVisibility, syncOverlay,
     normalizeInput, addHistory, clearHistory, addFav, removeFav, isFav, renderEmpty,
     folders, addFolder, removeFolder, moveFav, moveFavTo, renameFav,
     cycleDarkMode, get darkMode() { return darkMode; },
