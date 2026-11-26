@@ -1656,7 +1656,7 @@ const AiPanel = (() => {
       await window.myIDE.shell.openExternal(target.url);
     } else {
       BrowserPanel.newTab(target.url, '', null, null, { focusPage: false });
-      App.showTool('browser');
+      App.showTool('browser', { preserveSidebar: true });
     }
   }
   function positionAiContextMenu(menu, x, y, alignEnd = false) {

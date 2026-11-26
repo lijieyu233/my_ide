@@ -178,10 +178,10 @@ const App = (() => {
     if (next === 'log' && window.GitLog) GitLog.open();
   }
 
-  function setToolState(next) {
+  function setToolState(next, { preserveSidebar = false } = {}) {
     const prev = activeTool;
     if (next === 'browser' && prev !== 'browser') {
-      browserReturn = {tool:prev,sideTool,sideCollapsed};
+      browserReturn = {tool:prev,sideTool,sideCollapsed,preserveSidebar};
       editorCollapsed = false;
     }
     activeTool = next;
@@ -189,8 +189,8 @@ const App = (() => {
     // ★ 任何工具激活 = 侧栏面板可见。此前仅 SIDE_TOOLS/db 重置 sideCollapsed，
     //   切到 browser 时残留 true → 收藏面板永不显示（sideCollapsed 与 body 的
     //   sidebar-collapsed 是两个独立状态，toggleSidebar 只动后者）
-    if(next!=='bookshelf')sideCollapsed = false;
-    applyToolChange(prev, next);
+    if(next!=='bookshelf' && !preserveSidebar)sideCollapsed = false;
+    if(prev!==next || next!=='browser')applyToolChange(prev, next);
     renderToolStrip();
     saveToolState();
   }
@@ -200,6 +200,10 @@ const App = (() => {
     // 侧栏整体收起（⏴）时点击任何工具项：先展开侧栏，本次点击只做展开不做收起切换
     const wasCollapsed = document.body.classList.contains('sidebar-collapsed');
     if (wasCollapsed&&name!=='bookshelf') toggleSidebar(false);
+    if (name === 'browser' && activeTool === 'browser' && browserReturn?.preserveSidebar) {
+      showTool('browser');
+      return;
+    }
     if (activeTool === name && (!wasCollapsed||name==='bookshelf')) { // 再点一次收起（PyCharm 行为）
       if (name === 'browser') { closeBrowser(); return; }
       if (SIDE_TOOLS.includes(name)) sideCollapsed = true;
@@ -213,10 +217,13 @@ const App = (() => {
     }
   }
   // 非切换语义：快捷键始终「显示」该工具窗口（PyCharm Alt+N 习惯，不因已激活而收起）
-  function showTool(name) {
+  function showTool(name, { preserveSidebar = false } = {}) {
     if (!ALL_TOOLS.includes(name)) return;
-    if (name!=='bookshelf'&&document.body.classList.contains('sidebar-collapsed')) toggleSidebar(false);
-    if (activeTool !== name || sideCollapsed) setToolState(name);
+    preserveSidebar = name === 'browser' && preserveSidebar;
+    if (!preserveSidebar && name!=='bookshelf'&&document.body.classList.contains('sidebar-collapsed')) toggleSidebar(false);
+    const revealBrowserSidebar = name === 'browser' && activeTool === 'browser' && !preserveSidebar && browserReturn?.preserveSidebar;
+    if (revealBrowserSidebar) browserReturn.preserveSidebar = false;
+    if (activeTool !== name || !preserveSidebar && (sideCollapsed || revealBrowserSidebar)) setToolState(name, { preserveSidebar });
     if (name === 'browser') setEditorCollapsed(false);
   }
   function hideSideTool(name) {
@@ -302,18 +309,17 @@ const App = (() => {
 
   let lastAiVisibility;
   function renderToolStrip() {
+    const sidebarTool = activeTool === 'browser' && browserReturn?.preserveSidebar ? browserReturn.tool : activeTool;
     // 互斥工具的按钮高亮，AI 面板独立处理。
     for (const t of ALL_TOOLS) {
       const b = document.getElementById('tool-' + t);
-      if (b) b.classList.toggle('active', activeTool === t);
+      if (b) b.classList.toggle('active', sidebarTool === t);
     }
     document.getElementById('tool-bookshelf')?.setAttribute('aria-pressed',String(activeTool==='bookshelf'));
-    document.getElementById('tool-sessions')?.setAttribute('aria-pressed',String(activeTool==='sessions'&&!sideCollapsed));
+    document.getElementById('tool-sessions')?.setAttribute('aria-pressed',String(sidebarTool==='sessions'&&!sideCollapsed));
     // 侧栏面板：db 激活时显示连接/表列表；browser 激活时显示收藏列表；log 期间保留上次侧栏
     let sidePanel = sideTool;
-    if (activeTool === 'db') sidePanel = 'db';
-    if (activeTool === 'remote') sidePanel = 'remote';
-    if (activeTool === 'browser') sidePanel = 'browser';
+    if (['db', 'remote', 'browser'].includes(sidebarTool)) sidePanel = sidebarTool;
     // 每个工具窗口独占侧栏。曾把大纲挂在项目树下面做成上下分栏，
     // 用户反馈"下面的大纲去掉"→ 已撤（大纲仍是独立工具窗口，见 #panel-outline）。
     for (const t of ['project', 'sessions', 'outline', 'search', 'git', 'tasks', 'launch', 'db', 'remote', 'browser']) {
