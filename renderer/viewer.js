@@ -1095,9 +1095,12 @@ const Viewer = (() => {
     globe: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M2.6 8h10.8"/><path d="M8 2.4c1.5 1.6 2.3 3.5 2.3 5.6S9.5 12 8 13.6C6.5 12 5.7 10.1 5.7 8s.8-4 2.3-5.6z"/></svg>',
     external: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.4 2.6h4v4"/><path d="M13.4 2.6L7.6 8.4"/><path d="M12.2 9.6v3.2a1 1 0 0 1-1 1H3.6a1 1 0 0 1-1-1V5.2a1 1 0 0 1 1-1h3.2"/></svg>',
     locate: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M7 4H6L4.5 2.5H2v11h12V9M8 8l5.5-5.5M9.5 2.5h4v4"/></svg>',
+    upload: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 9.2V2M5.2 4.8L8 2l2.8 2.8"/><path d="M2.8 10.6v2.2a1 1 0 0 0 1 1h8.4a1 1 0 0 0 1-1v-2.2"/></svg>',
     // 导出：方框 + 向下的箭头（「落成一个文件」），与「外部打开」的斜向箭头区分开
     export: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v7.2M5.2 6.6L8 9.4l2.8-2.8"/><path d="M2.8 10.6v2.2a1 1 0 0 0 1 1h8.4a1 1 0 0 0 1-1v-2.2"/></svg>',
   };
+
+  const markdownImageUploads = new WeakSet();
 
   // 标签刷新和视图切换都可能改变可用操作。
   function renderTabActions() {
@@ -1141,6 +1144,7 @@ const Viewer = (() => {
 
     // Markdown：模式切换（实时预览 / 分屏 / 源码 / 预览）
     if (isMarkdown && !tab.binary && !tab.tooLarge) {
+      acts.classList.add('md-file-actions');
       const seg = document.createElement('div');
       seg.className = 'md-mode-seg';
       const MODES = [
@@ -1179,7 +1183,16 @@ const Viewer = (() => {
       ex.innerHTML = ACT_IC.export + '导出 HTML';
       ex.title = '导出为单文件 HTML，保存在当前 md 所在目录（同名 .html）';
       ex.onclick = (e) => { e.stopPropagation(); if (window.MdExport) void MdExport.exportTab(tab, { nextToSource: true }); };
-      acts.appendChild(ex);
+      const upload = document.createElement('button');
+      upload.type = 'button';
+      upload.className = 'vt-btn';
+      upload.dataset.mdUploadImages = '';
+      const uploading = markdownImageUploads.has(tab);
+      upload.disabled = uploading || tab.content == null || !!tab.error;
+      upload.innerHTML = ACT_IC.upload + (uploading ? '上传中…' : '上传本地图片');
+      upload.title = '上传当前 Markdown 的本地图片到 COS，并替换成图片链接';
+      upload.onclick = () => { void uploadMarkdownImages(tab); };
+      acts.append(upload, ex);
     } else if (isDrawio(tab.name) && ['drawio', 'edit'].includes(tab.mode)) {
       const source = tab.mode === 'drawio';
       const toggle = document.createElement('button');
@@ -2471,6 +2484,82 @@ const Viewer = (() => {
         }
         syncPaneDocument(t);
       } catch {}
+    }
+  }
+
+  async function uploadMarkdownImages(tab) {
+    if (markdownImageUploads.has(tab) || tab !== currentTab() || tab.content == null) return;
+    const { content, editRevision, path, pathGeneration } = tab;
+    const available = () => tabs.includes(tab) && tab === currentTab() && tab.path === path &&
+      tab.pathGeneration === pathGeneration && tab.editRevision === editRevision && tab.content === content &&
+      !tab.error && !tab.formatBusy && !pathBusy(path);
+    if (!available()) return;
+    markdownImageUploads.add(tab);
+    renderTabActions();
+    try {
+      const source = TextLines.normalized(content);
+      const references = MarkdownImages.localReferences(source, path);
+      if (!references.length) { MI.toast('当前文档没有本地图片'); return; }
+      const config = MdPasteImage.cosConfig();
+      const uploaded = new Map();
+      let failed = 0, firstError = '';
+      for (const { path: image } of references) {
+        const key = DocumentPaths.key(image);
+        if (uploaded.has(key)) continue;
+        if (!available()) throw Error('当前文档已变化，图片链接未替换');
+        let result;
+        try { result = await MdPasteImage.uploadLocal(image, path, config); }
+        catch (error) { result = { error: error.message }; }
+        uploaded.set(key, result.url || null);
+        if (!result.url) {
+          failed++;
+          if (!firstError) firstError = image.split(/[\\/]/).pop() + ' · ' + result.error;
+        }
+      }
+      if (!available()) throw Error('当前文档已变化，图片链接未替换');
+      const edits = [];
+      for (const { path: image, from, to, replacement } of references) {
+        const url = uploaded.get(DocumentPaths.key(image));
+        if (url) edits.push({ from, to, insert: replacement(url) });
+      }
+      if (edits.length) {
+        const changes = CM6.State.ChangeSet.of(edits, source.length);
+        if (cmApi?.__tab === tab && cmApi.view.dom.isConnected && cmApi.view.state.doc.toString() === source) {
+          cmApi.view.dispatch({ changes, annotations: CM6.Commands.isolateHistory.of('full') });
+        } else if (tab.ta?.isConnected && tab.ta.value === source) {
+          const ta = tab.ta;
+          const start = changes.mapPos(ta.selectionStart), end = changes.mapPos(ta.selectionEnd);
+          const direction = ta.selectionDirection, scroll = ta.scrollTop;
+          const from = edits[0].from, to = edits.at(-1).to;
+          const next = changes.apply(CM6.State.Text.of(source.split('\n')));
+          const insert = next.sliceString(from, changes.mapPos(to, 1));
+          ta.focus({ preventScroll: true });
+          ta.setSelectionRange(from, to);
+          if (!document.execCommand?.('insertText', false, insert)) {
+            ta.setRangeText(insert, from, to);
+            ta.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+          ta.setSelectionRange(start, end, direction);
+          ta.scrollTop = scroll;
+        } else if (tab.mode === 'preview') {
+          if (tab.cmState?.doc.toString() === source) {
+            tab.cmState = tab.cmState.update({ changes, annotations: CM6.Commands.isolateHistory.of('full') }).state;
+          } else tab.cmState = null;
+          tab.content = TextLines.apply(content, changes);
+          markEdited(tab, (pos, assoc) => changes.mapPos(pos, assoc));
+          syncPaneDocument(tab, changes);
+          scheduleAutosave();
+          renderView();
+        } else throw Error('编辑视图已变化，图片链接未替换');
+      }
+      if (failed) {
+        MI.toast((edits.length ? '已替换 ' + edits.length + ' 处。' : '') + failed + ' 张图片上传失败。' + firstError.slice(0, 150), 'err');
+      } else MI.toast('已替换 ' + edits.length + ' 处图片链接', 'ok');
+    } catch (error) {
+      MI.toast(error.message || '上传本地图片失败', 'err');
+    } finally {
+      markdownImageUploads.delete(tab);
+      if (tab === currentTab()) renderTabActions();
     }
   }
 

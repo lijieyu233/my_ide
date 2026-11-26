@@ -474,6 +474,9 @@ body.rsb-collapsed #ai-panel { display: none !important; }
   display: flex; flex: none; align-items: center; gap: 4px; margin-left: auto;
   max-width: calc(100% - min(6em, 30%)); overflow-x: auto; scrollbar-width: thin;
 }
+.file-actions .md-file-actions .vt-btn {
+  flex-shrink: 0; padding-inline: 5px; white-space: nowrap;
+}
 .tab {
   display: flex; align-items: center; gap: 6px;
   margin: 3px 3px 3px 0; padding: 0 6px 0 8px;

@@ -76,7 +76,7 @@
     }
     return [source.of(raw || ''), field, field.history];
   }
-  const api = { normalized, endings, reconcile, extension,
+  const api = { normalized, endings, apply, reconcile, extension,
     preserveEndings: (raw, text) => restore(normalized(text), endings(raw)),
     raw: (state) => state.field(field), reset: (text) => reset.of(text) };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

@@ -89,13 +89,61 @@ window.MdPasteImage = (() => {
   }
 
   const EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg', 'image/bmp': 'bmp' };
-  const MIME = { png: 'image/png', jpg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp' };
+  const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp', ico: 'image/x-icon', avif: 'image/avif' };
 
   function toBase64(bytes) {
     let binary = '';
     const CHUNK = 0x8000;
     for (let i = 0; i < bytes.length; i += CHUNK) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
     return btoa(binary);
+  }
+
+  function cosConfig() {
+    const cos = readSetting().cos;
+    if (!cos?.secretId || !cos.secretKey || !cos.bucket || !cos.region) {
+      throw Error('请先在「设置 → 编辑器 → 粘贴图片」配置 COS');
+    }
+    const base = URL.parse(cos.publicBase || 'https://' + cos.bucket + '.cos.' + cos.region + '.myqcloud.com');
+    if (!base || !/^https?:$/.test(base.protocol) || base.search || base.hash) {
+      throw Error('COS 自定义域名需要填写 HTTP 或 HTTPS 地址');
+    }
+    return { ...cos, base: base.href.replace(/\/+$/, '') };
+  }
+
+  async function uploadCos(bytes, mdPath, ext, config, stable = false) {
+    if (!bytes.length) return { error: '没有图片数据' };
+    if (bytes.length > MAX_BYTES) return { error: '图片超过 10MB' };
+    const { base, ...cos } = config;
+    const prefix = (cos.prefix || '').replace(/^\/+|\/+$/g, '');
+    const fingerprint = stable
+      ? Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), byte => byte.toString(16).padStart(2, '0')).join('')
+      : stamp() + '-' + shortHash(bytes);
+    const name = slugOf(mdPath) + '-' + fingerprint + '.' + ext;
+    const key = prefix ? prefix + '/' + name : name;
+    const url = base + '/' + key.split('/').map(part =>
+      encodeURIComponent(part).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase())
+    ).join('/');
+    const result = await window.myIDE.cosUpload?.({
+      ...cos, key, body: toBase64(bytes), contentType: MIME[ext] || 'application/octet-stream',
+    });
+    return result?.ok ? { ref: url, url } : { error: result?.error || '上传 COS 失败' };
+  }
+
+  function imageExtension(path) {
+    const ext = /\.([^.\\/]+)$/.exec(path)?.[1].toLowerCase();
+    return Object.hasOwn(MIME, ext) ? ext : '';
+  }
+
+  async function uploadLocal(path, mdPath, config) {
+    const ext = imageExtension(path);
+    if (!ext) return { error: '不支持的图片格式' };
+    const fs = window.myIDE.fs;
+    const size = await fs.fileSize(path);
+    if (!size?.ok) return { error: size?.errorCode === 'ENOENT' ? '找不到图片文件' : '无法读取本地图片' };
+    if (size.size > MAX_BYTES) return { error: '图片超过 10MB' };
+    const data = await fs.readBuffer(path);
+    if (!data?.buffer) return { error: data?.error || (data?.tooLarge ? '图片超过 10MB' : '无法读取本地图片') };
+    return uploadCos(new Uint8Array(data.buffer), mdPath, ext, config, true);
   }
 
   /** 项目根目录：App.root；没有项目时返回空串。 */
@@ -116,26 +164,11 @@ window.MdPasteImage = (() => {
     const mdDir = String(mdPath || '').replace(/[\\/][^\\/]+$/, '');
     const bytes = new Uint8Array(await file.arrayBuffer());
     const ext = EXT[file.type] || 'png';
-    const name = slugOf(mdPath) + '-' + stamp() + '-' + shortHash(bytes) + '.' + ext;
-
-    // ① COS：直传对象存储，MD 里插公网 URL
     if (setting.mode === 'cos') {
-      const cos = setting.cos || {};
-      if (!cos.secretId || !cos.secretKey || !cos.bucket || !cos.region) {
-        return { error: 'COS 未配置完整（设置 → 编辑器 → 粘贴图片：需要 SecretId / SecretKey / Bucket / Region）' };
-      }
-      const key = (cos.prefix ? cos.prefix.replace(/^\/+|\/+$/g, '') + '/' : '') + name;
-      const result = await window.myIDE.cosUpload?.({
-        ...cos,
-        key,
-        body: toBase64(bytes),
-        contentType: MIME[ext] || 'application/octet-stream',
-      });
-      if (!result?.ok) return { error: result?.error || '上传 COS 失败' };
-      // 自定义域名优先；否则用官方默认域名
-      const base = (cos.publicBase || ('https://' + cos.bucket + '.cos.' + cos.region + '.myqcloud.com')).replace(/\/+$/, '');
-      return { ref: base + '/' + key, url: base + '/' + key };
+      try { return await uploadCos(bytes, mdPath, ext, cosConfig()); }
+      catch (error) { return { error: error.message }; }
     }
+    const name = slugOf(mdPath) + '-' + stamp() + '-' + shortHash(bytes) + '.' + ext;
 
     if (!mdDir) return { error: '这个笔记还没有保存到磁盘，无法确定图片位置' };
 
@@ -192,5 +225,5 @@ window.MdPasteImage = (() => {
   }
   hydrateFromMirror();
 
-  return { save, readSetting, writeSetting, hydrate, hydrateFromMirror, MAX_BYTES, KEY, MODES };
+  return { save, cosConfig, uploadLocal, imageExtension, readSetting, writeSetting, hydrate, hydrateFromMirror, MAX_BYTES, KEY, MODES };
 })();

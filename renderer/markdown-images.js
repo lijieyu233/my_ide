@@ -20,6 +20,92 @@ window.MarkdownImages = (() => {
     return { src: token.href, alt: size(token.text).label, width: dimensions.width,
       resize: width => '![' + dimensions.label + (width ? '|' + width : '') + raw.slice(head[0].length - 1) };
   }
+  function localImagePath(src, documentPath) {
+    const urlText = src.trim().replace(/\\/g, '/');
+    if (!urlText || urlText.startsWith('//')) return null;
+    const drivePath = /^[a-z]:\//i.test(urlText);
+    if (!drivePath && /^[a-z][\w+.-]*:/i.test(urlText) && !/^file:/i.test(urlText)) return null;
+    const base = documentPath.replace(/\\/g, '/');
+    if (!/^(?:[a-z]:\/|\/(?!\/))/i.test(base)) return null;
+    const fileBase = (base.startsWith('/') ? 'file://' : 'file:///') + base.split('/').map((segment, index) =>
+      index === 0 && /^[a-z]:$/i.test(segment) ? segment : encodeURIComponent(segment)
+    ).join('/');
+    try {
+      const url = new URL(drivePath ? 'file:///' + urlText : urlText, fileBase);
+      if (url.protocol !== 'file:' || url.hostname || /%2f|%5c/i.test(url.pathname)) return null;
+      const path = decodeURIComponent(url.pathname).replace(/^\/(?=[a-z]:\/)/i, '');
+      return /\x00|^(?:\/\/|[a-z]:\/\/)/i.test(path) ? null : path;
+    } catch { return null; }
+  }
+
+  // 由语法树定位源码范围，代码块里的示例不会参与替换。
+  function localReferences(source, documentPath) {
+    const tree = CM6.Md.markdownLanguage.parser.parse(source);
+    const raw = node => node ? source.slice(node.from, node.to) : '';
+    const labelKey = label => label.trim().replace(/\s+/g, ' ').toLowerCase();
+    const destination = rawUrl => rawUrl.replace(/^<([\s\S]*)>$/, '$1').replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\]\\^_{|}~])/g, '$1');
+    const definitions = new Map(), references = [];
+    function add(src, from, to, replacement) {
+      const path = localImagePath(src, documentPath);
+      if (path && MdPasteImage.imageExtension(path)) references.push({ path, from, to, replacement });
+    }
+    tree.iterate({ enter({ name, node }) {
+      if (name !== 'LinkReference') return;
+      const label = labelKey(raw(node.getChild('LinkLabel')).slice(1, -1));
+      if (!definitions.has(label)) definitions.set(label, {
+        src: destination(raw(node.getChild('URL'))), title: raw(node.getChild('LinkTitle')),
+      });
+    } });
+    let htmlParser;
+    tree.iterate({ enter({ name, node, from, to }) {
+      if (name === 'Image') {
+        const target = node.getChild('URL');
+        if (target) {
+          const value = raw(target);
+          add(destination(value), target.from, target.to, url => value.startsWith('<') ? '<' + url + '>' : url);
+        } else {
+          const wiki = /^!\[\[([^\]\n|]+)(?:\|([^\]\n]*))?\]\]$/.exec(raw(node));
+          if (wiki) {
+            const alias = /^\d+(?:x\d+)?$/.test(wiki[2] || '') ? wiki[1] + '|' + wiki[2] : wiki[2] || wiki[1];
+            const label = alias.replace(/[\\[\]]/g, '\\$&');
+            add(wiki[1], from, to, url => '![' + label + '](<' + url + '>)');
+          } else {
+            const close = node.getChildren('LinkMark')[1];
+            if (!close) return false;
+            const label = raw(node.getChild('LinkLabel')).slice(1, -1) || source.slice(from + 2, close.from);
+            const def = definitions.get(labelKey(label));
+            // 引用定义可能也被普通链接使用，只把图片引用转为内联。
+            if (def?.src) add(def.src, from, to, url => source.slice(from, close.to) + '(<' + url + '>' + (def.title ? ' ' + def.title : '') + ')');
+          }
+        }
+        return false;
+      }
+      if (name !== 'HTMLTag' && name !== 'HTMLBlock') return;
+      const html = raw(node);
+      if (!/<img[\s/>]/i.test(html)) return false;
+      htmlParser ||= CM6.CodeLangs.html().language.parser;
+      htmlParser.parse(html).iterate({ enter({ node: tag }) {
+        if (!/^(SelfClosingTag|OpenTag)$/.test(tag.name)) return;
+        const tagName = tag.getChild('TagName');
+        if (tagName && html.slice(tagName.from, tagName.to).toLowerCase() !== 'img') return;
+        const src = tag.getChildren('Attribute').find(attribute => {
+          const attr = attribute.getChild('AttributeName');
+          return attr && html.slice(attr.from, attr.to).toLowerCase() === 'src';
+        });
+        const value = src?.getChild('AttributeValue') || src?.getChild('UnquotedAttributeValue');
+        if (!value) return;
+        const quoted = value.name === 'AttributeValue';
+        const start = from + value.from + Number(quoted);
+        const end = from + value.to - Number(quoted);
+        const literal = source.slice(start, end);
+        const decoded = literal.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'");
+        add(decoded, start, end, url => url.replace(/&/g, '&amp;'));
+      } });
+      return false;
+    } });
+    return references;
+  }
+
   const toast = (message, bad = false) => window.MI?.toast(message, bad ? 'err' : undefined);
   function bind(img, options = {}) {
     const host = options.host || img.parentElement;
@@ -113,5 +199,5 @@ window.MarkdownImages = (() => {
     });
     return () => { stop(); handle.remove(); };
   }
-  return { parse, size, bind };
+  return { parse, size, bind, localReferences };
 })();
