@@ -130,7 +130,7 @@ function createServer(){
     return reply(message.id,{data:[{id:t.turn?.id,status:t.running?'inProgress':t.turn?.status||'completed'}],nextCursor:null});
    }
    if(message.method==='permissionProfile/list')return reply(message.id,{data:[{id:':workspace',allowed:true}],nextCursor:null});
-   if(message.method==='thread/start'){const t={id:'offline-thread-'+ ++threadSeq,projectId:p.projectId,cwd:p.cwd,model:p.model||models[0].model,running:false};threads.set(t.id,t);loaded.add(t.id);return reply(message.id,{thread:{id:t.id,cwd:t.cwd,turns:[]},cwd:t.cwd,model:t.model,reasoningEffort:'medium'});}
+   if(message.method==='thread/start'){const t={id:'019caa00-0000-7000-8001-'+String(++threadSeq).padStart(12,'0'),projectId:p.projectId,cwd:p.cwd,model:p.model||models[0].model,running:false};threads.set(t.id,t);loaded.add(t.id);return reply(message.id,{thread:{id:t.id,cwd:t.cwd,turns:[]},cwd:t.cwd,model:t.model,reasoningEffort:'medium'});}
    if(message.method==='thread/resume'){
     const t=threads.get(p.threadId);
     if(!t)return send({id:message.id,error:{code:-32000,message:'Unknown synthetic thread'}});
