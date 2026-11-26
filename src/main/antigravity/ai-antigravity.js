@@ -2,6 +2,7 @@ const fs = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 const { createStore } = require('./antigravity-store');
+const { reportedWorkspacePath } = require('./agy-runtime');
 const clone = value => JSON.parse(JSON.stringify(value));
 const error = (message, code, extra = {}) => Object.assign(Error(message), { code, ...extra });
 const norm = value => process.platform === 'win32' ? path.normalize(value).replace(/^\\\\\?\\/, '').toLowerCase() : path.normalize(value);
@@ -84,7 +85,13 @@ function createService(options = {}) {
   function emit(run, event) {
     if (!disposed && !run.finished) { try { run.onEvent({ ...event, context: run.context }); } catch (cause) { options.onDiagnostic?.({ code: 'AGY_EVENT_HANDLER', message: cause.message }); } }
   }
-  const phase = (run, value, text) => { run.phase = value; emit(run, { type: 'status', phase: value, text, ...(run.record?.id ? { nativeSessionId: run.record.id } : {}) }); };
+  function phase(run, value, text) {
+    const nativeSessionId = run.record?.id;
+    if (run.phase === value && run.phaseNativeId === nativeSessionId) return;
+    run.phase = value;
+    run.phaseNativeId = nativeSessionId;
+    emit(run, { type: 'status', phase: value, text, ...(nativeSessionId ? { nativeSessionId } : {}) });
+  }
   const nativeKey = (conn, id) => JSON.stringify([conn.root, id]);
   const recordOf = info => store.snapshot().sessions[info.key];
   function assertRecord(record, info, context) {
@@ -110,9 +117,18 @@ function createService(options = {}) {
       Object.values(store.snapshot().sessions).some(record => norm(record.cwd) === root && record.unknown) ||
       Object.entries(store.snapshot().creations || {}).some(([key]) => JSON.parse(key)[2] === root);
   }
-  function closeConnection(conn) {
+  async function stopChild(child) {
+    if (!child?.pid || child.exitCode != null || child.signalCode != null) return;
+    await new Promise(resolve => {
+      const done = () => { clearTimeout(timer); child.off('close', done); resolve(); };
+      const timer = setTimeout(done, 3000);
+      child.once('close', done);
+      try { child.kill(); } catch { done(); }
+    });
+  }
+  async function closeConnection(conn, cause = error('Antigravity 连接已关闭', 'AGY_DISCONNECTED')) {
     clearTimeout(conn.idleTimer); closing.add(conn.root);
-    try { conn.rpc.close(error('Antigravity 连接已关闭', 'AGY_DISCONNECTED')); conn.child?.kill(); }
+    try { conn.rpc.close(cause); await stopChild(conn.child); }
     finally { if (connections.get(conn.root) === conn) connections.delete(conn.root); closing.delete(conn.root); }
   }
   function keepConnection(conn) {
@@ -122,7 +138,7 @@ function createService(options = {}) {
     conn.idleTimer = setTimeout(() => {
       if (disposed || conn.rpc.closed) return;
       if (connectionBusy(conn)) keepConnection(conn);
-      else closeConnection(conn);
+      else void closeConnection(conn);
     }, timeout);
     conn.idleTimer.unref?.();
   }
@@ -213,7 +229,7 @@ function createService(options = {}) {
     if (connections.size + starting.size >= maximum) {
       const idle = [...connections.values()].filter(conn => !connectionBusy(conn)).sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
       if (!idle) throw error('Antigravity 活动项目连接已达上限，请等待当前操作结束', 'AGY_CONNECTION_LIMIT');
-      closeConnection(idle);
+      await closeConnection(idle);
     }
     const pending = (async () => {
       await store.load();
@@ -223,7 +239,8 @@ function createService(options = {}) {
         const runtime = options.runtime || require('./agy-runtime');
         const { AcpTransport } = require('./acp-transport');
         const resolved = await runtime.resolveAgyExecutable({ executablePath: executablePath || undefined, projectRoot: info.cwd });
-        conn.child = runtime.spawnAgy({ executablePath: resolved.executablePath || resolved.path || resolved, cwd: info.cwd });
+        const env = await options.resolveEnvironment?.();
+        conn.child = runtime.spawnAgy({ executablePath: resolved.executablePath || resolved.path || resolved, cwd: info.cwd, env });
         conn.rpc = new AcpTransport({ child: conn.child, generation: conn.generation, onRequest: request => incoming(conn, request), onDiagnostic: options.onDiagnostic });
       }
       if (!conn.rpc) throw error('Antigravity 传输未就绪', 'AGY_TRANSPORT');
@@ -241,14 +258,18 @@ function createService(options = {}) {
         conn.capabilities = clone(init.agentCapabilities || {}); conn.agentInfo = clone(init.agentInfo || {});
         if (disposed) throw error('Antigravity 服务已关闭', 'AGY_CLOSED');
         connections.set(info.root, conn); keepConnection(conn); return conn;
-      } catch (cause) { conn.rpc.close(cause); conn.child?.kill(); throw cause; }
+      } catch (cause) { await closeConnection(conn, cause); throw cause; }
     })().finally(() => starting.delete(info.root));
     pending.executablePath = executablePath; starting.set(info.root, pending); return pending;
+  }
+  function imageSupported(conn) {
+    const verified = typeof options.imageVerified === 'function' ? options.imageVerified(conn.agentInfo) : options.imageVerified === true;
+    return verified && conn.capabilities.promptCapabilities?.image === true;
   }
   async function featureFlags(info, conn, readOnly = false) {
     const executionAllowed = !readOnly && !!options.allowExecution && !!await options.allowExecution(info.cwd);
     const record = recordOf(info), pending = record?.unknown || record?.configUnknown || blocked.has(info.key) || !!store.snapshot().creations?.[info.key];
-    return { executionAllowed, capabilities: { ...clone(conn.capabilities), send: executionAllowed && !pending, config: !readOnly && !pending, queue: executionAllowed, steering: false, image: !!conn.capabilities.promptCapabilities?.image && options.imageVerified === true }, readOnly };
+    return { executionAllowed, capabilities: { ...clone(conn.capabilities), send: executionAllowed && !pending, config: !readOnly && !pending, queue: executionAllowed, steering: false, image: imageSupported(conn) }, readOnly };
   }
   async function connect(cfg, context) {
     const info = await identity(context), conn = await connectInfo(cfg, info);
@@ -264,7 +285,7 @@ function createService(options = {}) {
     const info = await identity(context); await store.load();
     const conn = connections.get(info.root);
     if (starting.has(info.root) || closing.has(info.root) || conn && connectionBusy(conn)) throw error('Antigravity 当前项目仍有运行、恢复或待核对提交，请先完成处理', 'AGY_BUSY');
-    if (conn) closeConnection(conn);
+    if (conn) await closeConnection(conn);
     return { ok: true, connected: false };
   }
   async function listHistory(cfg, context, pagination = {}) {
@@ -274,7 +295,7 @@ function createService(options = {}) {
     const sessions = [];
     for (const row of result.sessions || result.items || []) {
       if (!opaqueId(row.sessionId) || typeof row.cwd !== 'string') continue;
-      let cwd; try { cwd = await canonical(row.cwd); } catch { continue; }
+      let cwd; try { cwd = await canonical(reportedWorkspacePath(row.cwd)); } catch { continue; }
       if (norm(cwd) !== info.root) continue;
       const entry = Object.entries(store.snapshot().sessions).find(([, record]) => record.id === row.sessionId && norm(record.cwd) === info.root && record.projectId === info.projectId);
       const own = entry?.[1], localSessionId = own?.localSessionId || (entry ? JSON.parse(entry[0])[3] : undefined);
@@ -291,7 +312,7 @@ function createService(options = {}) {
     for (let page = 0; page < 100; page++) {
       const result = await conn.rpc.request('session/list', { cwd: info.cwd, ...(cursor ? { cursor } : {}) });
       for (const row of result.sessions || result.items || []) if (row.sessionId === id) {
-        if (typeof row.cwd !== 'string' || norm(await canonical(row.cwd)) !== info.root) throw error('Antigravity 原生会话目录不一致', 'AGY_IDENTITY');
+        if (typeof row.cwd !== 'string' || norm(await canonical(reportedWorkspacePath(row.cwd))) !== info.root) throw error('Antigravity 原生会话目录不一致', 'AGY_IDENTITY');
         return true;
       }
       cursor = result.nextCursor; if (!cursor || seen.has(cursor)) return false; seen.add(cursor);
@@ -313,7 +334,7 @@ function createService(options = {}) {
     try {
       const response = await conn.rpc.request(method, { sessionId: record.id, cwd: info.cwd, mcpServers: [] }, { timeoutMs: options.historyTimeoutMs || 30000 });
       if (loading.error) throw loading.error;
-      if (response?.sessionId && response.sessionId !== record.id || response?.cwd && norm(await canonical(response.cwd)) !== info.root) throw error('Antigravity 恢复了另一条会话', 'AGY_IDENTITY');
+      if (response?.sessionId && response.sessionId !== record.id || response?.cwd && norm(await canonical(reportedWorkspacePath(response.cwd))) !== info.root) throw error('Antigravity 恢复了另一条会话', 'AGY_IDENTITY');
       const next = { ...record, configOptions: clone(response?.configOptions || record.configOptions || []), ...(Array.isArray(response?.configOptions) ? { configUnknown: false } : {}), ...(canResume ? {} : { history: updates, lastHistoryLoadedAt: Date.now() }), lastLoadedAt: Date.now() };
       if (!canResume) { next.historyCacheFull = false; next.outputTruncated = false; delete next.latestTurn; }
       await store.transaction(data => { data.sessions[info.key] = next; });
@@ -430,7 +451,7 @@ function createService(options = {}) {
       const info = await identity(context); run.info = info; const input = promptContent(messages, context.page); await execution(info);
       phase(run, 'connecting', '正在连接 Antigravity');
       const available = await connectInfo(cfg, info);
-      if (input.some(block => block.type === 'image') && (!available.capabilities.promptCapabilities?.image || options.imageVerified !== true)) throw error('当前 Antigravity 图片能力尚未通过验证，请保留附件', 'AGY_IMAGE_UNVERIFIED');
+      if (input.some(block => block.type === 'image') && !imageSupported(available)) throw error('当前 Antigravity 图片能力尚未通过验证，请保留附件', 'AGY_IMAGE_UNVERIFIED');
       const { conn, record } = await attach(cfg, context, info, run);
       await store.transaction(data => { data.sessions[info.key].clean = false; data.sessions[info.key].unknown = true; data.sessions[info.key].unknownSince = Date.now(); data.sessions[info.key].pendingInput = input; });
       phase(run, 'submitting', '正在提交 Antigravity，等待代理响应'); touch(run);
@@ -586,8 +607,12 @@ function createService(options = {}) {
   async function dispose() {
     disposed = true;
     for (const run of runs.values()) { run.stopping = true; run.transportController.abort(); settlePending(run); }
-    for (const conn of connections.values()) { conn.rpc.close(error('MyIDE 正在关闭，原生提交状态待核对', 'AGY_CLOSED')); conn.child?.kill(); }
-    await Promise.allSettled([...starting.values()]); await store.flush();
+    const reason = error('MyIDE 正在关闭，原生提交状态待核对', 'AGY_CLOSED');
+    await Promise.allSettled([
+      ...[...connections.values()].map(conn => closeConnection(conn, reason)),
+      ...starting.values(),
+    ]);
+    await store.flush();
   }
   const hasRun = context => [...runs.values()].some(run => run.context.sessionId === context?.sessionId &&
     run.context.projectId === context?.projectId && norm(run.context.rootId || '') === norm(context?.rootId || ''));

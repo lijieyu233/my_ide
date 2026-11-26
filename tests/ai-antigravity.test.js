@@ -189,7 +189,9 @@ async function test(name, fn) { await fn(); passed++; console.log('PASS ' + name
     });
     await test('service runs through real transport and trusted inbound permission callback', async () => {
       const { PassThrough } = require('stream'); let killed = 0, permissionResult;
-      const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => { killed++; child.emit('exit', 0); };
+      const child = new EventEmitter();
+      child.pid = 1; child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+      child.kill = () => { killed++; child.emit('exit', 0); child.emit('close', 0); };
       const send = value => child.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\n'); let promptId;
       child.stdin.on('data', data => { for (const line of data.toString().trim().split('\n')) { const req = JSON.parse(line);
         if (req.method === 'initialize') send({ id: req.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });

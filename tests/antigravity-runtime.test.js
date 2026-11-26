@@ -1,7 +1,7 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('fs/promises'), path = require('path'), os = require('os');
 const { EventEmitter } = require('events'), { PassThrough } = require('stream');
-const { resolveAgyExecutable, probeAgy, spawnAgy, buildAgyEnvironment, sandboxStatus } = require('../src/main/antigravity/agy-runtime');
+const { resolveAgyExecutable, probeAgy, spawnAgy, buildAgyEnvironment, environmentFromSystemProxy, reportedWorkspacePath, sandboxStatus } = require('../src/main/antigravity/agy-runtime');
 async function fixture(run) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'myide-agy-runtime-'));
   const projectRoot = path.join(root, 'project'), tools = path.join(root, '中文 CLI 空格');
@@ -105,6 +105,25 @@ for (const [label, replies, code, overrides] of [
   await assert.rejects(probeAgy({ ...data, ...overrides, spawnImpl: mockSpawn(replies, calls) }), error => error.code === code && !error.message.includes('secret'));
   if (['AGY_PROBE_TIMEOUT', 'AGY_PROBE_LIMIT'].includes(code)) assert.equal(calls[0].child.killed, true);
 }));
+test('normalizes only the reported Windows /drive:/path spelling', () => {
+  assert.equal(reportedWorkspacePath('/C:/Users/user/project', 'win32'), 'C:/Users/user/project');
+  assert.equal(reportedWorkspacePath('/C:/Users/user/project', 'linux'), '/C:/Users/user/project');
+  assert.equal(reportedWorkspacePath('C:/Users/user/project', 'win32'), 'C:/Users/user/project');
+  assert.equal(reportedWorkspacePath('//C:/network/path', 'win32'), '//C:/network/path');
+  assert.equal(reportedWorkspacePath('/projects/user', 'win32'), '/projects/user');
+});
+test('only Antigravity child inherits the first supported system proxy or its existing override', () => {
+  const env = { SystemRoot: 'C:/Windows' };
+  assert.deepEqual(environmentFromSystemProxy('PROXY 127.0.0.1:10808; DIRECT', env), {
+    ...env, HTTPS_PROXY: 'http://127.0.0.1:10808',
+  });
+  assert.equal(Object.hasOwn(env, 'HTTPS_PROXY'), false);
+  assert.equal(environmentFromSystemProxy('DIRECT; PROXY 127.0.0.1:10808', env), env);
+  assert.equal(environmentFromSystemProxy('PROXY user:secret@host:123', env), env);
+  assert.equal(environmentFromSystemProxy('PROXY proxy.invalid:65536', env), env);
+  const explicit = { https_proxy: 'http://somewhere.invalid:80' };
+  assert.equal(environmentFromSystemProxy('PROXY 127.0.0.1:10808', explicit), explicit);
+});
 test('23H2 sandbox is unavailable; newer Windows remains unverified', () => {
   assert.deepEqual(sandboxStatus({ platform: 'win32', release: '10.0.22631.3672' }), {
     status: 'unavailable', available: false, reason: 'windows_build_unsupported', windowsBuild: 22631,

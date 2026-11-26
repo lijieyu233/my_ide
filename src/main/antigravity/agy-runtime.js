@@ -79,6 +79,24 @@ function buildAgyEnvironment(env = process.env, options = {}) {
   return clean;
 }
 
+function reportedWorkspacePath(value, platform = process.platform) {
+  // Antigravity 1.5.18 lists Windows directories as /C:/path after a turn.
+  // Convert this spelling before checking the actual path and session binding.
+  return platform === 'win32' && typeof value === 'string' && /^\/[a-z]:\//i.test(value)
+    ? value.slice(1)
+    : value;
+}
+
+function environmentFromSystemProxy(proxy, env = process.env) {
+  // Go's HTTP client checks environment variables. Preserve an existing
+  // override and translate only the system's first supported route.
+  if (Object.keys(env).some(name => /^(https|all)_proxy$/i.test(name) && env[name])) return env;
+  const match = String(proxy || '').split(';')[0].trim().match(/^(PROXY|HTTPS) ([a-z0-9.\-]+|\[[a-f0-9:]+\]):(\d{1,5})$/i);
+  if (!match || Number(match[3]) < 1 || Number(match[3]) > 65535) return env;
+  const scheme = match[1].toUpperCase() === 'HTTPS' ? 'https' : 'http';
+  return { ...env, HTTPS_PROXY: `${scheme}://${match[2]}:${match[3]}` };
+}
+
 function sandboxStatus({ platform = process.platform, release = os.release() } = {}) {
   // A new Windows build alone does not prove the required August 2026 patch.
   // https://antigravity.google/docs/sandbox/?tab=cli
@@ -168,4 +186,4 @@ async function probeAgy(options = {}) {
   return { ok: true, ...runtime, version, acpAvailable: true, authentication: 'unverified', sandbox: sandboxStatus(options) };
 }
 
-module.exports = { resolveAgyExecutable, probeAgy, spawnAgy, buildAgyEnvironment, sandboxStatus };
+module.exports = { resolveAgyExecutable, probeAgy, spawnAgy, buildAgyEnvironment, environmentFromSystemProxy, reportedWorkspacePath, sandboxStatus };
