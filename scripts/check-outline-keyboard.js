@@ -2,6 +2,11 @@
 const {app,BrowserWindow}=require('electron'),fs=require('fs'),path=require('path'),os=require('os'),assert=require('assert/strict');
 const home=fs.mkdtempSync(path.join(os.tmpdir(),'myide-outline-check-')),P=path.join(home,'项目 中文');fs.mkdirSync(P);
 const file=path.join(P,'大纲 中文.md'),text=Buffer.from('# 根章节\r\n\r\n根正文\r\n\r\n## 甲章节\r\n\r\n### 甲子节\r\n\r\n## 乙章节\r\n');fs.writeFileSync(file,text);
+const jumpFile=path.join(P,'章节跳转.md');
+const table=['| 时间 | 结果 |','| --- | --- |',...Array.from({length:12},(_,i)=>'| '+i+' 秒 | 完成分析 |')].join('\r\n');
+const jumpText=['# 章节跳转','',...Array(5).fill(table).flatMap(value=>[value,'']),'## 目标小节','',
+  ...Array.from({length:70},(_,i)=>'目标小节正文 '+(i+1)).flatMap(line=>[line,'']),'## 末尾小节',''].join('\r\n');
+fs.writeFileSync(jumpFile,jumpText);
 os.homedir=()=>home;app.setPath('userData',path.join(home,'profile'));process.argv.push('--headless');
 const output=path.join(__dirname,'..','.ui-check-trash','130a1-native-'+process.pid);fs.mkdirSync(output,{recursive:true});
 require('../main');let win,passed=0;
@@ -53,5 +58,38 @@ app.whenReady().then(async()=>{try{
  })()`));
  check('窄窗口18px树入口与选中章节可见',await run('(()=>{const el=document.getElementById("outline"),r=el.getBoundingClientRect(),s=el.querySelector(".key-nav-sel").getBoundingClientRect();return r.width>0&&r.left>=0&&r.right<=innerWidth&&s.top>=r.top&&s.bottom<=r.bottom})()'));await capture('outline-narrow');
  check('查看和键盘导航均未改磁盘原字节',fs.readFileSync(file).equals(text));check('正文仍未修改且内容与加载时一致',await run('!Viewer.activeTab.dirty&&Viewer.activeTab.content.replace(/\\r\\n/g,"\\n")==='+JSON.stringify(text.toString().replace(/\r\n/g,'\n'))));
+ win.setContentSize(1280,850);
+ await run('Viewer.openFile('+JSON.stringify(jumpFile)+')');
+ await wait('Viewer.activeTab.path==='+JSON.stringify(jumpFile)+'&&!!Viewer.cm&&Outline.headings.length===3');
+ const headlinePosition = `(() => {
+   const view = Viewer.cm.view;
+   const from = view.state.doc.line(Outline.headings[1].line).from;
+   return view.coordsAtPos(from)?.top - view.scrollDOM.getBoundingClientRect().top;
+ })()`;
+ await run(`(() => {
+   const view = Viewer.cm.view;
+   const from = view.state.doc.line(Outline.headings[1].line).from;
+   view.scrollDOM.scrollTop = view.lineBlockAt(from).top - view.scrollDOM.clientHeight + 80;
+ })()`);
+ await wait(headlinePosition+' > Viewer.cm.view.scrollDOM.clientHeight / 2');
+ const selectTarget = `[...document.querySelectorAll('#outline .outline-item')].find(row => row.textContent==='目标小节').click()`;
+ await run(selectTarget);
+ await run('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+ const headingY = await run(headlinePosition);
+ check('实时预览中点击大纲后标题位于编辑区上沿 ('+headingY+'px)',headingY>=0&&headingY<55);
+ await capture('outline-jump-top');
+ for(const mode of ['preview','split']){
+   await run('document.querySelector("[data-editor-shortcut=md-mode-'+mode+']").click()');
+   await wait('Viewer.activeTab.mode==='+JSON.stringify(mode)+' && !!document.querySelector(".md-view h2")');
+   await run(selectTarget);
+   await run('new Promise(resolve => requestAnimationFrame(resolve))');
+   const position=await run(`(() => {
+     const target = document.querySelector('.md-view h2');
+     const host = target.closest('.md-split-preview') || target.closest('.md-view');
+     return target.getBoundingClientRect().top - host.getBoundingClientRect().top;
+   })()`);
+   check(mode+' 跳转后标题对齐预览上沿 ('+position+'px)',position>=0&&position<36);
+ }
+ check('章节定位未修改原文件',fs.readFileSync(jumpFile,'utf8')===jumpText&&await run('!Viewer.activeTab.dirty'));
  fs.writeFileSync(path.join(output,'report.json'),JSON.stringify({passed,failed:0,home,output,keyboard:'webContents.sendInputEvent; composition lifecycle synthetic; no OS IME/screen reader'},null,2));console.log('隐藏生产大纲键盘：'+passed+' 通过 / 0 失败；截图：'+output);app.exit(0);
 }catch(e){console.error(e.stack);fs.writeFileSync(path.join(output,'failure.txt'),e.stack);app.exit(1);}});setTimeout(()=>app.exit(2),120000).unref();

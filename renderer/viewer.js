@@ -472,11 +472,24 @@ const Viewer = (() => {
       if(tab.id!==location.documentId||tab.editRevision!==location.revision)return fail('章节所属文档已变化，请重新打开大纲');
       if(cmApi?.__tab===tab&&cmApi.view?.dom.isConnected){
         if(!Number.isSafeInteger(location.line)||location.line<1||location.line>cmApi.view.state.doc.lines)return fail('原章节位置已过期');
-        const from=location.offset??cmApi.view.state.doc.line(location.line).from;if(!Number.isSafeInteger(from)||from<0||from>cmApi.view.state.doc.length)return fail('原结构位置已过期');cmApi.view.dispatch({selection:{anchor:from},scrollIntoView:true});cmApi.focus();
+        const from=location.offset??cmApi.view.state.doc.line(location.line).from;
+        if(!Number.isSafeInteger(from)||from<0||from>cmApi.view.state.doc.length)return fail('原结构位置已过期');
+        const markdown=MD_EXTS.has(extOf(tab.name));
+        cmApi.view.dispatch({
+          selection:{anchor:from},
+          effects:markdown ? CM6.View.EditorView.scrollIntoView(from,{y:'start',yMargin:12}) : [],
+          scrollIntoView:!markdown,
+        });
+        cmApi.focus();
       }else{
-        const md=tab.mode==='split'?viewer.querySelector('.md-split-preview .md-view'):viewer.querySelector('.md-view'),target=md?.querySelectorAll('h1,h2,h3,h4,h5,h6')[location.headingIndex];
+        const split=tab.mode==='split'?viewer.querySelector('.md-split-preview'):null;
+        const md=(split||viewer).querySelector('.md-view');
+        const target=md?.querySelectorAll('h1,h2,h3,h4,h5,h6')[location.headingIndex];
         if(!target)return fail('当前视图无法定位原章节');
-        target.scrollIntoView?.({block:'center'});target.style.outline='2px solid var(--accent)';setTimeout(()=>{target.style.outline='';},1500);
+        const scroller=split||md;
+        scroller.scrollTop+=target.getBoundingClientRect().top-scroller.getBoundingClientRect().top-12;
+        target.style.outline='2px solid var(--accent)';
+        setTimeout(()=>{target.style.outline='';},1500);
       }
     }
     NavigationHistory.finish(ticket,captureLocation());return tab?.error?{ok:false,error:tab.error}:{ok:true};
