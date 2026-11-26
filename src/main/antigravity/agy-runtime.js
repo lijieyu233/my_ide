@@ -109,10 +109,12 @@ function spawnAgy(options = {}) {
   });
 }
 
+const acpHelp = /\bagent client protocol\b|\b(?:agy(?:\.exe)?\s+acp|start acp server)\b/i;
+
 function runProbe(executable, args, options) {
   const { spawnImpl = spawn, env = process.env, platform = process.platform, timeoutMs = 5000, maxProbeBytes = 64 * 1024 } = options;
   return new Promise((resolve, reject) => {
-    let child, finished = false, bytes = 0;
+    let child, finished = false, bytes = 0, looksLikeAcpHelp = false, stderrTail = '';
     const fragments = [], finish = (error, result) => {
       if (finished) return;
       finished = true; clearTimeout(timer);
@@ -136,10 +138,21 @@ function runProbe(executable, args, options) {
       if (bytes > maxProbeBytes) finish(failure('AGY_PROBE_LIMIT', 'Antigravity CLI 检查输出超出限制'));
       else fragments.push(buffer);
     });
-    // Never retain raw stderr: it may contain account/configuration material.
-    child.stderr?.on('data', () => {});
+    // Official agy 1.5.18 writes ACP help to stderr. Keep only a small rolling
+    // tail for the signature and expose a boolean, never the diagnostic text.
+    child.stderr?.on('data', chunk => {
+      if (finished || args[0] !== 'acp') return;
+      bytes += Buffer.byteLength(chunk);
+      if (bytes > maxProbeBytes) {
+        finish(failure('AGY_PROBE_LIMIT', 'Antigravity CLI 检查输出超出限制'));
+        return;
+      }
+      const fragment = stderrTail + chunk.toString();
+      looksLikeAcpHelp ||= acpHelp.test(fragment);
+      stderrTail = fragment.slice(-80);
+    });
     child.on('error', error => finish(failure(['EACCES', 'EPERM'].includes(error.code) ? 'AGY_START_BLOCKED' : 'AGY_START_FAILED', 'Antigravity CLI 无法启动')));
-    child.on('close', code => finish(null, { code, output: Buffer.concat(fragments).toString('utf8') }));
+    child.on('close', code => finish(null, { code, output: Buffer.concat(fragments).toString('utf8'), looksLikeAcpHelp }));
   });
 }
 
@@ -149,7 +162,7 @@ async function probeAgy(options = {}) {
   const version = versionResult.code === 0 && versionResult.output.match(/(?:^|\s)v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?=\s|$)/)?.[1];
   if (!version) throw failure('AGY_VERSION_FAILED', '无法读取 Antigravity CLI 版本');
   const help = await runProbe(runtime.executable, ['acp', '--help'], options);
-  if (help.code !== 0 || !/\bacp\b|agent client protocol/i.test(help.output)) {
+  if (help.code !== 0 || !(help.looksLikeAcpHelp || acpHelp.test(help.output))) {
     throw failure('AGY_ACP_UNAVAILABLE', '此 Antigravity CLI 未通过 ACP 命令检查');
   }
   return { ok: true, ...runtime, version, acpAvailable: true, authentication: 'unverified', sandbox: sandboxStatus(options) };

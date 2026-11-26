@@ -84,6 +84,14 @@ test('probe reads only safe version/ACP help and keeps authentication unverified
     assert(!JSON.stringify(result).includes('secret'));
   }
 }));
+test('official ACP help on stderr is recognized without returning diagnostics', async () => fixture(async data => {
+  const result = await probeAgy({ ...data, spawnImpl: mockSpawn([
+    { stdout: '1.5.18' },
+    { stderr: 'Start the Agent Client Protocol (ACP) stdio server\nsecret fixture' },
+  ], []) });
+  assert.equal(result.acpAvailable, true);
+  assert(!JSON.stringify(result).includes('secret fixture'));
+}));
 for (const [label, replies, code, overrides] of [
   ['bad version', [{ stdout: 'secret login info' }], 'AGY_VERSION_FAILED', {}],
   ['unsupported ACP', [{ stdout: '1.2.3' }, { stdout: 'Unknown command', exitCode: 1 }], 'AGY_ACP_UNAVAILABLE', {}],
