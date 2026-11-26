@@ -4309,8 +4309,22 @@ const AiPanel = (() => {
     localStorage.setItem(codexOrderKey, JSON.stringify(Object.fromEntries(codexOrders)));
   }
 
-  function applyCodexOrder(items, scope, idOf, additions) {
-    const order = codexOrders.get(scope) || [];
+  function applyCodexOrder(items, scope, idOf, additions, localIdOf) {
+    const saved = codexOrders.get(scope) || [];
+    let order = saved;
+    if (localIdOf) {
+      // 首轮发送后，本地草稿有了原生线程 ID。继承草稿的位置，已有原生排序则以原生位置为准。
+      const replaced = new Map();
+      for (const item of items) {
+        const localId = localIdOf(item), id = idOf(item);
+        if (localId && localId !== id) replaced.set(localId, id);
+      }
+      const known = new Set(saved);
+      order = saved.flatMap(id => {
+        const threadId = replaced.get(id);
+        return threadId ? (known.has(threadId) ? [] : [threadId]) : [id];
+      });
+    }
     const ranks = new Map(order.map((id, index) => [id, index]));
     if (additions) {
       // Remember new entries at the end so later catalog refreshes cannot move them.
@@ -4318,7 +4332,8 @@ const AiPanel = (() => {
         const id = idOf(item);
         if (typeof id === 'string' && !ranks.has(id)) ranks.set(id, ranks.size);
       }
-      if (ranks.size > order.length) additions.set(scope, [...ranks.keys()]);
+      const next = [...ranks.keys()];
+      if (next.length !== saved.length || next.some((id, index) => id !== saved[index])) additions.set(scope, next);
     }
     const rank = item => ranks.get(idOf(item)) ?? ranks.size;
     return items.slice().sort((a, b) => rank(a) - rank(b));
@@ -4848,7 +4863,7 @@ const AiPanel = (() => {
       const codexSessionId = session => session.codexThreadId || session.id;
       const desktopItems = codex && sessionRanks.size ? items.slice().sort((a, b) =>
         rank(sessionRanks, a.codexThreadId) - rank(sessionRanks, b.codexThreadId)) : items;
-      const orderedItems = codex ? applyCodexOrder(desktopItems, codexSessionScope, codexSessionId, orderAdditions) : desktopItems;
+      const orderedItems = codex ? applyCodexOrder(desktopItems, codexSessionScope, codexSessionId, orderAdditions, session => session.id) : desktopItems;
       const groupName = recent ? '最近' : unassigned ? '未分组' : workspace?.title || sessionRootLabel(groupRoot);
       const childId = 'ai-hist-items-' + index;
       const groupId = 'ai-hist-workspace-' + index;

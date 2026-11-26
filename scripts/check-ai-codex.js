@@ -757,6 +757,33 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
      JSON.stringify(unchanged.projects) === JSON.stringify(sorted.projects) &&
      JSON.stringify(unchanged.sessions) === JSON.stringify(movedTogether) && nativeWrites() === before);
    await capture('codex-local-order');
+   await js(selector => {
+     const project = document.querySelector(selector);
+     project.dispatchEvent(new MouseEvent('contextmenu', { button: 2, bubbles: true, cancelable: true }));
+     [...document.querySelectorAll('#ctx-menu button')].find(button => button.textContent === '新建会话').click();
+   }, head('desktop-b'));
+   await until(() => js(() => AiPanel.aiState().dshState === 'ready'), 'project draft is ready');
+   const draftId = await js(() => AiPanel.aiState().current);
+   await until(() => js(selector => !!document.querySelector(selector), row('desktop-b', draftId)), 'draft row');
+   await fireDrag(row('desktop-b', draftId), row('desktop-b', movedTogether[0]), 'move');
+   check('pending draft can be reordered', JSON.stringify((await order()).sessions) === JSON.stringify([draftId, ...movedTogether]));
+   const prompt = 'HOLD_CODEX sidebar order fixture';
+   await js(text => AiPanel.ask(text), prompt);
+   const sent = () => fixture.requests.find(request => request.method === 'turn/start' && request.params.input[0]?.text === prompt);
+   await until(sent, 'first message sent from the reordered draft');
+   const threadId = sent().params.threadId;
+   await refresh();
+   await until(() => js(selector => !!document.querySelector(selector), row('desktop-b', threadId)), 'native session replaces draft');
+   check('native session takes the place of the pending draft',
+     JSON.stringify((await order()).sessions) === JSON.stringify([threadId, ...movedTogether]),
+     { expected: [threadId, ...movedTogether], observed: (await order()).sessions });
+   const storedOrder = await js(() => JSON.parse(localStorage.getItem('myide-codex-sidebar-order'))['codex-project:desktop-b']);
+   check('stored order replaces the draft ID in place', storedOrder[0] === threadId && !storedOrder.includes(draftId));
+   fixture.threads.get(externalId).updatedAt = Date.now() / 1000 + 90;
+   await refresh();
+   check('updated activity does not move existing projects or sessions',
+     JSON.stringify((await order()).projects) === JSON.stringify(sorted.projects) &&
+     JSON.stringify((await order()).sessions) === JSON.stringify([threadId, ...movedTogether]));
    await finish(0);
    return;
  }
