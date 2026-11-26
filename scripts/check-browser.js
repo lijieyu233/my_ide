@@ -277,11 +277,34 @@ function cleanup(code){if(closing)return;closing=true;clearTimeout(watchdog);ser
     assert((await js('myIDE.browser.setColorScheme("system")')).ok);assert((await js('myIDE.browser.setColorScheme("dark")')).ok);
     assert(await page.executeJavaScript('matchMedia("(prefers-color-scheme: dark)").matches'));assert.equal(await js('document.body.classList.contains("theme-crimson")'),true);
   });
-  await test('真实IPC全屏布局覆盖整窗且原生网页尺寸跟随，退出恢复原尺寸',async()=>{
+  await test('浏览器全屏只显示网页，退出恢复工具栏、标签和网页输入',async()=>{
     baseline=await js('JSON.stringify({ai:localStorage.getItem("myide-ai-open"),left:document.body.classList.contains("sidebar-collapsed"),right:document.body.classList.contains("rsb-collapsed")})');
-    const original=await js('(()=>{const r=document.getElementById("browser-view").getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};})()');await js('document.getElementById("bw-fullscreen").click();true');await until(()=>js('BrowserPanel.fullscreen'));
-    const rect=await js('(()=>{const r=document.getElementById("browser-panel").getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,innerWidth,innerHeight};})()');assert.equal(rect.x,0);assert.equal(rect.y,0);assert.equal(rect.width,rect.innerWidth);assert.equal(rect.height,rect.innerHeight);assert(await js('getComputedStyle(document.getElementById("ai-panel")).visibility==="hidden"'));await until(()=>win.contentView.children[0]?.getBounds().width>=rect.width-2);assert.equal(await page.executeJavaScript('document.title'),'浏览器全屏验证');assert(!win.isVisible());assert(!win.isFullScreen());
-    await capture('browser-ui-fullscreen.png');await js('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));true');await until(()=>js('!BrowserPanel.fullscreen'));await until(()=>win.contentView.children[0]?.getBounds().width<=original.width+2);const restored=await js('JSON.stringify({ai:localStorage.getItem("myide-ai-open"),left:document.body.classList.contains("sidebar-collapsed"),right:document.body.classList.contains("rsb-collapsed")})');assert.equal(restored,baseline);assert.equal(page.getURL(),url+'/');
+    const bounds=()=>js('document.getElementById("browser-view").getBoundingClientRect().toJSON()');
+    const original=await bounds(), tab=await js('BrowserPanel.activeTabId');
+    const zoom=win.webContents.getZoomFactor(), view=win.contentView.children[0];
+    const nativeFits=rect=>{
+      const actual=view.getBounds();
+      return ['x','y','width','height'].every(key=>Math.abs(actual[key]-Math.round(rect[key]*zoom))<=2);
+    };
+    await page.executeJavaScript('document.querySelector("input").value="全屏测试输入"');
+    await js('document.getElementById("bw-fullscreen").click();true');
+    await until(()=>js('BrowserPanel.fullscreen'));
+    assert(await js('[...document.querySelectorAll("#browser-panel > .bw-tab-strip, #browser-panel > .browser-toolbar, #browser-panel > .browser-prog")].every(el=>getComputedStyle(el).display==="none")'));
+    assert(await js('getComputedStyle(document.getElementById("ai-panel")).visibility==="hidden"'));
+    const full=await bounds(), size=await js('({width:innerWidth,height:innerHeight})');
+    assert.deepEqual({x:full.x,y:full.y,width:full.width,height:full.height},{x:0,y:0,...size});
+    await until(()=>nativeFits(full));
+    assert.equal(view.webContents,page);
+    assert(!win.isVisible());assert(!win.isFullScreen());
+    await capture('browser-ui-fullscreen.png');
+    await js('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));true');
+    await until(()=>js('!BrowserPanel.fullscreen'));
+    await until(()=>nativeFits(original));
+    assert(await js('document.getElementById("bw-tabs").checkVisibility()&&document.getElementById("bw-url").checkVisibility()'));
+    assert.equal(await js('BrowserPanel.activeTabId'),tab);
+    assert.equal(await page.executeJavaScript('document.querySelector("input").value'),'全屏测试输入');
+    const restored=await js('JSON.stringify({ai:localStorage.getItem("myide-ai-open"),left:document.body.classList.contains("sidebar-collapsed"),right:document.body.classList.contains("rsb-collapsed")})');
+    assert.equal(restored,baseline);assert.equal(page.getURL(),url+'/');
   });
   await test('F11、网页焦点快捷键转发和切页退出不残留全屏',async()=>{
     await js('document.dispatchEvent(new KeyboardEvent("keydown",{key:"F11",bubbles:true}));true');await until(()=>js('BrowserPanel.fullscreen'));
