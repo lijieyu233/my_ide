@@ -1252,9 +1252,9 @@ const BrowserPanel = (() => {
     const u = normalizeInput(url);
     if (!u) return;
     if (!BrowserTabs.validURL(u)) { MI.toast('不支持的网页地址', 'err'); return; }
+    if (visible) App.setEditorCollapsed(false);
     if (tabStore) { tabStore.update(tabStore.active.id, {url:u, ...(u !== currentUrl ? {title:u} : {})}); tabRuntime.delete(tabStore.active.id); renderTabs(); renderGroups(); storageStatus(); }
     document.getElementById('browser-empty').classList.add('hidden');
-    if (visible) App.setEditorCollapsed(false);
     document.getElementById('browser-error').classList.add('hidden');
     viewEl.classList.remove('hidden');
     hasPage = true;
