@@ -52,6 +52,45 @@ const CODEX=require('./src/main/codex/ai-codex').createService({
   },
   desktopOwnsProjectThreads: () => process.platform === 'win32' && !!app.getApplicationNameForProtocol('codex://threads/'),
 });
+const antigravityIpc = require('./src/main/antigravity/antigravity-ipc');
+const antigravityPilotRoot = () => path.join(app.getPath('userData'), 'antigravity-pilot');
+const antigravityQueueReady = new Map();
+async function antigravityEnvironment() {
+  const { environmentFromSystemProxy } = require('./src/main/antigravity/agy-runtime');
+  try {
+    const isolated = session.fromPartition('antigravity-system-network', { cache: false });
+    const route = await isolated.resolveProxy('https://daily-cloudcode-pa.googleapis.com/');
+    return environmentFromSystemProxy(route);
+  } catch {
+    return process.env;
+  }
+}
+const ANTIGRAVITY = require('./src/main/antigravity/ai-antigravity').createService({
+  dataDir: () => path.join(app.getPath('userData'), 'antigravity'),
+  resolveEnvironment: antigravityEnvironment,
+  imageVerified: agent => agent?.version === '1.5.18',
+  allowExecution: async root => {
+    // The native CLI owns its tools. Until the effective host policy is proven,
+    // only a deliberately opened, empty pilot workspace can receive a prompt.
+    try {
+      const real = await antigravityIpc.pilotDirectory(antigravityPilotRoot());
+      return antigravityIpc.sameDirectory(real, root);
+    } catch {
+      return false;
+    }
+  },
+  onQueueReady: ({ context, item }) => {
+    const wc = mainWindow?.webContents;
+    if (!wc || wc.isDestroyed()) return;
+    const itemId = item.id || item.localMessageId;
+    if (!itemId) return;
+    const target = { ...context, engine: 'antigravity' };
+    const key = JSON.stringify([wc.id, target.rootId, target.sessionId, itemId]);
+    if (antigravityQueueReady.size >= 128) antigravityQueueReady.delete(antigravityQueueReady.keys().next().value);
+    antigravityQueueReady.set(key, target);
+    wc.send('ai:antigravity-event', { type: 'queueReady', context: target, target, itemId, item });
+  },
+});
 const aiRuns = require('./src/main/ai/ai-runs').createRegistry();
 const aiOwners=require('./src/main/ai/ai-owner-router').createRouter();
 const AiToolContract = require('./src/main/ai/ai-tool-contract');
@@ -256,7 +295,7 @@ function createWindow() {
   launchExit.bindWindow(mainWindow);
   const aiHost = mainWindow.webContents;
   const aiHostId = aiHost.id;
-  const resetAi = () => { for(const owner of aiOwners.reset(aiHostId)){const context = aiRuns.reset(owner);aiTools.reset(owner);aiPermissionsBridge.reset(owner);if(context){AI.abortChat(context.requestId);DSH.abort(context.requestId);CODEX.detach(context.requestId);cancelAiSearch(context.requestId);}} };
+  const resetAi = () => { for(const owner of aiOwners.reset(aiHostId)){const context = aiRuns.reset(owner);aiTools.reset(owner);aiPermissionsBridge.reset(owner);if(context){AI.abortChat(context.requestId);DSH.abort(context.requestId);CODEX.detach(context.requestId);ANTIGRAVITY.abort(context.requestId);cancelAiSearch(context.requestId);}} antigravityQueueReady.clear(); };
   // ── 宿主窗口不许被导航走（2026-10-29）────────────────────────────────
   // 事故：用户点击 AI 回复里的普通 <a href="..."> 链接，整个窗口从
   // file:///.../index.html 导航到外网地址 —— 应用界面全消失，只剩一片空白，
@@ -865,6 +904,22 @@ ipcMain.handle('llm:chat', async (_e, cfg, messages,requestId) => {
   finally {clearTimeout(timeout);if(requestKey)translationRequests.delete(requestKey);}
 });
 
+const antigravityAdmissions = new Set();
+const antigravityView = event => event.sender.executeJavaScript('AiPanel.dshView()');
+function assertAntigravityRun(event, context) {
+  const owner = aiSender(event, context);
+  const record = aiRuns.assert(owner, context);
+  if (aiOwners.engine(event.sender.id, context) !== 'antigravity' || !record.antigravityScope) {
+    throw Object.assign(Error('Antigravity 运行归属已变化'), { code: 'INVALID_ANTIGRAVITY_TARGET' });
+  }
+  return { owner, scope: record.antigravityScope };
+}
+const antigravityBridge = antigravityIpc.createIpc({
+  ipcMain, service: ANTIGRAVITY, sender: (event, context) => aiSender(event, context), readView: antigravityView, assertRun: assertAntigravityRun,
+  openApproval: (owner, scope, request) => aiPermissionsBridge.reviewAntigravity(owner, scope, request),
+  pilotRoot: antigravityPilotRoot,
+});
+
 // AI 助手：流式对话（chunk 事件推送渲染层）+ 中断；tools = 原生 function calling
 const aiSender = (e,context) => {
   if (!mainWindow || e.sender !== mainWindow.webContents || !e.senderFrame
@@ -898,7 +953,9 @@ async function codexSessionView(event, context) {
 }
 ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
   const requestedPage=context?.page, foreignHostId=context?.foreignHostId;
+  const antigravityQueueItemId = context?.antigravityQueueItemId;
   let nativeStart=null,dshAdmission=null,codexView=null;
+  let antigravityScope = null, antigravityAdmission = null, queued = null;
   const send = (ch, d) => { try { if (!e.sender.isDestroyed()) e.sender.send(ch, d); } catch {} };
   let record;
   try {
@@ -916,14 +973,33 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
       }
     }
     if (cfg?.engine === 'codex') codexView = await codexSessionView(e, context);
-    await aiPermissionsBridge.initialize(e.sender);
-    aiOwners.register(e.sender.id,context,cfg?.engine);
-    const start = aiRuns.begin(aiSender(e,context), context); record = start.record; context = record.context;
-    aiTools.bind(aiSender(e,context), context);
-    if (start.previous && start.previous.context.requestId !== context.requestId) aiPermissionsBridge.cancel(aiSender(e,context));
-    aiPermissionsBridge.newSession(aiSender(e,context), context);
+    if (cfg?.engine === 'antigravity') {
+      if (context?.antigravityQueueItemId) {
+        const key = JSON.stringify([e.sender.id, context.rootId, context.sessionId, context.antigravityQueueItemId]);
+        queued = antigravityQueueReady.get(key);
+        const enabled = await e.sender.executeJavaScript('AiPanel.getConfig().antigravityEnabled === true');
+        if (!queued || !enabled) throw Object.assign(Error('待发会话已变化，请刷新后再继续'), {code:'ANTIGRAVITY_QUEUE_STALE'});
+      }
+      antigravityScope = queued || await antigravityBridge.currentTarget(e, cfg, context);
+      const admission = JSON.stringify([e.sender.id, antigravityScope.workspaceRoot, antigravityScope.projectId, antigravityScope.sessionId]);
+      if (antigravityAdmissions.has(admission)) throw Object.assign(Error('当前会话仍在运行，请使用待发队列'), {code:'ANTIGRAVITY_BUSY'});
+      antigravityAdmissions.add(admission);
+      antigravityAdmission = admission;
+    }
+    if (!antigravityScope) await aiPermissionsBridge.initialize(e.sender);
+    const owner = aiOwners.register(e.sender.id, context, cfg?.engine);
+    const start = aiRuns.begin(owner, context); record = start.record; context = record.context;
+    if (antigravityScope) {
+      record.antigravityScope = { ...antigravityScope, ...context };
+    } else {
+      aiTools.bind(owner, context);
+      if (start.previous && start.previous.context.requestId !== context.requestId) aiPermissionsBridge.cancel(owner);
+      aiPermissionsBridge.newSession(owner, context);
+    }
     if (start.previous) { AI.abortChat(start.previous.context.requestId);DSH.abort(start.previous.context.requestId);CODEX.abort(start.previous.context.requestId); cancelAiSearch(start.previous.context.requestId); }
-  } catch (error) { if(dshAdmission)dshChatAdmissions.delete(dshAdmission);return { error: error.message, errorCode: error.code, context }; }
+  } catch (error) { if(dshAdmission)dshChatAdmissions.delete(dshAdmission);
+    if (antigravityAdmission) antigravityAdmissions.delete(antigravityAdmission);
+    return { ...(cfg?.engine === 'antigravity' ? antigravityIpc.failure(error) : { error: error.message, errorCode: error.code }), context }; }
   let r;
   if(cfg?.engine==='dsh'){
     try{
@@ -952,7 +1028,26 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
         void openCodexDesktop('codex://threads/wake/' + r.threadId).catch(() => {});
       }
     }catch(error){r={ok:false,status:'failed',complete:false,error:error.message,engine:'codex',context};}
-  }else r = await AI.chatStream(cfg, messages, delta => {
+  } else if (cfg?.engine === 'antigravity') {
+    const scope = record.antigravityScope;
+    context = { ...record.context, engine: 'antigravity', projectId: scope.projectId, page: scope.page };
+    const emit = event => {
+      if (record.status !== 'active') return;
+      if (event.type === 'text') send('ai:chunk', { delta: event.delta, messageId: event.messageId, context });
+      else send('ai:antigravity-event', { ...event, context });
+    };
+    try {
+      if (queued) antigravityQueueReady.delete(JSON.stringify([e.sender.id, scope.rootId, scope.sessionId, antigravityQueueItemId]));
+      r = queued
+        ? await ANTIGRAVITY.dispatchQueued(cfg, scope, antigravityQueueItemId, emit)
+        : await ANTIGRAVITY.chat(cfg, messages, [], scope, emit);
+      r = { ...r, engine: 'antigravity', context };
+    } catch (error) {
+      r = { ...antigravityIpc.failure(error), status: 'failed', complete: false, engine: 'antigravity', context };
+    } finally {
+      antigravityAdmissions.delete(antigravityAdmission);
+    }
+  } else r = await AI.chatStream(cfg, messages, delta => {
     if (record.status === 'active') send('ai:chunk', { delta, context });
   }, tools, context);
   if (record.status !== 'active') r = { ...r, ok: false, status: 'aborted', complete: false, aborted: true, cancelled: true, toolCalls: [] };
@@ -1245,8 +1340,16 @@ ipcMain.handle('ai:dsh-permission-presets',async(event,target,preset)=>{
     return {ok:true,...state};
   }catch(error){return {ok:false,error:error.message};}
 });
-ipcMain.handle('ai:abort', (e, context) => {
-  try { const result = aiRuns.finish(aiSender(e,context), context, 'cancelled'); if (result.ok) { aiPermissionsBridge.cancel(aiSender(e,context)); AI.abortChat(context.requestId);DSH.abort(context.requestId);CODEX.abort(context.requestId); cancelAiSearch(context.requestId); } return result; }
+ipcMain.handle('ai:abort', async (e, context) => {
+  try {
+    aiSender(e);
+    if (aiOwners.engine(e.sender.id, context) === 'antigravity') {
+      const { owner, scope } = assertAntigravityRun(e, context);
+      aiPermissionsBridge.cancel(owner);
+      const sent = await ANTIGRAVITY.abort(scope.requestId);
+      return { ok: !!sent, stopping: !!sent };
+    }
+    const result = aiRuns.finish(aiSender(e,context), context, 'cancelled'); if (result.ok) { aiPermissionsBridge.cancel(aiSender(e,context)); AI.abortChat(context.requestId);DSH.abort(context.requestId);CODEX.abort(context.requestId); cancelAiSearch(context.requestId); } return result; }
   catch (error) { return { error: error.message, errorCode: error.code }; }
 });
 ipcMain.handle('ai:finish', (e, context) => {
@@ -2537,5 +2640,5 @@ app.whenReady().then(async () => {
 });
 
 const launchExit = require('./src/main/launch/launch-exit').createExitCoordinator({ app, service: launchService, dialog,
-  getWindow: () => mainWindow, beforeQuit: () => Promise.all([DSH.dispose(),CODEX.dispose(),shieldDecrypt.dispose()]), report: result => LOG('退出未确认: ' + JSON.stringify(result)) });
+  getWindow: () => mainWindow, beforeQuit: () => Promise.all([DSH.dispose(),CODEX.dispose(),ANTIGRAVITY.dispose(),shieldDecrypt.dispose()]), report: result => LOG('退出未确认: ' + JSON.stringify(result)) });
 process.on('uncaughtException', (e) => { if (e && e.code === 'EPIPE') return; LOG('MAIN CRASH: ' + (e && e.stack || e)); if (SMOKE) app.exit(1); });

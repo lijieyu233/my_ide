@@ -11,9 +11,16 @@
     if (request) return; request = data;
     document.body.classList.toggle('light', data.appearance?.light === true);
     $('stop').hidden=data.type!=='operation';
-    $('target').textContent = data.type === 'policy' ? 'AI 访问权限' : data.type === 'session' ? data.root : data.effect.target;
+    $('target').textContent = data.type === 'policy' ? 'AI 访问权限' : data.type === 'session' ? data.root : data.type === 'antigravity' ? data.context.rootId : data.effect.target;
     $('note').classList.toggle('danger', data.danger === true);
-    if (data.type === 'session') {
+    if (data.type === 'antigravity') {
+      $('title').textContent = 'Antigravity 请求确认';
+      $('accept').textContent = '仅允许本次';
+      $('accept').hidden = !data.review.canAllow;
+      $('note').textContent = data.review.canAllow ? '批准仅作用于上方项目的当前会话。' : '请求缺少可完整核对的操作详情。';
+      line(data.review.title);
+      for (const detail of data.review.details) line(detail);
+    } else if (data.type === 'session') {
       $('title').textContent = '放行本次 AI 对话'; $('accept').textContent = '放行本次对话';
       $('note').textContent = '允许本次对话修改项目文件、执行命令。危险命令、清空文件和禁止项仍受保护；关闭面板、切项目或开始新对话时恢复。';
       line('仅限上方项目与当前对话，不保存为永久授权。');

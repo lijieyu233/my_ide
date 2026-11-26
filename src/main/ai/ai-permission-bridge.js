@@ -74,6 +74,7 @@ function createBridge({ ipcMain, WebContentsView, tools, ownerOf, windowFor, pol
   handle('authorize', async(owner, event, context, call) => { const result = await authority.authorize(owner, context, call); broadcast(owner, context.rootId); return { ...result, permissions: view(context.rootId) }; });
   return {pending:(owner,root)=>ui.status(windowFor(owner),root), initialize, authority, cancel: owner => { authority.revoke(owner); ui.cancelOwner(owner); }, reset: owner => { authority.revoke(owner); ui.cancelOwner(owner); store?.clearSession(owner); sessionOwners.delete(owner); },
     newSession: ensureSession,
+    reviewAntigravity: (owner, context, { signal, ...review }) => ui.open({ type: 'antigravity', owner, context, review }, signal || new AbortController().signal),
     codexPermission: () => store.view('').config.codexPermission,
     protect: target => { if (store && [path.resolve(store.file), fs.realpathSync(store.file)].some(file => path.relative(file, path.resolve(target)) === '')) throw Object.assign(Error('AI工具不能修改自身授权存储'), { code: 'AI_PERMISSION_DENIED' }); } };
 }

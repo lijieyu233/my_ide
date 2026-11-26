@@ -71,11 +71,14 @@ const AiPanel = (() => {
     return null;
   }
 
-  const nativeEngine = engine => ['dsh','codex'].includes(engine ?? getConfig().engine);
-  const nativeLabel = engine => (engine ?? getConfig().engine)==='codex'?'Codex':'DSH';
-  const nativeModelKey = () => getConfig().engine==='codex'?'codexModel':'dshModel';
-  const nativeReasoningKey = () => getConfig().engine==='codex'?'codexReasoning':'dshReasoning';
-  const nativeCall = (engine,method,...args) => window.myIDE.ai[(engine==='codex'?'codex':'dsh')+method](...args);
+  const nativeEngine = engine => ['dsh','codex','antigravity'].includes(engine ?? getConfig().engine);
+  const nativeLabel = engine => ({codex:'Codex',dsh:'DSH',antigravity:'Antigravity'})[engine ?? getConfig().engine] || '原生代理';
+  const nativeModelKey = () => ({codex:'codexModel',antigravity:'antigravityModel'})[getConfig().engine] || 'dshModel';
+  const nativeReasoningKey = () => ({codex:'codexReasoning',antigravity:'antigravityReasoning'})[getConfig().engine] || 'dshReasoning';
+  const nativeCall = (engine,method,...args) => {
+    if (!nativeEngine(engine) || typeof window.myIDE.ai[engine+method] !== 'function') return Promise.reject(Error(nativeLabel(engine)+' 不支持此操作'));
+    return window.myIDE.ai[engine+method](...args);
+  };
   let dshConfigOptions=[],dshOptionsTicket=0,dshOptionsState='idle';
   let msgs = [];            // 会话历史 [{role, content}]（含 tool_result 伪 user 消息）
   let busy = false;         // 生成中（禁发）
@@ -93,18 +96,21 @@ const AiPanel = (() => {
   const cancelledTool = () => ({ ok: false, cancelled: true, text: '本次AI请求已停止或归属失效，未继续操作' });
   function beginRun() {
     sessionLoadTicket++;
+    const antigravityBefore=getConfig().engine==='antigravity'?antigravityState():null;
     const unique = () => window.crypto?.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36).slice(2);
     if (!curSessionId) curSessionId = 's-' + unique();
+    if(antigravityBefore)antigravityStates.set(antigravityStateKey(),antigravityBefore);
     if(nativeEngine()&&!dshSessionAccess)dshSessionAccess={sessionId:curSessionId,hostId:'',state:'ready',scope:dshScope(),epoch:pageEpoch,error:''};
     const run = { identity: Object.freeze({ requestId: 'r-' + unique(), sessionId: curSessionId,
       rootId: sessionRoot(), generation: ++generation }), foreignHostId: dshView().foreignHostId, engine:nativeEngine()?getConfig().engine:'standard',pageId:currentPage().id,status: 'active', round: -1, controller: new AbortController() };
     currentRun = run;
+    if(run.engine==='antigravity'){run.config={...getConfig()};run.page={...currentPage()};}
     suspendDshWatchForOwn();
     const headerStop = document.getElementById('ai-stop'); if (headerStop) headerStop.classList.remove('hidden');
     run.notice = createRunState();
-    if(run.engine==='codex'){run.nativeState={phase:'connecting',threadId:null,turnId:null,assistantCharacters:0,lastEventAt:Date.now()};if(run.notice.element){run.notice.element.dataset.nativePhase='connecting';run.notice.element.title='正在连接 Codex，尚未确认消息受理';}}
+    if(['codex','antigravity'].includes(run.engine)){run.nativeState={phase:'connecting',threadId:null,turnId:null,assistantCharacters:0,lastEventAt:Date.now()};if(run.notice.element){run.notice.element.dataset.nativePhase='connecting';run.notice.element.title='正在连接 '+nativeLabel(run.engine)+'，尚未确认消息受理';}}
     else if(run.notice.element){delete run.notice.element.dataset.nativePhase;run.notice.element.removeAttribute('title');}
-    setRunState(run,run.engine==='codex'?'正在连接 Codex · 尚未确认消息受理':'正在生成');
+    setRunState(run,['codex','antigravity'].includes(run.engine)?'正在连接 '+nativeLabel(run.engine)+' · 尚未确认消息受理':'正在生成');
     refreshHistInPlace();
     return run;
   }
@@ -177,6 +183,7 @@ const AiPanel = (() => {
     if (!runIsCurrent(run)) return;
     settlePendingTools(run,'工具结果未能完整记录，实际执行状态未确认。请先核对文件或进程状态，不要重复执行旧调用。');
     run.status = status;
+    if(run.engine==='antigravity')run.antigravityStopping=false;
     for (const card of run.questionCards?.values() || []) card.close();
     if(run.engine==='codex'&&run.nativeState){run.nativeState.localStatus=status;run.nativeState.endedAt=Date.now();}
     if(run.stream?.element){finishLiveText(run.stream.element);run.stream.element.querySelector('.ai-cursor')?.remove();}
@@ -184,7 +191,8 @@ const AiPanel = (() => {
     for (const group of run.activityGroups || []) paintToolGroup(group);
     const inputStatus = status === 'queued' ? '已排队' : status === 'occupied'
       ? run.codexInputStatus || '原会话正在 Codex 中打开' : '';
-    setRunState(run, inputStatus || (status === 'limited' ? '已达本次工具操作上限，可继续处理剩余任务' : status === 'cancelled' ? run.engine==='dsh'?'已停止本地派发；DSH 停止和队列撤回状态请刷新确认':run.engine==='codex'?'已请求停止 Codex；以原生回执为准':'已停止' : status === 'incomplete' ? '回复未完成，未执行工具' : status === 'failed' ? '生成失败' : '已完成'), true);
+    const antigravityOutcome=run.engine==='antigravity'?(run.antigravityUnknown?'提交或停止状态待核对':{cancelled:'Antigravity 已停止',incomplete:'Antigravity 本轮未完整完成',failed:'Antigravity 生成失败',completed:'Antigravity 已完成'}[status]):'';
+    setRunState(run, antigravityOutcome || inputStatus || (status === 'limited' ? '已达本次工具操作上限，可继续处理剩余任务' : status === 'cancelled' ? run.engine==='dsh'?'已停止本地派发；DSH 停止和队列撤回状态请刷新确认':run.engine==='codex'?'已请求停止 Codex；以原生回执为准':'已停止' : status === 'incomplete' ? '回复未完成，未执行工具' : status === 'failed' ? '生成失败' : '已完成'), true);
     if (curStream === run.stream?.element) { curStream = null; curText = ''; }
     if (status === 'completed') {
       const { sessionId, rootId, requestId } = run.identity;
@@ -197,12 +205,18 @@ const AiPanel = (() => {
     for(const [id,item] of nativeInputRequests)if(item.run===run){if(item.rendered)nativeInputRequests.delete(id);else if(item.accepted&&!item.error)item.error='本次运行已结束，但这条消息尚未确认被消费。请先刷新原生队列确认，再决定是否恢复草稿。';}
     renderNativeInputUI();
     if (run.stream) Promise.resolve(window.myIDE.ai.finish(run.stream.context)).catch(() => {});
-    if (!backgroundView && run.engine === 'codex') void refreshNativeQueue(true);
+    if (!backgroundView && ['codex','antigravity'].includes(run.engine)) void refreshNativeQueue(true);
+    if (!backgroundView && run.engine==='antigravity') void refreshAntigravityOptions();
+    if(run.engine==='antigravity'&&status==='completed')queueMicrotask(()=>dispatchAntigravityQueue(run));
     if (!backgroundView) refreshHistInPlace();
     reconcileDshAfterOwn(run).catch(() => {});
   }
   function stopRun(invalidate = false) {
     const run = currentRun;
+    if(run?.engine==='antigravity'&&run.status==='active'){
+      if(invalidate){detachRun();return;}if(run.antigravityStopping)return;run.antigravityStopping=true;run.controller.abort();setRunState(run,'正在停止 Antigravity · 等待原生回执');setBusyUI(true);
+      Promise.resolve(window.myIDE.ai.abort(run.stream?.context||{...run.identity,round:0})).then(result=>{if(runIsCurrent(run)&&!result?.ok)setRunState(run,'停止状态待核对，请恢复原会话后确认');}).catch(()=>{if(runIsCurrent(run))setRunState(run,'停止状态待核对，请恢复原会话后确认');});return;
+    }
     if (run?.status === 'active') {
       run.status = 'stopping'; run.controller.abort(); setRunState(run, '正在停止');
       if (run.identity.rootId === sessionRoot() && curSessionId === run.identity.sessionId) {
@@ -240,21 +254,23 @@ const AiPanel = (() => {
   const editorRoot = () => window.App?.root || '';
   let conversationRoot = null, conversationPage = null;
   const workspaceRoot = () => conversationRoot ?? editorRoot();
-  const sessionRoot = () => dshSessionAccess?.foreign ? dshSessionAccess.rootDir : workspaceRoot();
+  const sessionRoot = () => backgroundView?.run.engine==='antigravity' ? backgroundView.run.identity.rootId : dshSessionAccess?.foreign ? dshSessionAccess.rootDir : workspaceRoot();
   function dshView() {
     const engine = getConfig().engine;
     const codexProjectId = engine === 'codex' && !dshSessionAccess?.foreign ? codexDraftProjectId() : null;
     return { rootId: sessionRoot(), page: currentPage(), sessionId: curSessionId, engine, scope: dshScope(),
       ...(dshSessionAccess?.foreign ? { foreignHostId: dshSessionAccess.hostId, access: dshSessionAccess.state } : {}),
-      ...(codexProjectId ? { codexProjectId } : {}) };
+      ...(codexProjectId ? { codexProjectId } : {}),
+      ...(engine==='antigravity' && antigravityDraftProjectId() ? {projectId:antigravityDraftProjectId()} : {}) };
   }
   let dshWatch = null, dshWatchGeneration = 0;
   const dshScope = () => ['reader','bookshelf'].includes(currentPage().id) ? 'reader' : 'project';
   const dshScopeMismatch = () => !!dshSessionAccess && dshSessionAccess.scope !== dshScope();
   const dshScopeError = () => dshScope() === 'reader' ? '阅读页使用独立对话，请新建会话' : '当前是阅读页的独立对话，请新建项目会话';
   const dshModelUnavailable = () => dshConfigOptions.find(option=>option.id==='model')?.available === false;
-  const dshCanSend = (codexIdle = false) => !nativeEngine() || (codexIdle || !codexObservedRunning()) && (getConfig().engine!=='codex'||dshOptionsState==='ready') && !historyReplayJob && (!dshSessionAccess || dshSessionAccess.state === 'ready' && !dshScopeMismatch()) && (codexDesktopOwnsCurrentSession() || !dshModelUnavailable());
+  const dshCanSend = (codexIdle = false) => getConfig().engine==='antigravity' ? antigravityCanSend() : !nativeEngine() || (codexIdle || !codexObservedRunning()) && (getConfig().engine!=='codex'||dshOptionsState==='ready') && !historyReplayJob && (!dshSessionAccess || dshSessionAccess.state === 'ready' && !dshScopeMismatch()) && (codexDesktopOwnsCurrentSession() || !dshModelUnavailable());
   function rejectDshSend(codexIdle = false) {
+    if(getConfig().engine==='antigravity'){if(antigravityCanSend())return false;MI.toast(dshSessionAccess?.error || antigravityState().error || (antigravityState().executionAllowed===false?'当前项目只读，请在设置中打开 Antigravity 试用目录':'Antigravity 尚未确认连接和发送能力'),'err');return true;}
     if (!codexIdle && codexObservedRunning()) return true;
     if (codexSelectedHistoryItem()?.archived) {
       MI.toast('请先取消归档再发送', 'err');
@@ -269,6 +285,8 @@ const AiPanel = (() => {
   function isProjectTool(name){const d=window.AiWorkbenchTools?.definitions[name];return PROJECT_TOOLS.has(name)||(['reader','bookshelf'].includes(currentPage().id)&&!!d&&(d.project||['project','editor','markdown','git','tasks'].includes(d.module)));}
   let pageKey = null, pageEpoch = 0, followTask = null, pageEditorRoot;
   function currentPage() {
+    if(backgroundView?.run.engine==='antigravity')return {...backgroundView.run.page,projectContext:false};
+    if(getConfig().engine==='antigravity'&&conversationPage?.id==='project'&&/^(?:[a-z]:[\\/]|\/)/i.test(sessionRoot()))return {...conversationPage,projectContext:true};
     if (dshSessionAccess?.foreign) return { id:'project', name:'会话工作区', projectContext:false };
     // 测试/早期初始化没有 App 时，不将隐藏编辑器误判为项目页。
     if (conversationPage && pathKey(workspaceRoot()) !== pathKey(editorRoot()))
@@ -666,6 +684,10 @@ const AiPanel = (() => {
     const b = document.getElementById('ai-perm');
     if (!b) return;
     const label = b.querySelector('.ai-perm-text');
+    if(getConfig().engine==='antigravity'){
+      const state=antigravityState();b.classList.remove('on');b.title=[state.permission?.label || '原生权限待确认',antigravitySandboxLabel(state)].join(' · ');
+      if(label)label.textContent=state.permission?.label || 'Antigravity 权限';return;
+    }
     if (getConfig().engine === 'dsh') {
       const preset = nativePermissionTarget() && dshPermissionSelection?.key === inputScopeKey() ? dshPermissionSelection : null;
       b.classList.remove('on');
@@ -695,6 +717,11 @@ const AiPanel = (() => {
   function togglePermPop() { if (permPop) closePermPop(); else renderPermPop(); }
   function renderPermPop(localOpen = false) {
     closePermPop();
+    if(getConfig().engine==='antigravity'){
+      const state=antigravityState(),pop=document.createElement('div');pop.className='ai-perm-pop';pop.dataset.scope=inputViewKey();
+      for(const text of [state.permission?.label || '原生权限待确认',antigravitySandboxLabel(state),state.executionAllowed===false?'当前项目只读':'原生工具请求通过单次审批确认']){const row=document.createElement('div');row.className='ai-perm-note';row.textContent=text;pop.append(row);}
+      panel.append(pop);permPop=pop;document.getElementById('ai-perm')?.setAttribute('aria-expanded','true');return;
+    }
     const segHtml = (key, cur, labels = myidePermissionLabels) => {
       return '<div class="ai-seg">' + Object.entries(labels).map(([mode, label]) =>
         '<button data-set="' + key + ':' + mode + '" class="' + (mode === cur ? 'on' : '') + '" aria-pressed="' + (mode === cur) + '">' + label + '</button>').join('') + '</div>';
@@ -1297,11 +1324,11 @@ const AiPanel = (() => {
     const dot = document.createElement('span');
     dot.className = 'ai-cursor';
     curStream.querySelector('.ai-md').appendChild(dot);
-    const stream = { context: Object.freeze({ ...run.identity, round: ++run.round }), element: curStream, text: '', finished: false,
+    const stream = { context: Object.freeze({ ...run.identity, round: ++run.round,...(run.engine==='antigravity'?{engine:'antigravity',...(run.antigravityQueueItemId?{antigravityQueueItemId:run.antigravityQueueItemId}:{}),...(dshView().projectId?{projectId:dshView().projectId}:{})}: {}) }), element: curStream, text: '', finished: false,
       ...(nativeEngine(run.engine)?{timeline:[],segment:null,afterActivity:false}: {}) };
     run.stream = stream;
     let r;
-    try { r = await window.myIDE.ai.chat(cfg, buildMessages(run.summaryOnly), run.summaryOnly||run.foreignHostId?[]:TOOLS.filter(t=>usesProjectContext() || !isProjectTool(t.function?.name)), {...stream.context,page:run.initialInputDraft?.page||{...currentPage()}, ...(run.foreignHostId ? { foreignHostId:run.foreignHostId } : {})}); }
+    try { r = await window.myIDE.ai.chat(cfg, run.antigravityQueueItemId?[]:buildMessages(run.summaryOnly), run.engine==='antigravity'||run.summaryOnly||run.foreignHostId?[]:TOOLS.filter(t=>usesProjectContext() || !isProjectTool(t.function?.name)), {...stream.context,page:run.initialInputDraft?.page||{...currentPage()}, ...(run.foreignHostId ? { foreignHostId:run.foreignHostId } : {})}); }
     catch (error) { r = { error: String(error), context: stream.context }; }
     if (run.background) {
       withBackgroundView(run.background,()=>finishStream(r?.error || r?.text || stream.text,!!r?.error,r,run,stream));
@@ -1319,8 +1346,9 @@ const AiPanel = (() => {
     try {
       const config={ autoIdeContext:false, injectMyideRules:false, ...JSON.parse(localStorage.getItem(LS_CFG) || '{}'), ...(authorityConfig || {}) };
       // ACP 的旧模型即使在桌面目录里仍然可用，也不能自动覆盖用户原生 DSH 的选择。
+      if(config.engine==='antigravity'&&config.antigravityEnabled!==true)config.engine='standard';
       if(config.dshConnection!=='desktop-native-v1'){delete config.dshModel;delete config.dshReasoning;}
-      return config;
+      return backgroundView?.run.engine==='antigravity' ? {...config,...backgroundView.run.config,engine:'antigravity',antigravityEnabled:config.antigravityEnabled===true} : config;
     } catch { return authorityConfig || {}; }
   }
   // setConfig 改为合并：局部更新（如只切模型）不丢 apiKey 等其他字段
@@ -1329,7 +1357,8 @@ const AiPanel = (() => {
     const injectionChanged=Object.hasOwn(c||{},'injectMyideRules')&&c.injectMyideRules!==previousConfig.injectMyideRules;
     const contextChanged=Object.hasOwn(c||{},'autoIdeContext')&&c.autoIdeContext!==previousConfig.autoIdeContext;
     const switching=!!c?.engine&&c.engine!==(getConfig().engine||'standard');
-    if(switching){resetDshWatch();persistSession();if(currentRun?.engine==='codex')detachRun();else stopRun(true);dshOptionsTicket++;dshConfigOptions=[];dshOptionsState='idle';}
+    if(switching&&previousConfig.engine==='antigravity')saveAntigravityComposer();
+    if(switching){resetDshWatch();persistSession();if(['codex','antigravity'].includes(currentRun?.engine))detachRun();else stopRun(true);dshOptionsTicket++;dshConfigOptions=[];dshOptionsState='idle';}
     const keys = ['permWrite','permRun','allowPaths','denyCmds','codexPermission'];
     const other = Object.fromEntries(Object.entries(c || {}).filter(([key])=>!keys.includes(key)));
     if(Object.hasOwn(other,'dshModel')||Object.hasOwn(other,'dshReasoning'))other.dshConnection='desktop-native-v1';
@@ -1343,7 +1372,7 @@ const AiPanel = (() => {
     // 确认取消时保留整份草稿；等待期间的新模型选择也不能被旧配置快照覆盖。
     localStorage.setItem(LS_CFG, JSON.stringify({ ...getConfig(), ...other }));
     if(switching)onProjectChange();
-    if (switching || previousConfig.dshPath !== getConfig().dshPath || previousConfig.codexPath !== getConfig().codexPath) {
+    if (switching || previousConfig.dshPath !== getConfig().dshPath || previousConfig.codexPath !== getConfig().codexPath || previousConfig.antigravityPath !== getConfig().antigravityPath) {
       refreshHistInPlace();
       syncHistoryCatalog();
     }
@@ -1355,7 +1384,131 @@ const AiPanel = (() => {
     if(nativeEngine(other.engine||'standard')||nativeEngine()&&injectionChanged)refreshDshOptions();return result;
   }
 
+  // ACP capabilities and queue receipts belong to a project/session, never the last selected engine.
+  const antigravityStates = new Map(), antigravityQueues = new Map();
+  let antigravityCatalog = {items:[],projects:[]}, antigravityCatalogRequest = null, antigravityArchiveOnly = false;
+  const antigravityStateKey = () => JSON.stringify([getConfig().antigravityPath || '',sessionRoot(),curSessionId || '']);
+  const antigravityState = () => antigravityStates.get(antigravityStateKey()) || {};
+  const antigravitySandboxLabel = state => state.sandbox?.label || (state.sandbox?.available===true || state.sandbox?.state==='available' ? '沙箱可用' : state.sandbox?.available===false || state.sandbox?.state==='unavailable' || state.sandbox?.status==='unavailable' ? '沙箱不可用' : '沙箱待确认');
+  const antigravityCap = name => antigravityState().capabilities?.[name] === true;
+  function antigravityTarget() {
+    const view = dshView();
+    return {...view,kind:'antigravity',...(dshSessionAccess?.hostId ? {nativeSessionId:dshSessionAccess.hostId} : {}),
+      ...(currentRun?.engine === 'antigravity' && runIsCurrent(currentRun) && currentRun.stream ? {context:currentRun.stream.context} : {})};
+  }
+  function antigravityCanSend() {
+    if(backgroundView){try{const live=JSON.parse(localStorage.getItem(LS_CFG)||'{}');if((live.antigravityPath || '')!==(backgroundView.run.config?.antigravityPath || ''))return false;}catch{return false;}}
+    return getConfig().antigravityEnabled === true && antigravityState().executionAllowed === true &&
+      antigravityCap('send') && dshOptionsState === 'ready' && !historyReplayJob && !currentRun?.antigravityStopping &&
+      !dshScopeMismatch() && (!dshSessionAccess || dshSessionAccess.state === 'ready') &&
+      !loadSessions().find(item=>item.id===curSessionId)?.archived;
+  }
+  function antigravityConnectionInfo() {
+    if (backgroundView || getConfig().engine !== 'antigravity') return;
+    const state = antigravityState(), info = document.getElementById('ai-dsh-info');
+    const sandbox = antigravitySandboxLabel(state);
+    if (info) {
+      info.textContent = dshOptionsState === 'loading' ? '连接中…' : state.ok ? '已连接 · '+(sandbox==='沙箱不可用'?'无沙箱':sandbox) : '未连接';
+      info.title = ['Antigravity',state.error,state.permission?.label || '原生权限待确认',sandbox,state.sandbox?.reason,state.executionAllowed === false ? '当前项目只读；可在设置中打开试用目录' : '',dshSessionAccess?.error].filter(Boolean).join('\n');
+    }
+    syncPermBtn();
+  }
+  function antigravityOptions(options) {
+    return (options || []).map(option=>({...option,configId:option.configId || option.id,
+      id:option.category === 'model' ? 'model' : ['thought_level','reasoning','reasoning_effort'].includes(option.category) ? 'reasoning_effort' : option.id,
+      options:(option.options || []).map(choice=>({...choice,name:choice.name || choice.label || choice.value}))}));
+  }
+  async function refreshAntigravityOptions(apply = false) {
+    if (getConfig().engine !== 'antigravity' || panel?.classList.contains('hidden')) return;
+    const ticket = ++dshOptionsTicket, key = antigravityStateKey(), cfg = {...getConfig(),...dshView()};
+    dshOptionsState = 'loading'; refreshModelSel(); setBusyUI(busy); antigravityConnectionInfo();
+    let result;
+    try { result = await window.myIDE.ai.antigravityOptions(cfg,curSessionId,apply); }
+    catch(error) { result = {ok:false,error:error.message}; }
+    if (getConfig().engine !== 'antigravity' || ticket !== dshOptionsTicket || key !== antigravityStateKey()) return;
+    result={...antigravityStates.get(key),...result};antigravityStates.set(key,result);
+    dshOptionsState = result?.ok ? 'ready' : 'error';
+    dshConfigOptions = result?.ok ? antigravityOptions(result.configOptions) : [];
+    if (result?.ok && dshSessionAccess?.state !== 'loading') dshSessionAccess = {...dshSessionAccess,
+      sessionId:curSessionId,hostId:result.nativeSessionId || dshSessionAccess?.hostId || '',state:result.readOnly || result.unknown || result.creationUnknown ? 'blocked' : 'ready',readOnly:result.readOnly,unknown:result.unknown,
+      scope:dshScope(),epoch:pageEpoch,error:result.readOnly ? '该外部会话只读' : result.unknown || result.creationUnknown ? '原输入提交状态待核对，请先恢复原会话历史' : ''};
+    antigravityConnectionInfo(); refreshModelSel(); setBusyUI(busy); void refreshNativeQueue(true);
+    if(currentRun?.engine==='antigravity'&&currentRun.status==='completed')queueMicrotask(()=>dispatchAntigravityQueue(currentRun));
+  }
+  async function reconnectAntigravity() {
+    if(busy)return;
+    if(dshSessionAccess?.unknown&&dshSessionAccess.hostId)return openAntigravitySession({id:curSessionId,nativeSessionId:dshSessionAccess.hostId});
+    const key=antigravityStateKey();let result;
+    try{result=await window.myIDE.ai.antigravityConnect({...getConfig(),...dshView()},{...antigravityTarget(),reconnect:true});}catch(error){result={ok:false,error:error.message};}
+    if(key!==antigravityStateKey())return;
+    if(!result?.ok){dshOptionsState='error';antigravityStates.set(key,{...antigravityState(),...result});antigravityConnectionInfo();setBusyUI(false);MI.toast(result?.error || '重新连接失败','err');return;}
+    if(dshSessionAccess?.state==='blocked'&&dshSessionAccess.hostId)return openAntigravitySession({id:curSessionId,nativeSessionId:dshSessionAccess.hostId});
+    return refreshAntigravityOptions();
+  }
+  async function changeAntigravityOption(id,value) {
+    if (busy || !antigravityCap('config')) return;
+    const option = dshConfigOptions.find(item=>item.id===id), key = antigravityStateKey();
+    if (!option) return;
+    await refreshAntigravityOptions({configId:option.configId,value});
+    if (key !== antigravityStateKey()) return;
+    const actual = dshConfigOptions.find(item=>item.id===id)?.currentValue;
+    if (actual !== value) { MI.toast('Antigravity 尚未确认配置，保留原选择','err'); return; }
+    await setConfig({[id === 'model' ? 'antigravityModel' : 'antigravityReasoning']:actual});
+  }
+  async function refreshAntigravityCatalog({manual = false,background = false} = {}) {
+    if (getConfig().engine !== 'antigravity') return;
+    const cfg = {...getConfig(),...dshView()}, scope = sessKey(), launcher = cfg.antigravityPath || '';
+    if (antigravityCatalogRequest?.scope === scope) return antigravityCatalogRequest.promise;
+    const request = {scope,launcher,background}; antigravityCatalogRequest = request;
+    request.promise = (async()=>{
+      try {
+        const result = await window.myIDE.ai.antigravitySessions(cfg);
+        if (getConfig().engine !== 'antigravity' || scope !== sessKey() || antigravityCatalogRequest !== request) return;
+        if (!result?.ok) throw Error(result?.error || '会话目录读取失败');
+        antigravityCatalog = {...result,scope,launcher,items:result.items || result.sessions || [],projects:result.projects || []};
+      } catch(error) { if (manual && scope === sessKey()) MI.toast(error.message,'err'); }
+      finally { if (antigravityCatalogRequest === request) { antigravityCatalogRequest = null; refreshHistInPlace(); } }
+    })();
+    return request.promise;
+  }
+  function antigravitySessionsForHist() {
+    const running = runningSessionIds(), byId = new Map(loadSessions().map(item=>[item.id,{...item,rootDir:workspaceRoot()}]));
+    if (antigravityCatalog.scope === sessKey()) for (const item of antigravityCatalog.items) {
+      const rootDir = item.rootDir || item.cwd, nativeSessionId = item.nativeSessionId || item.sessionId;
+      if (!rootDir || pathKey(rootDir) !== pathKey(workspaceRoot()) || !nativeSessionId) continue;
+      const id = item.localId || item.localSessionId || [...byId.values()].find(entry=>entry.nativeSessionId===nativeSessionId)?.id || 'antigravity:'+nativeSessionId, local = byId.get(id);
+      byId.set(id,{...item,...local,id,nativeSessionId,antigravityProjectId:item.projectId || local?.antigravityProjectId,
+        title:local?.renamed ? local.title : item.title || local?.title || '未命名会话',ts:item.updatedAt || local?.ts || 0,rootDir,
+        readOnly:item.readOnly !== false,running:item.running || running.has(id)});
+    }
+    if (curSessionId && !byId.has(curSessionId)) byId.set(curSessionId,{id:curSessionId,title:msgs.length ? sessTitle(msgs) : '新会话',rootDir:workspaceRoot(),ts:Date.now()});
+    for (const item of byId.values()) if (running.has(item.id) || item.running) {item.running=true;running.add(item.id);}
+    const all=[...byId.values()].filter(item=>!!item.archived===antigravityArchiveOnly).sort((a,b)=>Number(!!b.pinned)-Number(!!a.pinned)||(a.order ?? Infinity)-(b.order ?? Infinity)||(b.ts||0)-(a.ts||0));
+    return {all,running};
+  }
+  async function openAntigravitySession(target,showNotice = false) {
+    const id = target.id, scope = sessKey();
+    if (curSessionId === id && currentRun?.engine === 'antigravity' && runIsLive(currentRun)) return;
+    const parked=parkedRecordOf(id);if(parked){restoreBackgroundRun({sessionId:id,hit:parked});return;}
+    saveAntigravityComposer();persistSession();detachRun();curSessionId=id;restoreAntigravityComposer();
+    const saved=loadSessions().find(item=>item.id===id), nativeId=target.nativeSessionId || saved?.nativeSessionId || (dshSessionAccess?.sessionId===id?dshSessionAccess.hostId:'');
+    const ticket=++sessionLoadTicket;msgs=saved?.msgs || [];clearMessageView();replayMsgs();rememberSession();
+    dshSessionAccess={sessionId:id,hostId:nativeId||'',state:nativeId?'loading':'ready',scope:dshScope(),epoch:pageEpoch,error:''};
+    setBusyUI(false);
+    if(!nativeId){void refreshAntigravityOptions();return;}
+    let result;try{result=await window.myIDE.ai.antigravityHistory({...getConfig(),...dshView()}, {...antigravityTarget(),nativeSessionId:nativeId});}catch(error){result={ok:false,error:error.message};}
+    if(ticket!==sessionLoadTicket||scope!==sessKey()||curSessionId!==id||getConfig().engine!=='antigravity')return;
+    if(!result?.ok){dshSessionAccess.state='blocked';dshSessionAccess.error=result?.error || '原会话恢复失败，已保留缓存和草稿';setBusyUI(false);antigravityConnectionInfo();MI.toast(dshSessionAccess.error,'err');return;}
+    if(result.rootDir && pathKey(result.rootDir)!==pathKey(sessionRoot())){dshSessionAccess.state='blocked';dshSessionAccess.error='原会话目录不一致';setBusyUI(false);return;}
+    msgs=Array.isArray(result.messages)?result.messages:dshTurnsMessages(result.turns||[]);
+    dshSessionAccess={...dshSessionAccess,state:result.readOnly||result.unknown?'blocked':'ready',readOnly:result.readOnly,unknown:result.unknown,hasHistory:true,error:result.readOnly?'该外部会话只读':result.unknown?'原输入提交状态待核对':'',hostId:result.nativeSessionId || nativeId};
+    const all=loadSessions();saveSessions([{...saved,...target,id,nativeSessionId:dshSessionAccess.hostId,msgs,ts:target.ts || Date.now(),title:target.title || saved?.title || sessTitle(msgs)},...all.filter(item=>item.id!==id)]);
+    await replayHistory(()=>ticket===sessionLoadTicket&&scope===sessKey()&&id===curSessionId);
+    renderUsage();refreshHistInPlace();void refreshAntigravityOptions();
+    if(showNotice)MI.toast(result.readOnly?'已载入会话（只读）':'已恢复 Antigravity 原会话','ok');
+  }
   function showDshConnectedInfo(sessionId) {
+    if(getConfig().engine==='antigravity')return antigravityConnectionInfo();
     if(backgroundView || dshScopeMismatch())return;
     if(getConfig().engine==='codex'){const info=document.getElementById('ai-dsh-info');if(info){info.textContent=dshModelUnavailable()?'Codex 原模型不可用':'Codex 已连接';info.title=sessionId?'当前 Codex 会话：'+sessionId:'首次发送时创建原生 Codex 会话；不读取或复制认证信息';}return;}
     const info=document.getElementById('ai-dsh-info'),model=dshConfigOptions.find(option=>option.id==='model');
@@ -1376,6 +1529,7 @@ const AiPanel = (() => {
 
   async function changeNativeEffort(effort) {
     const cfg = getConfig();
+    if (cfg.engine === 'antigravity') return changeAntigravityOption('reasoning_effort',effort);
     if (cfg.engine !== 'codex' || !busy && !codexObservedRunning()) {
       await setConfig({ [nativeReasoningKey()]: effort });
       if (cfg.engine === 'codex') await refreshCodexOptions(true);
@@ -1514,6 +1668,7 @@ const AiPanel = (() => {
     refreshModelSel();setBusyUI(busy);
   }
   async function refreshDshOptions(apply=false,retry=false){
+    if(getConfig().engine==='antigravity')return retry&&dshSessionAccess?.state==='blocked'&&dshSessionAccess?.hostId?openAntigravitySession({id:curSessionId,nativeSessionId:dshSessionAccess.hostId}):refreshAntigravityOptions(apply);
     if(getConfig().engine==='codex')return refreshCodexOptions(apply);
     if(getConfig().engine!=='dsh'||panel?.classList.contains('hidden'))return;
     // 初始化时页面通知可能早于项目恢复；先还原该项目对话，不能先生成空身份覆盖当前选择。
@@ -1554,25 +1709,25 @@ const AiPanel = (() => {
     const sel = document.getElementById('ai-model');
     if (!sel) return;
     const cfg = getConfig();
-    const engine=document.getElementById('ai-engine');if(engine)engine.value=nativeEngine(cfg.engine)?cfg.engine:'standard';
+    const engine=document.getElementById('ai-engine');if(engine){const option=engine.querySelector('[value="antigravity"]');if(option)option.hidden=option.disabled=cfg.antigravityEnabled!==true;}if(engine)engine.value=nativeEngine(cfg.engine)?cfg.engine:'standard';
     document.getElementById('ai-dsh-options')?.classList.toggle('hidden',!nativeEngine(cfg.engine));
     document.querySelector('.ai-dsh-status')?.classList.toggle('hidden',!nativeEngine(cfg.engine));
     syncCodexLifecycle();
     if(nativeEngine(cfg.engine)){
       const model=dshConfigOptions.find(option=>option.id==='model'),choices=(model?.options||[]).flatMap(option=>option.options||[option]);
-      const ready=dshOptionsState==='ready'&&!dshScopeMismatch()&&(cfg.engine!=='codex'||!busy&&!codexDesktopOwnsCurrentSession());sel.disabled=!ready;
+      const ready=dshOptionsState==='ready'&&!dshScopeMismatch()&&(cfg.engine!=='antigravity'||!busy&&antigravityCap('config'))&&(cfg.engine!=='codex'||!busy&&!codexDesktopOwnsCurrentSession());sel.disabled=!ready||cfg.engine==='antigravity'&&!choices.length;
       const optionHtml=option=>'<option value="'+esc(option.value)+'"'+(option.disabled?' disabled':'')+'>'+esc(option.name)+'</option>';
       // 目录已带原生分类；只在查找选中值时展开，展示保留来源，不能按同名模型去重。
       const groupedHtml=(model?.options||[]).map(option=>Array.isArray(option.options)
         ?option.options.length?'<optgroup label="'+esc(option.name||option.group||'模型')+'" data-group="'+esc(option.group||'')+'">'+option.options.map(optionHtml).join('')+'</optgroup>':''
         :optionHtml(option)).join('');
-      sel.innerHTML=choices.length?groupedHtml:'<option value="">'+(dshOptionsState==='loading'?'正在连接 '+nativeLabel()+'…':nativeLabel()+' 未连接')+'</option>';
+      sel.innerHTML=choices.length?groupedHtml:'<option value="">'+(dshOptionsState==='loading'?'正在连接 '+nativeLabel()+'…':cfg.engine==='antigravity'&&dshOptionsState==='ready'?'首次发送后提供模型':nativeLabel()+' 未连接')+'</option>';
       // 下架的是这条宿主会话的旧选择；全局缓存中另一个可用模型不能伪装成它已被替换。
-      sel.value=cfg.engine==='codex'?model?.currentValue||'':!dshModelUnavailable()&&choices.some(choice=>choice.value===cfg[nativeModelKey()])?cfg[nativeModelKey()]:model?.currentValue||'';
+      sel.value=['codex','antigravity'].includes(cfg.engine)?model?.currentValue||'':!dshModelUnavailable()&&choices.some(choice=>choice.value===cfg[nativeModelKey()])?cfg[nativeModelKey()]:model?.currentValue||'';
       const selectedGroup=sel.selectedOptions[0]?.parentElement;
-      sel.title=(cfg.engine==='codex'?'模型来自本机 Codex app-server；登录与原生沙箱由 Codex 管理':'模型来自正在运行的桌面 DSH，与其原生插件和配置共用')+(selectedGroup?.tagName==='OPTGROUP'?'\n当前分类：'+selectedGroup.label:'');
+      sel.title=(cfg.engine==='antigravity'?'模型和实际配置来自 Antigravity ACP':cfg.engine==='codex'?'模型来自本机 Codex app-server；登录与原生沙箱由 Codex 管理':'模型来自正在运行的桌面 DSH，与其原生插件和配置共用')+(selectedGroup?.tagName==='OPTGROUP'?'\n当前分类：'+selectedGroup.label:'');
       const reasoning=dshModelUnavailable()?null:dshConfigOptions.find(option=>option.id==='reasoning_effort'),select=document.getElementById('ai-dsh-reasoning');
-      if(select){const available=!!reasoning?.options?.length;select.classList.toggle('hidden',!available);document.querySelector('label[for="ai-dsh-reasoning"]')?.classList.toggle('hidden',!available);select.disabled=cfg.engine==='codex'?!available||!codexEffortEditable():!ready;select.innerHTML=(reasoning?.options||[]).map(option=>'<option value="'+esc(option.value)+'">'+esc(option.name)+'</option>').join('');select.value=cfg.engine==='codex'?reasoning?.currentValue||'':reasoning?.options?.some(choice=>choice.value===cfg[nativeReasoningKey()])?cfg[nativeReasoningKey()]:reasoning?.currentValue||'';}
+      if(select){const available=!!reasoning?.options?.length;select.classList.toggle('hidden',!available);document.querySelector('label[for="ai-dsh-reasoning"]')?.classList.toggle('hidden',!available);select.disabled=cfg.engine==='codex'?!available||!codexEffortEditable():!ready;select.innerHTML=(reasoning?.options||[]).map(option=>'<option value="'+esc(option.value)+'">'+esc(option.name)+'</option>').join('');select.value=['codex','antigravity'].includes(cfg.engine)?reasoning?.currentValue||'':reasoning?.options?.some(choice=>choice.value===cfg[nativeReasoningKey()])?cfg[nativeReasoningKey()]:reasoning?.currentValue||'';}
       const reconnect=document.getElementById('ai-dsh-reconnect');if(reconnect)reconnect.disabled=dshOptionsState==='loading'||busy;
       return;
     }
@@ -1599,7 +1754,7 @@ const AiPanel = (() => {
       releaseSessionPermissions(detachRun());
     }
     if (v && inputEl) {inputEl.focus();refreshDshOptions();restoreBackgroundRun();ensureDshWatch();}
-    if (getConfig().engine === 'codex') syncHistoryCatalog();
+    if (['codex','antigravity'].includes(getConfig().engine)) syncHistoryCatalog();
     if (v) refreshHistInPlace();
   }
 
@@ -2916,6 +3071,7 @@ const AiPanel = (() => {
     return !!item && !item.archived && !conflict?.needsOriginalSettings && (item.running && !item.sharedControl || !!conflict);
   }
   function nativeInputTarget(){
+    if(getConfig().engine==='antigravity')return curSessionId && !dshScopeMismatch() && dshSessionAccess?.state!=='loading' ? antigravityTarget() : null;
     if (getConfig().engine === 'codex') {
       if (busy) {
         return runIsLive(currentRun) && currentRun.nativeState?.turnId && currentRun.stream?.context &&
@@ -2931,6 +3087,7 @@ const AiPanel = (() => {
     return null;
   }
   function nativeQueueSource(){
+    if(getConfig().engine==='antigravity')return antigravityQueues.get(antigravityStateKey());
     if (getConfig().engine === 'codex') return codexQueue?.key === inputViewKey() ? codexQueue.value : null;
     return dshOwnRun()?currentRun.inputQueue:dshWatch&&dshWatchWanted(dshWatch)?dshWatch.state?.queue:null;
   }
@@ -2977,6 +3134,7 @@ const AiPanel = (() => {
   function renderNativeInputUI(b = busy){
     if(backgroundView)return;
     renderSendButton(b);
+    if(getConfig().engine==='antigravity')return renderAntigravityInputUI(b);
     renderObservedCodexQuestion();
     const codex = getConfig().engine === 'codex';
     if (inputEl) inputEl.placeholder = codex && window.myIDE.ai.codexSkills
@@ -3092,6 +3250,7 @@ const AiPanel = (() => {
     renderNativeInputUI();
   }
   async function refreshNativeQueue(silent = false){
+    if(getConfig().engine==='antigravity')return refreshAntigravityQueue(silent);
     const target = nativeInputTarget();
     if (!target) return;
     const ai = window.myIDE.ai, config = getConfig();
@@ -3107,6 +3266,7 @@ const AiPanel = (() => {
     return new Promise(resolve=>{const box=document.createElement('div');box.innerHTML='<div class="m-head">编辑待发消息</div><div class="m-body"><textarea class="ai-queue-editor" aria-label="待发消息内容"></textarea></div><div class="m-foot"><button class="tb-btn" data-cancel>取消</button><button class="tb-btn m-ok" data-save>保存</button></div>';const area=box.querySelector('textarea');area.value=text;let done=false;const finish=value=>{if(done)return;done=true;Modal.hide();resolve(value);};box.onModalHide=()=>{if(!done){done=true;resolve(null);}};box.querySelector('[data-cancel]').onclick=()=>finish(null);box.querySelector('[data-save]').onclick=()=>finish(area.value);box.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();finish(null);}});Modal.show(box);area.focus();});
   }
   async function updateNativeQueue(item,kind){
+    if(getConfig().engine==='antigravity')return updateAntigravityQueue(item,kind);
     const target=nativeInputTarget(),key=inputViewKey();
     if (!target || nativeInputPending) return;
     if (target.kind === 'codex') {
@@ -3197,6 +3357,7 @@ const AiPanel = (() => {
   }
   async function submitRunningInput(mode='queue'){
     if(nativeInputPending)return;
+    if(getConfig().engine==='antigravity')return submitAntigravityInput(mode);
     if (getConfig().engine === 'codex') return submitCodexInput(mode);
     if(rejectDshSend())return;
     const target=nativeInputTarget(),draft=freezeInputDraft();if(!target||!draft)return;
@@ -3215,6 +3376,7 @@ const AiPanel = (() => {
     finally{if(item.rendered)nativeInputRequests.delete(requestId);else if(run.status!=='active'&&!item.error)item.error='消息接受与运行结束同时发生，消费状态未知。请先刷新原生队列确认，再决定是否恢复草稿。';nativeInputPending=false;renderNativeInputUI();}
   }
   async function send(inputOptions) {
+    if(getConfig().engine==='antigravity'&&pendingImages.length&&!antigravityCap('image')){MI.toast('当前 Antigravity 连接未开放图片发送，图片已保留','err');return;}
     if (busy || getConfig().engine === 'codex' && nativeInputPending || rejectDshSend(inputOptions?.codexIdle)) return;
     const continuation = inputOptions?.codexContinueTurnId;
     if (continuation && continuation !== codexContinuationId()) return;
@@ -3240,15 +3402,15 @@ const AiPanel = (() => {
       codexQueue.value.interruptedTurnId = null;
     }
     if(inputOptions?.draft){run.initialInputDraft=inputOptions.draft;run.inputTransport={dshWatchId:inputOptions.dshWatchId,dshInputMode:inputOptions.dshInputMode,expectedRunId:inputOptions.expectedRunId};}
-    if (!run.initialInputDraft && cfg.engine !== 'codex') await followActive();
+    if (!run.initialInputDraft && !['codex','antigravity'].includes(cfg.engine)) await followActive();
     if (!runIsLive(run)) return;
     messageNavigation?.resume();
     agentRounds = 0;   // 新任务重置 Agent 循环计数
     closeSlash();
     closeSkill();
-    if (!run.initialInputDraft) compressHistory(); // 补充消息已锁定自己的附件，由宿主管理历史
+    if (!run.initialInputDraft && cfg.engine!=='antigravity') compressHistory(); // 补充消息已锁定自己的附件，由宿主管理历史
     renderUsage();
-    if (cfg.engine === 'codex') {
+    if (['codex','antigravity'].includes(cfg.engine)) {
       msgsEl.querySelector('.ai-codex-rejected')?.remove();
       run.codexDraft = { key: inputViewKey(), scope: inputScopeKey(), revision: inputDraftRevision, raw: inputEl.value, images: pendingImages.slice() };
     }
@@ -3266,6 +3428,7 @@ const AiPanel = (() => {
     }
     const imgs = run.initialInputDraft?run.initialInputDraft.imgs.slice():pendingImages.slice();
     if(!run.initialInputDraft)pendingImages = [];
+    if(cfg.engine==='antigravity')saveAntigravityComposer();
     renderImages();
     content = userContent(content, imgs);
     const urow = addMsg('user', text, { imgs });
@@ -3421,6 +3584,7 @@ const AiPanel = (() => {
     if (!runIsLive(run) || !stream || stream.finished || run.stream !== stream || !identityMatches(r?.context, stream.context)) return;
     stream.finished = true;
     if (run.engine === 'codex' && finishCodexSubmission(run, stream, r)) return;
+    if(run.engine==='antigravity'){run.antigravityUnknown=r?.submissionUnknown===true||r?.status==='unknown';if(run.codexDraft){if(run.antigravityUnknown||r?.status==='failed'||r?.error&&!r?.aborted||r?.writeState==='not_written')restoreAntigravityDraft(run,r);else run.codexDraft=null;}}
     addUsage(r && r.usage); // 精确 token 统计（DeepSeek 含缓存命中细分）
     if(!nativeEngine(run.engine))cancelLiveText(curStream);
     const md = curStream.querySelector('.ai-md');if(!nativeEngine(run.engine))md.classList.remove('ai-stream-plain');
@@ -3493,7 +3657,7 @@ const AiPanel = (() => {
     syncPermBtn();
     renderSessionOrigin();
     const external = !b && (dshObservedRunning() || !!codexSharedTurn());
-    const stopping = !!dshWatch?.stopping || !b && !!codexSharedTurn() && nativeInputPending;
+    const stopping = !!currentRun?.antigravityStopping || !!dshWatch?.stopping || !b && !!codexSharedTurn() && nativeInputPending;
     if (b && getConfig().engine === 'codex') codexLiveView = null;
     if (getConfig().engine === 'codex') {
       const model = document.getElementById('ai-model');
@@ -3511,7 +3675,7 @@ const AiPanel = (() => {
     if (!sendBtn) return;
     const sharedTurn = !b && codexSharedTurn();
     const external = !b && (dshObservedRunning() || !!sharedTurn);
-    const stopping = !!dshWatch?.stopping || !!sharedTurn && nativeInputPending;
+    const stopping = !!currentRun?.antigravityStopping || !!dshWatch?.stopping || !!sharedTurn && nativeInputPending;
     const codexArchived = !b && codexSelectedHistoryItem()?.archived;
     const queueMode = !b && codexPrimaryQueues();
     const continuation = !b && !queueMode && !codexArchived && codexContinuationId();
@@ -3522,7 +3686,7 @@ const AiPanel = (() => {
     sendBtn.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (b || external ? '<rect x="4" y="4" width="8" height="8" rx="1"/>' : continuation ? '<path d="M5 3v10l8-5z" fill="currentColor" stroke="none"/>' : '<path d="M8 13V3M4 7l4-4 4 4"/>') + '</svg><span class="hidden" aria-hidden="true">' + (b || external ? '⏹' : '➤') + '</span>';
     const continuationTitle = continuation && (codexDesktopOwnsCurrentSession() || codexConflictForCurrentDraft()?.turnId === continuation)
       ? '加入待发，沿用原会话的设置和权限' : '继续上一次中断的任务';
-    sendBtn.title = continuation ? continuationTitle : queueMode ? '发送到原 Codex 会话，沿用原会话权限（Enter）' : codexArchived ? '请先取消归档再发送' : b && currentRun?.engine==='codex' ? '请求中断当前 Codex 轮次，不影响其他会话' : b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : sharedTurn ? '停止 Codex 当前轮次' : external ? '停止 DSH 当前会话；Enter 排队，Ctrl+Enter 插入' : codexDesktopOwnsCurrentSession() ? '由 Codex 桌面端发送，沿用原会话设置和权限（Enter）' : '发送（Enter）';
+    sendBtn.title = getConfig().engine==='antigravity' ? b ? '停止 Antigravity 当前轮次，等待原生回执' : antigravityCanSend() ? '发送到 Antigravity 原会话（Enter）' : '当前会话不可发送，请检查连接和权限' : continuation ? continuationTitle : queueMode ? '发送到原 Codex 会话，沿用原会话权限（Enter）' : codexArchived ? '请先取消归档再发送' : b && currentRun?.engine==='codex' ? '请求中断当前 Codex 轮次，不影响其他会话' : b ? currentRun?.inputTransport?.dshInputMode==='steer'?'停止本次补充；原外部 DSH 任务不会被中止':'请求停止生成并撤回本次运行尚未消费的补充消息；结果以 DSH 为准' : sharedTurn ? '停止 Codex 当前轮次' : external ? '停止 DSH 当前会话；Enter 排队，Ctrl+Enter 插入' : codexDesktopOwnsCurrentSession() ? '由 Codex 桌面端发送，沿用原会话设置和权限（Enter）' : '发送（Enter）';
     sendBtn.setAttribute('aria-label', codexArchived ? sendBtn.title : b || external ? '停止生成' : continuation ? '继续' : '发送消息');
   }
 
@@ -3550,6 +3714,9 @@ const AiPanel = (() => {
   const sessionCache = new Map();
   const codexProjectSessionKey = root => LS_SESS + ':' + root + ':codex';
   const codexHistoryKey = root => pathKey(root) === pathKey(workspaceRoot()) ? sessKey() : codexProjectSessionKey(root);
+  function antigravityDraftProjectId() {
+    try{const draft=JSON.parse(localStorage.getItem(sessKey()+':draft-project'));return draft?.id===curSessionId?draft.projectId:loadSessions().find(item=>item.id===curSessionId)?.antigravityProjectId;}catch{return null;}
+  }
   function codexDraftProjectId() {
     if (!curSessionId) return null;
     try {
@@ -3592,7 +3759,8 @@ const AiPanel = (() => {
     const all = loadSessions(), previous = all.find(x => x.id === curSessionId);
     const rest = all.filter((x) => x.id !== curSessionId);
     const codexProjectId = getConfig().engine === 'codex' && codexDraftProjectId();
-    rest.unshift({ ...previous, ...(codexProjectId ? { codexProjectId } : {}), id: curSessionId,
+    const antigravityFields=getConfig().engine==='antigravity'?{nativeSessionId:dshSessionAccess?.hostId || previous?.nativeSessionId,antigravityProjectId:antigravityDraftProjectId() || previous?.antigravityProjectId}:{};
+    rest.unshift({ ...previous,...antigravityFields, ...(codexProjectId ? { codexProjectId } : {}), id: curSessionId,
       ts: Date.now(), title: ((previous?.renamed || nativeEngine()) && previous?.title) || sessTitle(msgs),
       msgs: msgs.slice(), usage: { ...usageSum } });
     saveSessions(rest);
@@ -4060,6 +4228,7 @@ const AiPanel = (() => {
 
   let historyCatalogTimer = null;
   function visibleHistoryRefresh() {
+    if(getConfig().engine==='antigravity' && (histSidebarVisible || panel&&!panel.classList.contains('hidden')))return refreshAntigravityCatalog;
     if (histSidebarVisible && getConfig().engine === 'dsh') return refreshDshCatalog;
     if (codexProjectHistory() && (histSidebarVisible || panel && !panel.classList.contains('hidden'))) return refreshCodexCatalog;
     return null;
@@ -4079,6 +4248,7 @@ const AiPanel = (() => {
       }
     }, 5000);
     if (refresh === refreshDshCatalog) return refresh({ background: catalogUsable() });
+    if (refresh===refreshAntigravityCatalog)return refresh({background:true});
     if (!currentCodexCatalog()) return refresh();
   }
 
@@ -4183,6 +4353,7 @@ const AiPanel = (() => {
    * 是否正在跑」一律以宿主为准 —— 两处都写会互相打架。
    */
   function sessionsForHist() {
+    if(getConfig().engine==='antigravity')return antigravitySessionsForHist();
     if (codexProjectHistory()) return codexSessionsForHist();
     const local = loadSessions().filter(s => !s.archived);
     const byId = new Map(local.map(s => [s.id, s]));
@@ -4444,7 +4615,7 @@ const AiPanel = (() => {
   let historySelectionAnchor = null, historySelectionScope = '', historyBatchBusy = false;
 
   const historyRowKey = (id, root) => JSON.stringify([id, pathKey(root)]);
-  const selectionScopeFor = config => JSON.stringify([config.engine, config.codexPath, config.dshPath, dshScope()]);
+  const selectionScopeFor = config => JSON.stringify([config.engine, config.codexPath, config.dshPath, config.antigravityPath, dshScope()]);
   function syncHistorySelection(config) {
     const scope = selectionScopeFor(config);
     if (scope === historySelectionScope) return;
@@ -4647,6 +4818,7 @@ const AiPanel = (() => {
 
   function showHistoryOptions(anchor) {
     const options = [{ label: '搜索会话', run: startHistorySearch }];
+    if(getConfig().engine==='antigravity')options.push({label:antigravityArchiveOnly?'返回会话列表':'查看 MyIDE 已归档',run:()=>{antigravityArchiveOnly=!antigravityArchiveOnly;refreshHistInPlace();}});
     if (codexProjectHistory()) options.push({
       label: codexArchiveOnly ? '返回会话列表' : '查看已归档',
       run: () => {
@@ -4688,6 +4860,7 @@ const AiPanel = (() => {
     const sameScope = () => histSidebarVisible && scope === sessKey() && engine === getConfig().engine;
     const current = anchor => sameScope() && anchor.isConnected;
     const actions = rootDir ? [{ label: '在资源管理器中显示', run: () => window.myIDE.shell.showInFolder(rootDir) }] : [];
+    if(engine==='antigravity'&&rootDir){const projects=antigravityCatalog.scope===scope?antigravityCatalog.projects.filter(project=>(project.roots || [project.rootDir]).some(root=>pathKey(root)===pathKey(rootDir))):[];actions.unshift(projects.length>1?{label:'新建会话',children:projects.map(project=>({label:project.title || project.id,run:()=>startNewSession(project)}))}:{label:'新建会话',run:()=>startNewSession(projects[0] || {roots:[rootDir],title:sessionRootLabel(rootDir)})});}
     if (engine === 'codex' && projectId) {
       const project = currentCodexCatalog()?.projects.find(item => item.id === projectId);
       const archived = codexArchivedProjects.has(projectId);
@@ -4760,11 +4933,11 @@ const AiPanel = (() => {
     const title = sidebar.querySelector('[data-hist-title]');
     const panelTitle = codex && codexArchiveOnly ? '已归档' : '会话';
     if (title && title.textContent !== panelTitle) title.textContent = panelTitle;
-    const launcher = (codex ? config.codexPath : config.dshPath) || '';
-    const request = codex ? codexCatalogRequest : dshCatalogRequest;
+    const launcher = (config.engine==='antigravity' ? config.antigravityPath : codex ? config.codexPath : config.dshPath) || '';
+    const request = config.engine==='antigravity' ? antigravityCatalogRequest : codex ? codexCatalogRequest : dshCatalogRequest;
     const histLoading = request?.launcher === launcher && !request.background;
     const refresh = sidebar.querySelector('[data-hist-refresh]');
-    refresh.hidden = !dsh && !codex;
+    refresh.hidden = !dsh && !codex && config.engine!=='antigravity';
     refresh.disabled = histLoading;
 
     const groups = new Map(), runningGroups = new Set(), unreadGroups = new Set();
@@ -5068,7 +5241,7 @@ const AiPanel = (() => {
       const options = sender.closest('[data-hist-options]');
       if (options) { event.stopPropagation(); showHistoryOptions(options); return; }
       if (sender.closest('[data-hist-refresh]')) {
-        const refresh = getConfig().engine === 'codex' ? refreshCodexCatalog : refreshDshCatalog;
+        const refresh = getConfig().engine==='antigravity' ? refreshAntigravityCatalog : getConfig().engine === 'codex' ? refreshCodexCatalog : refreshDshCatalog;
         await refresh({ manual: true });
         return;
       }
@@ -5213,6 +5386,13 @@ const AiPanel = (() => {
     const target = findHistorySession(row);
     if (!target || target.unknownRoot) return false;
     const scope = sessKey(), engine = getConfig().engine;
+    if(engine==='antigravity'){
+      const save=changes=>{if(scope!==sessKey()||getConfig().engine!=='antigravity')return;const all=loadSessions(),old=all.find(item=>item.id===target.id);saveSessions([{...target,...old,...changes,msgs:old?.msgs || []},...all.filter(item=>item.id!==target.id)]);refreshHistInPlace();renderCurrentSessionTitle();setBusyUI(busy);};
+      const list=antigravitySessionsForHist().all,index=list.findIndex(item=>item.id===target.id);
+      const actions=[{label:'打开会话',run:()=>openAntigravitySession(target,true)},{key:'ren',label:'在 MyIDE 中重命名',run:async anchor=>{const name=(await editHistoryName(anchor,'会话名称',target.title))?.trim();if(name)save({title:name,renamed:true});}},{label:target.pinned?'在 MyIDE 中取消置顶':'在 MyIDE 中置顶',run:()=>save({pinned:!target.pinned})},{label:target.archived?'在 MyIDE 中取消归档':'在 MyIDE 中归档',disabled:target.running,run:()=>save({archived:!target.archived})}];
+      if(index>0)actions.push({label:'在 MyIDE 中上移',run:()=>{list.forEach((item,i)=>{item.order=i;});[list[index-1],list[index]]=[list[index],list[index-1]];const all=loadSessions();for(let i=0;i<list.length;i++){const old=all.find(item=>item.id===list[i].id);if(old)old.order=i;else all.push({...list[i],msgs:[],order:i});}saveSessions(all);refreshHistInPlace();}});
+      showAiContextMenu(anchor,x,y,{kind:'session',label:'会话操作',actions,isCurrent:()=>histSidebarVisible&&scope===sessKey()&&getConfig().engine==='antigravity'});return true;
+    }
     const selected = selectedHistoryRows.has(rowSelectionKey(row));
     if (!selected && selectedHistoryRows.size) {
       selectedHistoryRows.clear();
@@ -5294,7 +5474,8 @@ const AiPanel = (() => {
     if (target.unknownRoot) { MI.toast('宿主未提供可验证的会话工作区，不能借用当前工程打开', 'err'); return; }
     if (!act || act === 'open') {
       App.showAi();
-      if (target.codexThreadId) await openCodexHistory(target);
+      if(getConfig().engine==='antigravity')await openAntigravitySession(target,true);
+      else if (target.codexThreadId) await openCodexHistory(target);
       else if (target.foreign) await openForeignSession(target);
       else { codexOpenIntent++; openSession(id); }
       return;
@@ -5482,6 +5663,7 @@ const AiPanel = (() => {
   }
 
   function openSession(id, showNotice = true, codexHistory = null) {
+    if(getConfig().engine==='antigravity')return openAntigravitySession(sessionsForHist().all.find(item=>item.id===id)||{id},showNotice);
     const localRoot = workspaceRoot(), root = codexHistory?.rootDir || localRoot;
     if (id === curSessionId && currentRun?.status === 'active' && pathKey(currentRun.identity.rootId) === pathKey(root)) return;
     const ticket = ++sessionLoadTicket;
@@ -5842,6 +6024,9 @@ const AiPanel = (() => {
     if (selected === curSessionId && root === sessionRoot() && scope === dshScope() && generation === dshWatchGeneration) await ensureDshWatch(true);
   }
   const sessionDrafts = new Map();
+  const antigravityComposerKey = (scope=loadedSessionKey || sessKey(),id=curSessionId) => 'myide-antigravity-composer:'+JSON.stringify([scope,id]);
+  function saveAntigravityComposer(){if(!curSessionId||!inputEl)return;try{localStorage.setItem(antigravityComposerKey(),JSON.stringify({text:inputEl.value,images:pendingImages,files:ctxFiles.filter(file=>!file.auto)}));}catch{}}
+  function restoreAntigravityComposer(){let draft;try{draft=JSON.parse(localStorage.getItem(antigravityComposerKey(sessKey())));}catch{}if(inputEl)inputEl.value=draft?.text || '';pendingImages=draft?.images || [];ctxFiles=draft?.files || [];autoGrowInput();renderImages();renderChips();}
   function switchSessionDraft(nextId, nextRoot = window.App?.root || '', foreign = false) {
     if (!dshSessionAccess?.foreign && !foreign) return;
     const oldKey = JSON.stringify([sessionRoot(), curSessionId]), newKey = JSON.stringify([nextRoot, nextId]);
@@ -6106,6 +6291,7 @@ const AiPanel = (() => {
   }
   // 恢复首次连接或用户主动切换的会话范围。
   function onProjectChange() {
+    if(getConfig().engine==='antigravity'&&loadedSessionKey?.endsWith(':antigravity'))saveAntigravityComposer();
     const nextKey=sessKey(),harness=nativeEngine(),codex=getConfig().engine==='codex';
     // 同一项目重复通知不能重置对话；重启后恢复明确的当前选择，项目之间仍保持独立历史。
     if(harness&&loadedSessionKey===nextKey){refreshDshOptions();return;}
@@ -6153,8 +6339,10 @@ const AiPanel = (() => {
     if(harness){
       const all=loadSessions(),active=localStorage.getItem(nextKey+':active'),draft=localStorage.getItem(nextKey+':draft');
       saved=all.find(item=>item.id===active)||(draft!==active||!active?all[0]:null);
-      curSessionId=saved?.id||active||null;
+      curSessionId=saved?.id||active||(getConfig().engine==='antigravity'?'s-'+window.crypto.randomUUID():null);
+      if(getConfig().engine==='antigravity'&&!saved&&!active)localStorage.setItem(nextKey+':draft',curSessionId);
       rememberSession();
+      if(getConfig().engine==='antigravity')restoreAntigravityComposer();
       if(saved)usageSum=Object.assign(usageSum,saved.usage||{});
     }
     // 只接管「仍在跑」的记录（2026-10-29）：已结束的记录要留在后台状态条上
@@ -6163,7 +6351,8 @@ const AiPanel = (() => {
     const restored=harness&&restoreBackgroundRun();
     renderBackgroundStatus();
     // 宿主恢复会立即清空消息区；先回放数千条缓存只会白建DOM，身份无法确认时仍由恢复分支回放只读缓存。
-    if(harness&&!codex&&!restored&&curSessionId&&(saved?.hostId||saved?.msgs?.length||/^(session-|myide-|host:)/.test(curSessionId)))
+    if(getConfig().engine==='antigravity'&&!restored&&curSessionId){void openAntigravitySession(saved || {id:curSessionId});}
+    else if(harness&&!codex&&!restored&&curSessionId&&(saved?.hostId||saved?.msgs?.length||/^(session-|myide-|host:)/.test(curSessionId)))
       restoreDshSession(curSessionId,sessionLoadTicket);
     else {
       if(!restored){if(saved){msgs=saved.msgs||[];replayMsgs();}else showWelcome();renderUsage();}
@@ -6954,7 +7143,7 @@ const AiPanel = (() => {
   function makeCodexQuestionCard(request, { isCurrent, respond, remove, openDesktop }) {
     const box = document.createElement('form');
     box.className = 'ai-codex-question';
-    box.setAttribute('aria-label', 'Codex 提问');
+    box.setAttribute('aria-label', request.engine==='antigravity'?'Antigravity 提问':'Codex 提问');
     const fields = [];
     for (const question of request.questions) {
       const group = document.createElement('fieldset');
@@ -7049,6 +7238,144 @@ const AiPanel = (() => {
     return { box, close };
   }
 
+  function makeAntigravityQuestionCard(request,run) {
+    const box=document.createElement('form');box.className='ai-codex-question ai-antigravity-question';box.setAttribute('aria-label','Antigravity 提问');
+    if(request.message){const message=document.createElement('p');message.textContent=request.message;box.append(message);}
+    const schema=request.schema,required=new Set(schema.required || []),fields=[];
+    for(const [id,field]of Object.entries(schema.properties || {})){
+      const group=document.createElement('fieldset'),title=document.createElement('legend');title.textContent=field.title || field.description || id;group.append(title);
+      let control;
+      if(field.type==='boolean'||Array.isArray(field.enum)){
+        control=document.createElement('select');control.append(new Option('请选择',''));
+        const values=field.type==='boolean'?[true,false]:field.enum;
+        values.forEach((value,index)=>control.append(new Option(field.type==='boolean'?value?'是':'否':value,String(index))));
+        if(Object.hasOwn(field,'default')){const index=values.indexOf(field.default);if(index>=0)control.value=String(index);}
+        fields.push({id,field,control,value:()=>control.value===''?undefined:values[Number(control.value)]});
+      }else{
+        control=document.createElement('input');control.type=['number','integer'].includes(field.type)?'number':'text';
+        if(control.type==='number'){control.step=field.type==='integer'?'1':'any';if(Number.isFinite(field.minimum))control.min=String(field.minimum);if(Number.isFinite(field.maximum))control.max=String(field.maximum);}
+        else{control.maxLength=Math.min(field.maxLength ?? 16384,16384);if(field.minLength!=null)control.minLength=field.minLength;}
+        if(Object.hasOwn(field,'default'))control.value=String(field.default);
+        fields.push({id,field,control,value:()=>control.value===''?(required.has(id)&&field.type==='string'?'':undefined):control.type==='number'?control.valueAsNumber:control.value});
+      }
+      control.required=required.has(id)&&(control.tagName==='SELECT'||field.type!=='string'||field.minLength>0);control.setAttribute('aria-label',title.textContent);group.append(control);box.append(group);
+    }
+    const actions=document.createElement('div');actions.className='ai-codex-question-actions';const skip=document.createElement('button'),send=document.createElement('button');skip.type='button';skip.className='tb-btn';skip.textContent='跳过';send.type='submit';send.className='tb-btn m-ok';send.textContent='回答';actions.append(skip,send);box.append(actions);
+    const content=()=>Object.fromEntries(fields.map(field=>[field.id,field.value()]).filter(([,value])=>value!==undefined));
+    let sending=false,closed=false;
+    const valid=()=>fields.every(({control,value,field})=>control.checkValidity()&&(!control.required||value()!==undefined)&&(field.type!=='integer'||value()===undefined||Number.isSafeInteger(value())));
+    const update=()=>{send.disabled=sending||!valid();skip.disabled=sending;};
+    const close=()=>{if(closed)return;closed=true;box.remove();run.questionCards?.delete(request.id);run.controller.signal.removeEventListener('abort',close);};
+    const respond=async action=>{if(closed||sending)return;if(!runIsLive(run)||run.antigravityStopping)return close();if(action==='accept'&&!valid())return;sending=true;update();try{const result=await window.myIDE.ai.antigravityQuestionResult(request.context,request.id,{action,...(action==='accept'?{content:content()}:{})});if(result?.ok)close();else MI.toast(result?.error || '回答尚未被接收','err');}catch(error){MI.toast(error.message,'err');}finally{sending=false;update();}};
+    box.onsubmit=event=>{event.preventDefault();void respond('accept');};skip.onclick=()=>respond('decline');box.addEventListener('input',update);box.addEventListener('change',update);run.controller.signal.addEventListener('abort',close,{once:true});update();return {box,close};
+  }
+
+  function restoreAntigravityDraft(run,result) {
+    const draft=run.codexDraft;if(!draft)return;
+    if(!backgroundView&&draft.key===inputViewKey()&&!inputEl.value&&inputDraftRevision===draft.revision){inputEl.value=draft.raw;pendingImages.unshift(...draft.images);autoGrowInput();renderImages();saveAntigravityComposer();}
+    else {try{const key=antigravityComposerKey(backgroundView?.scope || loadedSessionKey,run.identity.sessionId);const previous=JSON.parse(localStorage.getItem(key));if(!previous?.text)localStorage.setItem(key,JSON.stringify({text:draft.raw,images:draft.images}));}catch{}}
+    if(result?.rejectedBeforeTurn||result?.writeState==='not_written')removeCodexDraftMessage(draft);
+    run.codexDraft=null;
+  }
+  async function refreshAntigravityQueue(silent=true) {
+    const target=nativeInputTarget(),key=antigravityStateKey();if(!target||!antigravityCap('queue'))return;
+    try{const result=await window.myIDE.ai.antigravityQueue({...getConfig(),...dshView()},target);if(key!==antigravityStateKey())return;if(!result?.ok)throw Error(result?.error||'待发读取失败');antigravityQueues.set(key,result.queue || {available:true,items:result.items || [],paused:result.paused});renderNativeInputUI();}
+    catch(error){if(!silent)MI.toast(error.message,'err');}
+  }
+  async function submitAntigravityInput(mode='queue') {
+    const target=nativeInputTarget(),draft=freezeInputDraft(),key=antigravityStateKey();
+    if(!target||!draft||nativeInputPending||currentRun?.antigravityStopping)return;
+    if(!antigravityCap(mode==='steer'?'steer':'queue')){MI.toast(mode==='steer'?'当前连接未开放插入，可将消息排队':'当前连接未开放待发队列','err');return;}
+    if(draft.imgs.length&&!antigravityCap('image')){MI.toast('当前 Antigravity 连接未开放图片发送，图片已保留','err');return;}
+    nativeInputPending=true;renderNativeInputUI();
+    try{const result=await window.myIDE.ai.antigravityInput({...getConfig(),...dshView()},target,{kind:mode==='queue'?'enqueue':'steer',requestId:'myide-input-'+window.crypto.randomUUID(),message:draft.message});if(!result?.ok||result.accepted===false)throw Error(result?.error||'消息尚未确认接收');consumeAntigravityDraft(draft);if(key===antigravityStateKey()){if(result.queue)antigravityQueues.set(key,result.queue);await refreshAntigravityQueue();}}
+    catch(error){if(key===antigravityStateKey())MI.toast(error.message+'，草稿已保留','err');}
+    finally{nativeInputPending=false;renderNativeInputUI();}
+  }
+  function consumeAntigravityDraft(draft) {
+    if(draft.key===inputViewKey()){clearAcceptedDraft(draft);saveAntigravityComposer();return;}
+    try{const [scope,id]=JSON.parse(draft.scope),key=antigravityComposerKey(scope,id),saved=JSON.parse(localStorage.getItem(key));if(saved?.text===draft.raw&&JSON.stringify(saved.images || [])===JSON.stringify(draft.imgs))localStorage.setItem(key,JSON.stringify({...saved,text:'',images:[]}));}catch{}
+  }
+  async function updateAntigravityQueue(item,kind) {
+    const target=nativeInputTarget(),key=antigravityStateKey();if(!target||nativeInputPending)return;
+    if(kind==='reconcile'&&(!dshSessionAccess?.hasHistory||!dshSessionAccess?.unknown||!await Modal.confirm('放弃未确认输入','已查看原会话历史。确认放弃这条提交状态未确认的输入？MyIDE 不会重新发送它，待发队列保持暂停。')||key!==antigravityStateKey()))return;
+    let text;if(kind==='edit'){text=await editQueueText(item.text);if(text==null||!text.trim()||key!==antigravityStateKey())return;}
+    nativeInputPending=true;renderNativeInputUI();
+    try{const result=await window.myIDE.ai.antigravityInput({...getConfig(),...dshView()},target,{kind,itemId:item?.id,...(text!==undefined?{text}:{}),...(kind==='reconcile'?{resolution:'abandon',confirm:true}:{})});if(!result?.ok)throw Error(result?.error||'待发更新失败');if(key===antigravityStateKey()){if(result.queue)antigravityQueues.set(key,result.queue);if(kind==='reconcile')await refreshAntigravityOptions();await refreshAntigravityQueue();if(kind==='resume')void dispatchAntigravityQueue(null);}}
+    catch(error){if(key===antigravityStateKey())MI.toast(error.message,'err');}
+    finally{nativeInputPending=false;renderNativeInputUI();}
+  }
+  function renderAntigravityInputUI(b) {
+    const actions=document.getElementById('ai-running-input-actions'),queueButton=document.getElementById('ai-queue-submit'),steerButton=document.getElementById('ai-steer-submit');
+    const target=nativeInputTarget(),queue=nativeQueueSource(),running=b&&currentRun?.engine==='antigravity';
+    if(inputEl)inputEl.placeholder='发送消息，@ 引用文件，/ 使用命令';
+    actions?.classList.toggle('hidden',!running);actions?.querySelector('span')?.classList.add('hidden');
+    if(queueButton){queueButton.hidden=false;queueButton.classList.toggle('hidden',!antigravityCap('queue'));queueButton.textContent='排队';queueButton.title='本轮正常结束后，按顺序发送到原会话';queueButton.disabled=!target||!hasInputDraft()||nativeInputPending||currentRun?.antigravityStopping;}
+    if(steerButton){steerButton.classList.toggle('hidden',!antigravityCap('steer'));steerButton.textContent='插入';steerButton.title='向当前 Antigravity 轮次插入要求（Alt+Enter）';steerButton.disabled=!target||!hasInputDraft()||nativeInputPending||currentRun?.antigravityStopping;}
+    const box=document.getElementById('ai-input-queue');if(!box)return;
+    const reconcile=dshSessionAccess?.unknown&&dshSessionAccess?.hasHistory;
+    box.classList.toggle('hidden',!queue?.items?.length&&!reconcile);box.replaceChildren();if(!queue?.items?.length&&!reconcile)return;
+    const head=document.createElement('div');head.className='ai-queue-head';const label=document.createElement('span');label.textContent=reconcile?'原输入提交状态待核对':'待发 '+queue.items.length+' 条'+(queue.paused?' · 已暂停':'');head.append(label);
+    const add=(row,label,kind,item,disabled=false)=>{const button=document.createElement('button');button.className='ai-queue-action';button.type='button';button.textContent=label;button.dataset.queueAction=kind;button.disabled=disabled||nativeInputPending||!target;button.onclick=()=>updateAntigravityQueue(item,kind);row.append(button);};
+    if(reconcile)add(head,'放弃未确认输入','reconcile');else add(head,queue.paused?'继续待发':'暂停待发',queue.paused?'resume':'pause');
+    const refresh=document.createElement('button');refresh.type='button';refresh.className='ai-queue-action';refresh.textContent='刷新';refresh.onclick=()=>refreshAntigravityQueue(false);head.append(refresh);box.append(head);
+    for(const item of queue?.items || []){const row=document.createElement('div');row.className='ai-queue-item';row.dataset.queueId=item.id;const mode=document.createElement('span');mode.className='ai-queue-mode';mode.textContent=['submitting','unknown','accepted'].includes(item.state)?'待核对':'下一轮';const text=document.createElement('span');text.className='ai-queue-text';text.textContent=item.text||item.message?._text||'（图片或附件）';text.title=text.textContent;row.append(mode,text);if(!['submitting','unknown','accepted','completed'].includes(item.state)){add(row,'编辑','edit',item);add(row,'撤回','remove',item);}box.append(row);}
+  }
+  async function dispatchAntigravityQueue(previous) {
+    if(previous?.antigravityQueueDispatching)return;
+    const record=previous?.background;
+    if(record){
+      if(record.run!==previous||record.run.status==='active')return;
+      return withBackgroundView(record,()=>dispatchAntigravityQueueCurrent(previous,record));
+    }
+    if(getConfig().engine==='antigravity'&&!busy&&(!previous||runIsCurrent(previous)))return dispatchAntigravityQueueCurrent(previous);
+  }
+  async function dispatchAntigravityQueueCurrent(previous,record) {
+    if(busy||previous&&previous.status!=='completed'||!antigravityCanSend())return;
+    const key=antigravityStateKey(),target=antigravityTarget(),cfg={...getConfig()};
+    if(previous)previous.antigravityQueueDispatching=true;
+    let result;try{result=await window.myIDE.ai.antigravityQueue(cfg,target);}catch{return;}
+    const start=()=>{
+      if(key!==antigravityStateKey()||busy||!result?.ok)return;
+      const queue=result.queue || {items:result.items || [],paused:result.paused};antigravityQueues.set(key,queue);
+      const item=!queue.paused&&queue.items?.find(entry=>['queued','pending'].includes(entry.state || 'queued'));if(!item)return;
+      const run=beginRun();run.antigravityQueueItemId=item.id;
+      busy=true;if(record){record.run=run;run.background=record;}
+      const message=item.message || {role:'user',content:item.text || '',_text:item.text || ''};msgs.push(message);addMsg('user',message._text || item.text || '',{imgs:message._imgs || []});
+      void continueStream(run);if(!record)setBusyUI(true);
+    };
+    if(record){if(record.run===previous)withBackgroundView(record,start);}else start();
+  }
+  async function handleAntigravityEvent(event) {
+    if(event.type==='queueReady'){
+      const target=event.target || event.context,matching=run=>run?.engine==='antigravity'&&run.identity.sessionId===target?.sessionId&&pathKey(run.identity.rootId)===pathKey(target?.rootId);
+      if(matching(currentRun))return dispatchAntigravityQueue(currentRun);
+      const parked=[...backgroundRuns.values()].find(record=>matching(record.run));if(parked)return dispatchAntigravityQueue(parked.run);return;
+    }
+    const parked=parkedFor(event.context),run=parked?.run || currentRun;
+    if(run?.engine!=='antigravity'||!identityMatches(event.context,run.stream?.context)||run.antigravityStopping&&['permission','question'].includes(event.type))return;
+    if(event.type==='tool')return;
+    if(event.type==='status'&&event.nativeSessionId){const bind=()=>{if(dshSessionAccess?.hostId===event.nativeSessionId)return;dshSessionAccess={...dshSessionAccess,hostId:event.nativeSessionId};persistSession();};if(parked)withBackgroundView(parked,bind);else bind();}
+    if(event.type==='config'){
+      const apply=()=>{if(backgroundView)return;dshConfigOptions=antigravityOptions(event.configOptions);dshOptionsState='ready';refreshModelSel();setBusyUI(busy);};if(parked)withBackgroundView(parked,apply);else apply();return;
+    }
+    if(event.type==='question'&&event.schema){
+      const show=()=>{const cards=run.questionCards ||= new Map();if(cards.has(event.id))return;const card=makeAntigravityQuestionCard(event,run);cards.set(event.id,card);msgsEl.append(card.box);setRunState(run,'等待回答');};if(parked)withBackgroundView(parked,show);else show();renderBackgroundStatus();return;
+    }
+    if(event.type==='permission'){
+      const show=()=>{
+        if(!runIsLive(run))return;
+        const cards=run.questionCards ||= new Map();if(cards.has(event.id))return;
+        const box=document.createElement('div');box.className='ai-dsh-permission';const title=document.createElement('strong');title.textContent='Antigravity 请求授权';const detail=document.createElement('div');detail.textContent=event.toolCall?.title || '查看本次原生工具请求';const button=document.createElement('button');button.type='button';button.className='tb-btn';button.textContent='查看并确认';box.append(title,detail,button);
+        const close=()=>{box.remove();cards.delete(event.id);run.controller.signal.removeEventListener('abort',close);};cards.set(event.id,{box,close});run.controller.signal.addEventListener('abort',close,{once:true});
+        button.onclick=async()=>{if(!runIsLive(run)||run.antigravityStopping)return close();button.disabled=true;try{const result=await window.myIDE.ai.antigravityReview(event.context,event.id);if(result?.ok)close();else MI.toast(result?.error || '审批请求已结束','err');}catch(error){MI.toast(error.message,'err');}finally{button.disabled=false;}};
+        msgsEl.append(box);setRunState(run,'等待授权');
+      };
+      if(parked)withBackgroundView(parked,show);else show();renderBackgroundStatus();return;
+    }
+    if(event.type==='permissionResolved'){run.questionCards?.get(event.id)?.close();return;}
+    return handleDshEvent(event);
+  }
   let observedCodexQuestion;
   function renderObservedCodexQuestion() {
     const view = codexLiveView;
@@ -7090,14 +7417,14 @@ const AiPanel = (() => {
   async function handleDshEventCurrent(event){
     const run=currentRun;if(!runIsLive(run)||!nativeEngine(run.engine)||!identityMatches(event.context,run.stream?.context))return;
     if(event.type==='status'){
-      if(run.engine==='codex'){
+      if(['codex','antigravity'].includes(run.engine)){
         const previous=run.nativeState||{};run.nativeState={...previous,lastEventAt:Date.now()};
         for(const [field,key]of [['phase','phase'],['nativeThreadId','threadId'],['turnId','turnId'],['errorCode','errorCode'],['rpcMethod','rpcMethod']])if(typeof event[field]==='string')run.nativeState[key]=event[field].slice(0,200);
         if(Number.isInteger(event.httpStatusCode))run.nativeState.httpStatusCode=event.httpStatusCode;
         if(Number.isInteger(event.rpcErrorCode))run.nativeState.rpcErrorCode=event.rpcErrorCode;
         if(Number.isSafeInteger(event.retryCount)&&event.retryCount>=0)run.nativeState.retryCount=event.retryCount;
         if(typeof event.willRetry==='boolean')run.nativeState.willRetry=event.willRetry;
-        const box=run.notice?.element;if(box){box.dataset.nativePhase=run.nativeState.phase||'connecting';box.title='Codex 阶段：'+(run.nativeState.phase||'connecting')+'\n原生线程：'+(run.nativeState.threadId||'尚未确认')+'\n原生轮次：'+(run.nativeState.turnId||'尚未确认');}
+        const box=run.notice?.element;if(box){box.dataset.nativePhase=run.nativeState.phase||'connecting';box.title=nativeLabel(run.engine)+' 阶段：'+(run.nativeState.phase||'connecting')+'\n原生线程：'+(run.nativeState.threadId||'尚未确认')+'\n原生轮次：'+(run.nativeState.turnId||'尚未确认');}
       }
       setRunState(run,event.phase === 'error' ? '生成失败' : event.text);
       if (!backgroundView && run.engine === 'codex' && event.phase === 'accepted') {
@@ -7131,13 +7458,13 @@ const AiPanel = (() => {
     }
     if(event.type==='question'){
       sealDshSegment(run); sealActivityGroup();
-      if (run.engine === 'codex') {
+      if (['codex','antigravity'].includes(run.engine)) {
         const cards = run.questionCards ||= new Map();
         if (cards.has(event.id)) return;
         const signal = run.controller.signal;
-        const card = makeCodexQuestionCard(event, {
-          isCurrent: () => runIsLive(run),
-          respond: answers => nativeCall('codex', 'QuestionResult', event.context, event.id, answers),
+        const card = makeCodexQuestionCard({...event,engine:run.engine}, {
+          isCurrent: () => runIsLive(run)&&!run.antigravityStopping,
+          respond: answers => nativeCall(run.engine, 'QuestionResult', event.context, event.id, answers),
           remove: () => {
             cards.delete(event.id);
             signal.removeEventListener('abort', card.close);
@@ -7175,14 +7502,14 @@ const AiPanel = (() => {
           run.thoughtPart={kind:'thought',text:''};run.stream.timeline.push(run.thoughtPart);run.thought=renderDshThought(run.thoughtPart);
         }
         run.thoughtPart.text+=update.content.text;
-        paintLiveText(run.thought.querySelector('pre'),run.thoughtPart.text,{plain:true});toolRows.get(run.thought).tx.textContent=' · '+firstActivityLine(run.thoughtPart.text);setRunState(run, run.engine === 'codex' ? run.nativeActivity || '正在思考' : '深度求索');
+        paintLiveText(run.thought.querySelector('pre'),run.thoughtPart.text,{plain:true});toolRows.get(run.thought).tx.textContent=' · '+firstActivityLine(run.thoughtPart.text);setRunState(run, run.engine !== 'dsh' ? run.nativeActivity || '正在思考' : '深度求索');
       }
       if(['tool_call','tool_call_update'].includes(update.sessionUpdate)){
         run.dshRows ||= new Map();let entry=run.dshRows.get(update.toolCallId);
-        if(!entry){sealDshSegment(run);const call={id:update.toolCallId,name:update.title||'DSH 原生工具',args:update.rawInput||{}};const activity={kind:'tool',call};const row=call.name.startsWith('mcp__myide__')?null:renderDshActivity(activity,update.toolCallId);if(row)run.stream.timeline.push(activity);entry={row,call,activity};run.dshRows.set(update.toolCallId,entry);}
+        if(!entry){sealDshSegment(run);const call={id:update.toolCallId,name:update.title||nativeLabel(run.engine)+' 原生工具',args:update.rawInput||{}};const activity={kind:'tool',call};const row=call.name.startsWith('mcp__myide__')?null:renderDshActivity(activity,update.toolCallId);if(row)run.stream.timeline.push(activity);entry={row,call,activity};run.dshRows.set(update.toolCallId,entry);}
         if(update.status)entry.activity.status=update.status;
         if(update.status)setDshToolState(entry.row,update.status);
-        const output=(update.content||[]).map(block=>block.content?.text||'').filter(Boolean).join('\n');
+        const output=(update.content||[]).map(block=>block.content?.text || (run.engine==='antigravity'&&block.type==='diff'?[block.path,'− '+(block.oldText || ''),'+ '+(block.newText || '')].join('\n'): '')).filter(Boolean).join('\n');
         if(output&&entry.row){entry.activity.output=output;entry.row.title=output;setDshToolOutput(entry.row,output);}
         setRunState(run, run.engine === 'codex' ? run.nativeActivity || (entry.call.name === 'commandExecution' ? '正在执行命令' : '正在使用工具') : '执行 ' + (entry.call.name || '工具'));
       }
@@ -7222,7 +7549,8 @@ const AiPanel = (() => {
   }
 
   function startNewSession(project = null) {
-    const root = project ? project.roots[0] : editorRoot();
+    if(getConfig().engine==='antigravity')saveAntigravityComposer();
+    const root = project ? project.roots?.[0] || project.path : editorRoot();
     resetDshWatch();
     sessionLoadTicket++;
     // 2026-11-01：新建对话也是「切换会话」，同样不能掐断正在跑的 DSH 任务。
@@ -7234,11 +7562,13 @@ const AiPanel = (() => {
     conversationRoot = project ? root : null;
     conversationPage = project ? { id: 'project', name: project.title, projectContext: false } : null;
     curSessionId = nativeEngine()?'s-'+window.crypto.randomUUID():null;
+    if(getConfig().engine==='antigravity'){inputEl.value='';pendingImages=[];ctxFiles=[];autoGrowInput();}
     dshSessionAccess=null;dshOptionsTicket++;dshOptionsState='idle';
     loadedSessionKey = sessKey();
     refreshModelSel();setBusyUI(false);
     rememberSession();
     if (nativeEngine()) localStorage.setItem(sessKey()+':draft', curSessionId);
+    if (getConfig().engine === 'antigravity') {const key=sessKey()+':draft-project';if(project?.id)localStorage.setItem(key,JSON.stringify({id:curSessionId,projectId:project.id}));else localStorage.removeItem(key);}
     if (getConfig().engine === 'codex') {
       const draftKey = sessKey() + ':draft-project';
       if (project) {
@@ -7274,6 +7604,7 @@ const AiPanel = (() => {
     const engine=document.getElementById('ai-engine');if(engine)engine.onchange=async()=>{await setConfig({engine:engine.value});};
     document.getElementById('ai-dsh-reasoning')?.addEventListener('change', event => { void changeNativeEffort(event.target.value); });
     document.getElementById('ai-dsh-reconnect')?.addEventListener('click',()=>{
+      if(getConfig().engine==='antigravity'){void reconnectAntigravity();return;}
       syncCodexLifecycle(true);
       if(!busy)refreshDshOptions(false,true);
     });
@@ -7288,6 +7619,7 @@ const AiPanel = (() => {
     document.addEventListener('visibilitychange', refreshVisibleCodex);
     window.myIDE.ai.onDshEvent?.(handleDshEvent);
     window.myIDE.ai.onCodexEvent?.(handleDshEvent);
+    window.myIDE.ai.onAntigravityEvent?.(handleAntigravityEvent);
     const offDshWatch = window.myIDE.ai.onDshWatch?.(receiveDshWatch);
     window.addEventListener('beforeunload',()=>{resetDshWatch();offDshWatch?.();},{once:true});
     window.myIDE.ai.onPermissionsChanged(receivePermissions);
@@ -7339,6 +7671,7 @@ const AiPanel = (() => {
       if (!m || modelSel.selectedOptions[0]?.disabled) return;
       try {
         const dsh=nativeEngine();
+        if(getConfig().engine==='antigravity'){await changeAntigravityOption('model',m);return;}
         // 旧强度属于失效模型/全局缓存；恢复时由 Native 为用户所选目标模型验证实际允许值。
         await setConfig(dsh?{[nativeModelKey()]:m,...(dshModelUnavailable()?{[nativeReasoningKey()]:undefined}:{})}:{model:m});
         if(dsh)await refreshDshOptions(true);
@@ -7364,17 +7697,18 @@ const AiPanel = (() => {
       inputEl.addEventListener('blur', closeSkill);
       inputEl.addEventListener('input', () => {
         inputDraftRevision++;autoGrowInput();renderNativeInputUI();
+        if(getConfig().engine==='antigravity')saveAntigravityComposer();
         if (onInputSkill()) return;
         if (onInputSlash()) return;   // 打 / 开头 = 命令补全
         onInputMention();             // 否则看是不是 @ 引用
       });
       inputEl.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && (e.isComposing || e.keyCode === 229 || e.altKey || e.metaKey)) return;
-        const insert = e.key === 'Enter' && e.ctrlKey && !e.shiftKey;
+        if (e.key === 'Enter' && (e.isComposing || e.keyCode === 229 || e.metaKey || e.altKey&&getConfig().engine!=='antigravity')) return;
+        const insert = e.key === 'Enter' && (e.ctrlKey || e.altKey&&getConfig().engine==='antigravity') && !e.shiftKey;
         if (!insert && !e.isComposing && e.keyCode !== 229 && (onKeydownSkill(e) || onKeydownSlash(e) || onKeydownMention(e))) return;
         if (e.key !== 'Enter' || e.shiftKey) return;
         e.preventDefault();
-        const running = codexRunningInput() || (getConfig().engine === 'dsh' && (busy || dshObservedRunning()));
+        const running = getConfig().engine==='antigravity'&&busy || codexRunningInput() || (getConfig().engine === 'dsh' && (busy || dshObservedRunning()));
         if (insert) {
           if (running) void submitRunningInput('steer');
           return;
@@ -7526,9 +7860,9 @@ const AiPanel = (() => {
       if(a.operation==='new'){document.getElementById('ai-new').click();if(!curSessionId)curSessionId='s-'+crypto.randomUUID();saveSessions([{id:curSessionId,title:'新会话',ts:Date.now(),msgs:[],usage:{...usageSum}},...loadSessions()]);}
       else if(a.operation==='switch'){persistSession();openSession(a.session);}
       else if(a.operation==='archive'){persistSession();const all=loadSessions();if(curSessionId===a.session)document.getElementById('ai-new').click();const item=all.find(s=>s.id===a.session);item.archived=true;saveSessions(all);}
-      else if(a.operation==='stop'){stopRun();for(let n=0;n<200&&currentRun?.status==='stopping';n++)await new Promise(r=>setTimeout(r,25));if(currentRun?.status==='stopping')F('STOP_UNCONFIRMED','停止尚未结算');}
-      else if(a.operation==='reconnect'){if(!nativeEngine())F('ENGINE_MISMATCH','当前不是原生连接模式');if(currentRun?.status==='active')stopRun(true);App.showAi();await refreshDshOptions(false,true);if(dshOptionsState!=='ready')F('DSH_CONNECTION','重连失败，请在连接恢复后明确重发；此操作不会自动重复旧消息');}
-      else if(a.operation==='model'){await setConfig(nativeEngine()?{...(a.model?{[nativeModelKey()]:a.model,...(dshModelUnavailable()?{[nativeReasoningKey()]:undefined}:{})}:{}),...(a.reasoning?{[nativeReasoningKey()]:a.reasoning}:{})}:{model:a.model||getConfig().model});if(nativeEngine()){ App.showAi();await refreshDshOptions(true);const actual=aiState();if(dshOptionsState!=='ready'||a.model&&actual.model!==a.model||a.reasoning&&actual.reasoning!==a.reasoning)F('DSH_CONFIG_UNCONFIRMED','配置已保存，但DSH未确认生效，请查询连接和实际值');}}
+      else if(a.operation==='stop'){stopRun();const pending=()=>currentRun?.status==='stopping'||currentRun?.status==='active'&&currentRun.antigravityStopping;for(let n=0;n<200&&pending();n++)await new Promise(r=>setTimeout(r,25));if(pending())F('STOP_UNCONFIRMED','停止尚未结算');}
+      else if(a.operation==='reconnect'){if(!nativeEngine())F('ENGINE_MISMATCH','当前不是原生连接模式');if(getConfig().engine==='antigravity'){if(currentRun?.status==='active')F('AI_BUSY','当前 Antigravity 轮次仍在运行，请等待终态后重连');App.showAi();await reconnectAntigravity();}else{if(currentRun?.status==='active')stopRun(true);App.showAi();await refreshDshOptions(false,true);}if(dshOptionsState!=='ready')F('DSH_CONNECTION','重连失败，请在连接恢复后明确重发；此操作不会自动重复旧消息');}
+      else if(a.operation==='model'){if(getConfig().engine==='antigravity'){if(a.model)await changeAntigravityOption('model',a.model);if(a.reasoning)await changeAntigravityOption('reasoning_effort',a.reasoning);}else{await setConfig(nativeEngine()?{...(a.model?{[nativeModelKey()]:a.model,...(dshModelUnavailable()?{[nativeReasoningKey()]:undefined}:{})}:{}),...(a.reasoning?{[nativeReasoningKey()]:a.reasoning}:{})}:{model:a.model||getConfig().model});if(nativeEngine()){App.showAi();await refreshDshOptions(true);}}if(nativeEngine()){const actual=aiState();if(dshOptionsState!=='ready'||a.model&&actual.model!==a.model||a.reasoning&&actual.reasoning!==a.reasoning)F('NATIVE_CONFIG_UNCONFIRMED',nativeLabel()+' 未确认配置生效，请查询连接和实际值');}}
       if(['new','switch','archive'].includes(a.operation)){if(sessKey()!==scope)F('PROJECT_CHANGED','会话范围已变化');const persisted=loadSessions();if(a.operation==='new'&&!persisted.some(s=>s.id===curSessionId)||a.operation==='archive'&&!persisted.some(s=>s.id===a.session&&s.archived)||a.operation==='switch'&&curSessionId!==a.session)F('SESSION_SAVE_FAILED','会话变更尚未确认持久化');}
       return {ok:true,committed:true,...aiState()};
     };

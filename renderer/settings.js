@@ -741,7 +741,15 @@ const Settings = (() => {
       <div class="set-form">
         <h3 class="set-section-title">运行方式</h3>
         <label class="m-label">执行模式</label>
-        <select id="ai-cfg-engine"><option value="standard">普通助手</option><option value="dsh">DeepSeek Harness（侧栏连接）</option><option value="codex">Codex（原生连接）</option></select>
+        <select id="ai-cfg-engine"><option value="standard">普通助手</option><option value="dsh">DeepSeek Harness（侧栏连接）</option><option value="codex">Codex（原生连接）</option><option value="antigravity">Antigravity（原生连接）</option></select>
+        <div id="ai-cfg-antigravity-wrap" class="hidden">
+          <label class="set-toggle"><input id="ai-cfg-antigravity-enabled" type="checkbox" ${cfg.antigravityEnabled === true ? 'checked' : ''}><span class="set-toggle-copy"><span class="set-toggle-title">启用 Antigravity 试用</span></span></label>
+          <label class="m-label" for="ai-cfg-antigravity">Antigravity 启动器（留空自动查找）</label>
+          <input id="ai-cfg-antigravity" type="text" value="${esc(cfg.antigravityPath||'')}" placeholder="agy.exe 的绝对路径" spellcheck="false">
+          <div class="set-button-row"><button id="ai-antigravity-pick" class="tb-btn">选择启动器</button><button id="ai-antigravity-detect" class="tb-btn">检查安装</button><button id="ai-antigravity-connect" class="tb-btn">连接</button><button id="ai-antigravity-pilot" class="tb-btn">打开试用目录</button></div>
+          <span id="ai-antigravity-status" class="set-note" role="status"></span>
+          <div class="set-note">使用官方客户端已有登录态。发送范围、原生权限和沙箱状态以连接回执为准。</div>
+        </div>
         <div id="ai-cfg-dsh-wrap" class="hidden">
           <label class="m-label" style="margin-top:8px">DSH 启动器（桌面版 dsh.cmd，留空自动使用本机安装）</label>
           <input id="ai-cfg-dsh" type="text" value="${esc(cfg.dshPath||'')}" placeholder="DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd" spellcheck="false">
@@ -820,8 +828,19 @@ const Settings = (() => {
           <button class="tb-btn" id="ai-cfg-test">测试连接</button>
         </div>`;
     const provSel = document.getElementById('ai-cfg-prov');
-    const engineSel=document.getElementById('ai-cfg-engine');engineSel.value=['dsh','codex'].includes(cfg.engine)?cfg.engine:'standard';
-    const syncEngine=()=>{for(const engine of ['dsh','codex'])document.getElementById('ai-cfg-'+engine+'-wrap').classList.toggle('hidden',engineSel.value!==engine);};engineSel.onchange=syncEngine;syncEngine();
+    const engineSel=document.getElementById('ai-cfg-engine');engineSel.value=['dsh','codex','antigravity'].includes(cfg.engine)?cfg.engine:'standard';
+    const syncEngine=()=>{for(const engine of ['dsh','codex','antigravity'])document.getElementById('ai-cfg-'+engine+'-wrap').classList.toggle('hidden',engineSel.value!==engine);};engineSel.onchange=syncEngine;syncEngine();
+    const antigravityConfig=()=>({...AiPanel.getConfig(),engine:'antigravity',antigravityEnabled:document.getElementById('ai-cfg-antigravity-enabled').checked,antigravityPath:document.getElementById('ai-cfg-antigravity').value.trim()});
+    document.getElementById('ai-antigravity-pick').onclick=async()=>{const file=await window.myIDE.fs.pickFile('选择 Antigravity 启动器',[{name:'Antigravity 启动器',extensions:['exe']}]);if(file)document.getElementById('ai-cfg-antigravity').value=file;};
+    let antigravityConnectedKey=null;
+    const checkAntigravity=async(connect=false)=>{
+      const status=document.getElementById('ai-antigravity-status'),button=document.getElementById(connect?'ai-antigravity-connect':'ai-antigravity-detect');if(button.disabled)return;button.disabled=true;status.textContent=connect?'正在连接 Antigravity…':'正在检查 Antigravity…';
+      try{const config=antigravityConfig(),key=JSON.stringify([config.antigravityPath,App.root]),target={engine:'antigravity',rootId:App.root || '',page:App.getPageContext?.(),...(connect&&antigravityConnectedKey===key?{reconnect:true}:{})};const result=await (connect?window.myIDE.ai.antigravityConnect(config,target):window.myIDE.ai.antigravityStatus(config));status.textContent=result?.ok?[connect?'Antigravity 已连接':'已找到 Antigravity',result.version,result.permission?.label,result.sandbox?.label,result.executionAllowed===false?'当前项目只读':''].filter(Boolean).join(' · '):result?.error || 'Antigravity 未就绪';if(result?.ok&&connect){antigravityConnectedKey=key;document.getElementById('ai-antigravity-connect').textContent='重新连接';}}
+      catch(error){status.textContent=error.message;}finally{button.disabled=false;}
+    };
+    document.getElementById('ai-antigravity-detect').onclick=()=>checkAntigravity();
+    document.getElementById('ai-antigravity-connect').onclick=()=>checkAntigravity(true);
+    document.getElementById('ai-antigravity-pilot').onclick=async event=>{const button=event.currentTarget;if(button.disabled)return;button.disabled=true;try{const config=antigravityConfig();if(!config.antigravityEnabled)throw Error('请先勾选启用 Antigravity 试用');const result=await window.myIDE.ai.antigravityPilot(config);if(!result?.ok||!result.rootDir)throw Error(result?.error || '试用目录不可用');await AiPanel.setConfig(config);if(await App.openProject(result.rootDir)===false)return;document.getElementById('ai-new')?.click();App.showAi();}catch(error){MI.toast(error.message,'err');}finally{button.disabled=false;}};
     document.getElementById('ai-codex-pick').onclick=async()=>{const file=await window.myIDE.fs.pickFile('选择 Codex 启动器',[{name:'Codex 启动器',extensions:['cmd','exe','ps1']}]);if(file)document.getElementById('ai-cfg-codex').value=file;};
     document.getElementById('ai-codex-desktop-pick').onclick = async () => {
       const file = await window.myIDE.fs.pickFile('选择 Codex 桌面端', [{name:'应用程序',extensions:['exe']}]);
@@ -853,7 +872,9 @@ const Settings = (() => {
     document.getElementById('ai-cfg-save').onclick = async (event) => {
       const button = event.currentTarget; if (button.disabled) return; button.disabled = true;
       try { await AiPanel.setConfig({
-        engine:engineSel.value,
+        engine:engineSel.value==='antigravity'&&!document.getElementById('ai-cfg-antigravity-enabled').checked?'standard':engineSel.value,
+        antigravityEnabled:document.getElementById('ai-cfg-antigravity-enabled').checked,
+        antigravityPath:document.getElementById('ai-cfg-antigravity').value.trim(),
         dshPath:document.getElementById('ai-cfg-dsh').value.trim(),
         codexPath:document.getElementById('ai-cfg-codex').value.trim(),
         codexDesktopPath:document.getElementById('ai-cfg-codex-desktop').value.trim(),
@@ -909,6 +930,7 @@ const Settings = (() => {
     };
     renderPerms();
     document.getElementById('ai-cfg-test').onclick = async () => {
+      if(engineSel.value==='antigravity'){await checkAntigravity(true);return;}
       if(engineSel.value==='codex'){await checkCodex();return;}
       if(engineSel.value==='dsh'){document.getElementById('ai-dsh-detect').click();return;}
       const c = { baseUrl: urlInput.value.trim(), apiKey: document.getElementById('ai-cfg-key').value.trim(), model: modelInput.value.trim() };

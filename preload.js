@@ -258,6 +258,17 @@ contextBridge.exposeInMainWorld('myIDE', {
     ...(process.argv.includes('--ai-approval-test') ? { testing: { snapshot: () => ipcRenderer.invoke('ai:testApprovalSnapshot'), click: (id,selector) => ipcRenderer.invoke('ai:testApprovalClick',id,selector) } } : {}),
     // AI 助手流式对话：chunk/done 事件推送；abort 中断生成；tools = 原生 function calling
     chat: (cfg, messages, tools, context) => ipcRenderer.invoke('ai:chat', cfg, messages, tools, context),
+    ...Object.fromEntries(Object.entries({
+      antigravityStatus: 'status', antigravityConnect: 'connect', antigravityOptions: 'options',
+      antigravitySessions: 'sessions', antigravityHistory: 'history', antigravityInput: 'input',
+      antigravityQueue: 'queue', antigravityReview: 'review', antigravityQuestionResult: 'question-result',
+      antigravityPilot: 'pilot',
+    }).map(([method, operation]) => [method, (...args) => ipcRenderer.invoke('ai:antigravity-' + operation, ...args)])),
+    onAntigravityEvent: callback => {
+      const listener = (_event, value) => callback(value);
+      ipcRenderer.on('ai:antigravity-event', listener);
+      return () => ipcRenderer.removeListener('ai:antigravity-event', listener);
+    },
     codexToolResult:(context,id,result)=>ipcRenderer.invoke('ai:codex-tool-result',context,id,result),
     codexPermissionResult:(context,id,optionId)=>ipcRenderer.invoke('ai:codex-permission-result',context,id,optionId),
     codexQuestionResult:(context,id,answers)=>ipcRenderer.invoke('ai:codex-question-result',context,id,answers),

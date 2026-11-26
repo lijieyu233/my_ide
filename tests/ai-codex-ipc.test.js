@@ -120,7 +120,7 @@ const settled=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
     }
     assert.deepEqual(desktopOpens, [wakeUrl, wakeUrl]);
     assert.deepEqual(protocolOpens, []);
-    assert(source.includes('beforeQuit: () => Promise.all([DSH.dispose(),CODEX.dispose(),shieldDecrypt.dispose()])'));
+    assert(source.includes('beforeQuit: () => Promise.all([DSH.dispose(),CODEX.dispose(),ANTIGRAVITY.dispose(),shieldDecrypt.dispose()])'));
     console.log('Codex主进程IPC：来源、三引擎归属、旧轮次、工具拒绝、事件隔离、只读检查与取消通过');
   }finally{for(const item of pending.values())item.resolve({ok:false,aborted:true});await Promise.all([first,second]);}
 })().catch(error=>{console.error(error.stack);process.exitCode=1;});

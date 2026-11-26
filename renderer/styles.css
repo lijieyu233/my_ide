@@ -4815,6 +4815,8 @@ g[data-status="done"] .tk-g-bar { fill: var(--green); opacity: .7; }
 .ai-codex-question small { display: block; opacity: .75; }
 .ai-codex-question textarea { box-sizing: border-box; width: 100%; margin-top: 6px; padding: 6px 8px; min-height: 29px; max-height: 110px; resize: vertical; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: inherit; font: inherit; }
 .ai-codex-question-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.ai-antigravity-question input, .ai-antigravity-question select { box-sizing: border-box; width: 100%; margin-top: 3px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: inherit; font: inherit; }
+.ai-antigravity-question input:focus-visible, .ai-antigravity-question select:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 
 
 /* 共享界面表面：颜色从所在主题派生，避免暗红界面出现另一套灰色面板。

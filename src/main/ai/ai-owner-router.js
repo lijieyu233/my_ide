@@ -1,6 +1,6 @@
 // 原生引擎各有项目/会话账本；共享窗口不能让普通助手或另一个原生引擎继承授权。
 const {validate}=require('./ai-runs');
-const nativeEngines=new Set(['dsh','codex']);
+const nativeEngines=new Set(['dsh','codex','antigravity']);
 function engineOf(engine){
   if(engine===undefined||engine==='standard')return 'standard';
   if(nativeEngines.has(engine))return engine;
