@@ -120,8 +120,9 @@ function spawnAgy(options = {}) {
       throw failure('AGY_INVALID_PATH', 'Antigravity CLI 必须位于项目目录之外');
     }
   } catch { throw failure('AGY_INVALID_PATH', 'Antigravity CLI 路径或项目目录无效'); }
-  // No caller-provided arguments, shell, skip-permissions, sandbox claim or MCP.
-  return spawnImpl(executablePath, ['acp'], {
+  // Only the verified ACP worker flag is configurable, with no shell or permission override.
+  const args = options.processPerSession === true ? ['acp', '--process-per-session'] : ['acp'];
+  return spawnImpl(executablePath, args, {
     cwd, env: buildAgyEnvironment(env, { platform, projectRoot: cwd }),
     shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -132,7 +133,7 @@ const acpHelp = /\bagent client protocol\b|\b(?:agy(?:\.exe)?\s+acp|start acp se
 function runProbe(executable, args, options) {
   const { spawnImpl = spawn, env = process.env, platform = process.platform, timeoutMs = 5000, maxProbeBytes = 64 * 1024 } = options;
   return new Promise((resolve, reject) => {
-    let child, finished = false, bytes = 0, looksLikeAcpHelp = false, stderrTail = '';
+    let child, finished = false, bytes = 0, looksLikeAcpHelp = false, processPerSession = false, stderrTail = '';
     const fragments = [], finish = (error, result) => {
       if (finished) return;
       finished = true; clearTimeout(timer);
@@ -167,10 +168,11 @@ function runProbe(executable, args, options) {
       }
       const fragment = stderrTail + chunk.toString();
       looksLikeAcpHelp ||= acpHelp.test(fragment);
+      processPerSession ||= /--process-per-session\b/.test(fragment);
       stderrTail = fragment.slice(-80);
     });
     child.on('error', error => finish(failure(['EACCES', 'EPERM'].includes(error.code) ? 'AGY_START_BLOCKED' : 'AGY_START_FAILED', 'Antigravity CLI 无法启动')));
-    child.on('close', code => finish(null, { code, output: Buffer.concat(fragments).toString('utf8'), looksLikeAcpHelp }));
+    child.on('close', code => finish(null, { code, output: Buffer.concat(fragments).toString('utf8'), looksLikeAcpHelp, processPerSession }));
   });
 }
 
@@ -183,7 +185,7 @@ async function probeAgy(options = {}) {
   if (help.code !== 0 || !(help.looksLikeAcpHelp || acpHelp.test(help.output))) {
     throw failure('AGY_ACP_UNAVAILABLE', '此 Antigravity CLI 未通过 ACP 命令检查');
   }
-  return { ok: true, ...runtime, version, acpAvailable: true, authentication: 'unverified', sandbox: sandboxStatus(options) };
+  return { ok: true, ...runtime, version, acpAvailable: true, processPerSession: help.processPerSession || /--process-per-session\b/.test(help.output), authentication: 'unverified', sandbox: sandboxStatus(options) };
 }
 
 module.exports = { resolveAgyExecutable, probeAgy, spawnAgy, buildAgyEnvironment, environmentFromSystemProxy, reportedWorkspacePath, sandboxStatus };

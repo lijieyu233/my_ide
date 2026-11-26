@@ -40,7 +40,7 @@
     "check:ai-codex-live": "node scripts/check-ai-codex-live.js",
     "check:ai-antigravity": "node scripts/run-electron-check.js check-ai-antigravity.js",
     "check:ai-antigravity-live": "node scripts/check-ai-antigravity-live.js",
-    "test:antigravity": "node --test tests/antigravity-runtime.test.js tests/antigravity-transport.test.js tests/antigravity-ipc.test.js && node tests/ai-antigravity.test.js && node tests/ai-antigravity-panel.test.js && node tests/ai-antigravity-settings.test.js",
+    "test:antigravity": "node --test tests/antigravity-runtime.test.js tests/antigravity-transport.test.js tests/antigravity-ipc.test.js tests/antigravity-project-mcp.test.js && node tests/ai-antigravity.test.js && node tests/ai-antigravity-panel.test.js && node tests/ai-antigravity-settings.test.js",
     "check:md-geometry": "electron scripts/check-md-geometry.js --disable-gpu --no-sandbox",
     "check:md": "electron scripts/check-md-editor.js --disable-gpu --no-sandbox",
     "check:md-table": "electron scripts/check-md-table.js --disable-gpu --no-sandbox",

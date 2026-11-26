@@ -1408,7 +1408,7 @@ const AiPanel = (() => {
     const state = antigravityState(), info = document.getElementById('ai-dsh-info');
     const sandbox = antigravitySandboxLabel(state);
     if (info) {
-      info.textContent = dshOptionsState === 'loading' ? '连接中…' : state.ok ? '已连接 · '+(sandbox==='沙箱不可用'?'无沙箱':sandbox) : '未连接';
+      info.textContent = dshOptionsState === 'loading' ? '连接中…' : state.ok ? '已连接 · '+(state.sandbox?.available === false || ['unavailable','unsupported'].includes(state.sandbox?.status || state.sandbox?.state) ? '无沙箱' : sandbox) : '未连接';
       info.title = ['Antigravity',state.error,state.permission?.label || '原生权限待确认',sandbox,state.sandbox?.reason,state.executionAllowed === false ? '当前项目只读；可在设置中打开试用目录' : '',dshSessionAccess?.error].filter(Boolean).join('\n');
     }
     syncPermBtn();
@@ -2655,7 +2655,7 @@ const AiPanel = (() => {
     card.className = 'ai-card';
     if (nativeEngine(cfg.engine)) {
       card.innerHTML = '<div class="ai-card-ic">' + AI_IC + '</div>' +
-        '<div class="ai-card-title">'+(cfg.engine==='codex'?'Codex':'DeepSeek Harness')+'</div>' +
+        '<div class="ai-card-title">'+(cfg.engine==='dsh'?'DeepSeek Harness':nativeLabel(cfg.engine))+'</div>' +
         '<div class="ai-card-sub">描述目标，或拖入文件与截图，开始一个任务。</div>';
     } else if (!cfg.baseUrl) {
       card.innerHTML =
@@ -2752,6 +2752,13 @@ const AiPanel = (() => {
     closeSlash();
     if (!it) return;
     inputEl.value = '';
+    if (it.nativePrompt) {
+      inputEl.value = it.nativePrompt;
+      autoGrowInput();
+      inputEl.focus();
+      inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+      return;
+    }
     if (it.action) { autoGrowInput(); await runSlashAction(it.action); return; }
     // 内容整理类命令：有选区就带上选区（用户说「精简」多半指他选中的那段），否则跟随当前文件
     let hasSel = false;
@@ -2982,8 +2989,10 @@ const AiPanel = (() => {
     const tok = activeSlashToken();
     if (!tok) { closeSlash(); return false; }
     const q = tok.query.toLowerCase();
-    const items = SLASH_CMDS.filter(c => (!c.codex || codexProjectHistory()) &&
-      (c.cmd + ' ' + (c.alias || '') + ' ' + c.tip).toLowerCase().includes(q));
+    const candidates = getConfig().engine === 'antigravity'
+      ? antigravityCap('goal') && !busy ? [{ cmd: '/goal', nativePrompt: '/goal ', tip: '填写 Antigravity 原生目标' }] : []
+      : SLASH_CMDS.filter(command => !command.codex || codexProjectHistory());
+    const items = candidates.filter(c => (c.cmd + ' ' + (c.alias || '') + ' ' + c.tip).toLowerCase().includes(q));
     if (slashState) { slashState.items = items; slashState.sel = 0; renderSlash(); return true; }
     if (items.length) openSlash(items);
     return true;
@@ -4050,7 +4059,7 @@ const AiPanel = (() => {
     const repeat = last?.launcher === launcher && last.message === message;
     const failure = repeat ? last : { launcher, message, notified: false };
     catalogFailures.set(engine, failure);
-    const text = (engine === "codex" ? "Codex" : "DSH") + " 会话目录更新失败：" + message;
+    const text = nativeLabel(engine) + " 会话目录更新失败：" + message;
     if (!repeat) MI.log?.("WARN", "ai." + engine, text);
     if (request.manual || !request.background && !failure.notified) {
       failure.notified = true;

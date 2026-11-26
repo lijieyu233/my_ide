@@ -41,6 +41,8 @@ async function fixture(t) {
     },
     openApproval: (...args) => review(...args),
     pilotRoot: () => path.join(root, 'pilot'),
+    desktopPath: () => path.join(root, 'Antigravity.exe'),
+    openDesktop: opened => { calls.push(['openDesktop', opened]); return ''; },
   });
   return { cfg, root, view, calls, scope, handlers, trusted, service,
     invoke: (name, ...args) => handlers.get('ai:antigravity-' + name)(trusted, ...args),
@@ -94,4 +96,13 @@ test('切换会话或等待期间撤销后不得提交旧批准，提问同样�
   });
   assert.equal((await f.invoke('review', f.scope, 'permission-1')).errorCode, 'ANTIGRAVITY_REVIEW_EXPIRED');
   assert.deepEqual(f.calls, []);
+});
+
+test('desktop launch uses only the installed application path and trusted sender', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.invoke('status', f.cfg)).desktopAvailable, true);
+  assert.equal((await f.handlers.get('ai:antigravity-open-app')({}, 'C:/unrelated.exe')).ok, false);
+  assert.deepEqual(f.calls, []);
+  assert.equal((await f.invoke('open-app', 'C:/unrelated.exe')).launchRequested, true);
+  assert.deepEqual(f.calls, [['openDesktop', path.join(f.root, 'Antigravity.exe')]]);
 });

@@ -39,12 +39,15 @@ function promptContent(messages, page = {}) {
   if (Buffer.byteLength(JSON.stringify(blocks)) > 4 * 1024 * 1024) throw error('Antigravity 输入过大', 'AGY_INPUT');
   return blocks;
 }
-function formSchema(value) {
+function formSchema(value, message) {
+  const secret = /(?:password|passphrase|(?:api|private)[ _-]?key|(?:access|refresh)[ _-]?token|recovery[ _-]?code|密码|口令|密钥|验证码|访问令牌)/i;
+  if (secret.test(String(message || ''))) return false;
   if (!value || value.type !== 'object' || !value.properties || Array.isArray(value.properties) || Object.keys(value.properties).length > 32) return false;
   if (value.required != null && !Array.isArray(value.required) || (value.required || []).some(key => !Object.hasOwn(value.properties, key))) return false;
   const supported = new Set(['type', 'title', 'description', 'default', 'enum', 'enumNames', 'minimum', 'maximum', 'minLength', 'maxLength']);
   return Object.entries(value.properties).every(([key, field]) => key.length <= 128 && field && ['string', 'boolean', 'integer', 'number'].includes(field.type) &&
     !/^(?:password|passwd|api[_-]?key|access[_-]?token|refresh[_-]?token|private[_-]?key|secret|recovery[_-]?code)$/i.test(key) &&
+    !secret.test(String(field.title || '')) && !secret.test(String(field.description || '')) &&
     Object.keys(field).every(property => supported.has(property)) &&
     (!field.enum || Array.isArray(field.enum) && field.enum.length <= 100 && field.enum.every(item => typeof item === 'string')));
 }
@@ -146,6 +149,12 @@ function createService(options = {}) {
     if (event.generation != null && event.generation !== conn.generation || event.method !== 'session/update') return;
     const id = event.params?.sessionId, update = event.params?.update;
     if (!opaqueId(id) || !update || typeof update.sessionUpdate !== 'string') return;
+    if (update.sessionUpdate === 'available_commands_update' && Array.isArray(update.availableCommands)) {
+      if (update.availableCommands.some(command => command?.name === 'goal')) {
+        if (conn.goalCommands.size >= 128) conn.goalCommands.delete(conn.goalCommands.values().next().value);
+        conn.goalCommands.add(id);
+      } else conn.goalCommands.delete(id);
+    }
     const key = nativeKey(conn, id), loading = replay.get(key);
     if (loading) {
       if (loading.error) return;
@@ -187,22 +196,23 @@ function createService(options = {}) {
     if (method === 'session/request_permission') {
       const toolCall = clone({ ...(run.tools.get(params.toolCall?.toolCallId) || {}), ...(params.toolCall || {}) });
       const choices = (Array.isArray(params.options) ? params.options : []).filter(option => opaqueId(option.optionId) && ['allow_once', 'reject_once'].includes(option.kind)).map(option => ({ optionId: option.optionId, kind: option.kind, name: String(option.name || '').slice(0, 300) }));
+      const projectTree = run.projectMcpActive && options.projectMcp.matchesPermission(run.context, conn.generation, toolCall);
       const input = toolCall.rawInput;
       // Titles alone do not show the operation being authorized. A trustworthy approval needs command/patch/path evidence.
       if (Buffer.byteLength(JSON.stringify(toolCall)) > 256 * 1024) throw error('Permission details exceed limit', -32602);
       const target = input && ['path', 'file_path', 'filePath', 'url'].some(key => typeof input[key] === 'string' && input[key].trim());
-      const hasOperation = input && typeof input === 'object' && (['command', 'cmd', 'script'].some(key => typeof input[key] === 'string' && input[key].trim()) || target && (['patch', 'diff', 'content'].some(key => typeof input[key] === 'string') || ['read', 'search', 'fetch'].includes(toolCall.kind))) ||
+      const hasOperation = projectTree || input && typeof input === 'object' && (['command', 'cmd', 'script'].some(key => typeof input[key] === 'string' && input[key].trim()) || target && (['patch', 'diff', 'content'].some(key => typeof input[key] === 'string') || ['read', 'search', 'fetch'].includes(toolCall.kind))) ||
         Array.isArray(toolCall.content) && toolCall.content.some(block => block.type === 'diff' && typeof block.path === 'string' && (typeof block.newText === 'string' || typeof block.oldText === 'string'));
       const safeChoices = choices.filter(choice => choice.kind !== 'allow_once' || hasOperation);
-      const details = freeze({ id, kind: 'permission', context: clone(run.context), nativeSessionId: run.record.id, cwd: run.info.cwd, projectId: run.info.projectId, toolCall, choices: safeChoices, canAllow: !!hasOperation });
+      const details = freeze({ id, kind: 'permission', context: clone(run.context), nativeSessionId: run.record.id, cwd: run.info.cwd, projectId: run.info.projectId, toolCall, projectTree: !!projectTree, choices: safeChoices, canAllow: !!hasOperation });
       phase(run, 'permission', 'Antigravity 正在等待审批');
       return new Promise(resolve => {
         run.pending.set(id, { kind: 'permission', details, resolve, reviewController: new AbortController() });
         signal?.addEventListener('abort', () => { const item = run.pending.get(id); if (item) { run.pending.delete(id); item.reviewController.abort(); item.resolve(cancelled()); touch(run); } }, { once: true });
-        emit(run, { type: 'permission', id, toolCall: { toolCallId: toolCall.toolCallId, title: toolCall.title }, options: safeChoices, reviewRequired: true });
+        emit(run, { type: 'permission', id, toolCall: { toolCallId: toolCall.toolCallId, title: projectTree ? '读取当前试用项目树' : toolCall.title }, options: safeChoices, reviewRequired: true });
       });
     }
-    if (params?.mode !== 'form' || !formSchema(params.requestedSchema)) throw error('Unsupported elicitation form', -32602);
+    if (params?.mode !== 'form' || !formSchema(params.requestedSchema, params.message)) throw error('Unsupported elicitation form', -32602);
     const schema = clone(params.requestedSchema), questions = Object.entries(schema.properties).map(([key, field]) => ({ id: key, question: field.title || field.description || key, options: field.enum?.map(value => ({ label: value, value })), ...field }));
     phase(run, 'question', 'Antigravity 正在等待回答');
     return new Promise(resolve => {
@@ -233,19 +243,25 @@ function createService(options = {}) {
     }
     const pending = (async () => {
       await store.load();
-      const conn = { root: info.root, cwd: info.cwd, generation: ++generation, executablePath, authentication: 'unconfirmed' };
+      const conn = { root: info.root, cwd: info.cwd, generation: ++generation, executablePath, authentication: 'unconfirmed', goalCommands: new Set() };
       if (options.connectFactory) Object.assign(conn, await options.connectFactory({ cfg, cwd: info.cwd, generation: conn.generation, onRequest: request => incoming(conn, request) }));
       else {
         const runtime = options.runtime || require('./agy-runtime');
         const { AcpTransport } = require('./acp-transport');
         const resolved = await runtime.resolveAgyExecutable({ executablePath: executablePath || undefined, projectRoot: info.cwd });
         const env = await options.resolveEnvironment?.();
-        conn.child = runtime.spawnAgy({ executablePath: resolved.executablePath || resolved.path || resolved, cwd: info.cwd, env });
+        const filename = resolved.executablePath || resolved.path || resolved;
+        if (options.projectMcp && await options.allowExecution?.(info.cwd)) {
+          const installation = await runtime.probeAgy({ executablePath: filename, projectRoot: info.cwd }).catch(() => null);
+          conn.workerMode = installation?.version === '1.5.18' && installation.processPerSession === true;
+        }
+        conn.child = runtime.spawnAgy({ executablePath: filename, cwd: info.cwd, env, processPerSession: conn.workerMode === true });
         conn.rpc = new AcpTransport({ child: conn.child, generation: conn.generation, onRequest: request => incoming(conn, request), onDiagnostic: options.onDiagnostic });
       }
       if (!conn.rpc) throw error('Antigravity 传输未就绪', 'AGY_TRANSPORT');
       conn.rpc.on('notification', event => notification(conn, event));
       const close = () => {
+        options.projectMcp?.retire(conn.generation);
         clearTimeout(conn.idleTimer);
         if (connections.get(info.root) === conn) connections.delete(info.root);
         for (const run of runs.values()) if (run.conn === conn) { settlePending(run); run.disconnected = true; }
@@ -256,6 +272,7 @@ function createService(options = {}) {
         const init = await conn.rpc.request('initialize', { protocolVersion: 1, clientCapabilities: { elicitation: { form: {} } }, clientInfo: { name: 'myide', version: '0.8.5' } }, { timeoutMs: options.connectTimeoutMs || 30000 });
         if (init?.protocolVersion !== 1) throw error('Antigravity ACP 协议版本不兼容', 'AGY_PROTOCOL');
         conn.capabilities = clone(init.agentCapabilities || {}); conn.agentInfo = clone(init.agentInfo || {});
+        conn.projectMcp = conn.workerMode && conn.agentInfo.version === '1.5.18' && conn.capabilities.mcpCapabilities?.http === true;
         if (disposed) throw error('Antigravity 服务已关闭', 'AGY_CLOSED');
         connections.set(info.root, conn); keepConnection(conn); return conn;
       } catch (cause) { await closeConnection(conn, cause); throw cause; }
@@ -269,7 +286,7 @@ function createService(options = {}) {
   async function featureFlags(info, conn, readOnly = false) {
     const executionAllowed = !readOnly && !!options.allowExecution && !!await options.allowExecution(info.cwd);
     const record = recordOf(info), pending = record?.unknown || record?.configUnknown || blocked.has(info.key) || !!store.snapshot().creations?.[info.key];
-    return { executionAllowed, capabilities: { ...clone(conn.capabilities), send: executionAllowed && !pending, config: !readOnly && !pending, queue: executionAllowed, steering: false, image: imageSupported(conn) }, readOnly };
+    return { executionAllowed, capabilities: { ...clone(conn.capabilities), send: executionAllowed && !pending, config: executionAllowed && !pending, queue: executionAllowed, steering: false, goal: executionAllowed && !!record?.id && conn.goalCommands.has(record.id), image: imageSupported(conn) }, readOnly };
   }
   async function connect(cfg, context) {
     const info = await identity(context), conn = await connectInfo(cfg, info);
@@ -319,6 +336,10 @@ function createService(options = {}) {
     }
     throw error('Antigravity 会话目录分页过多', 'AGY_CATALOG_LIMIT');
   }
+  async function mcpServers(conn, info, sessionId, external = false) {
+    if (external || !conn.projectMcp || !await options.allowExecution?.(info.cwd)) return [];
+    return options.projectMcp.servers({ workspaceRoot: info.cwd, projectId: info.projectId, sessionId }, conn.generation);
+  }
   async function restore(conn, info, record, forceLoad = false) {
     const key = nativeKey(conn, record.id);
     if (nativeRuns.has(key)) throw error('Antigravity 此会话仍有活动轮次', 'AGY_BUSY');
@@ -332,7 +353,7 @@ function createService(options = {}) {
     if (replay.has(key)) throw error('Antigravity 会话正在恢复', 'AGY_BUSY');
     replay.set(key, loading);
     try {
-      const response = await conn.rpc.request(method, { sessionId: record.id, cwd: info.cwd, mcpServers: [] }, { timeoutMs: options.historyTimeoutMs || 30000 });
+      const response = await conn.rpc.request(method, { sessionId: record.id, cwd: info.cwd, mcpServers: await mcpServers(conn, info, record.localSessionId || JSON.parse(info.key)[3], record.external) }, { timeoutMs: options.historyTimeoutMs || 30000 });
       if (loading.error) throw loading.error;
       if (response?.sessionId && response.sessionId !== record.id || response?.cwd && norm(await canonical(reportedWorkspacePath(response.cwd))) !== info.root) throw error('Antigravity 恢复了另一条会话', 'AGY_IDENTITY');
       const next = { ...record, configOptions: clone(response?.configOptions || record.configOptions || []), ...(Array.isArray(response?.configOptions) ? { configUnknown: false } : {}), ...(canResume ? {} : { history: updates, lastHistoryLoadedAt: Date.now() }), lastLoadedAt: Date.now() };
@@ -377,6 +398,7 @@ function createService(options = {}) {
   async function setConfig(cfg, context, choice) {
     const info = await identity(context); await store.load();
     return serial(info.key, async () => {
+      await execution(info);
       const conn = await connectInfo(cfg, info); let record = recordOf(info); assertRecord(record, info, context);
       if (record.external) throw error('Antigravity 外部会话首版仅供浏览', 'AGY_READ_ONLY');
       if (record.unknown || blocked.has(info.key)) throw error('Antigravity 上次提交状态待核对', 'AGY_SUBMISSION_UNKNOWN');
@@ -425,7 +447,11 @@ function createService(options = {}) {
         if (context.nativeSessionId || context.expectedNativeId || context.expectedHostId || context.foreign) throw error('Antigravity 历史会话尚未绑定', 'AGY_READ_ONLY');
         await store.transaction(data => { (data.creations ||= {})[info.key] = { cwd: info.cwd, projectId: info.projectId, state: 'creating', createdAt: Date.now() }; });
         let created;
-        try { created = await conn.rpc.request('session/new', { cwd: info.cwd, mcpServers: [] }); }
+        try {
+          const servers = await mcpServers(conn, info, context.sessionId);
+          if (run.stopping) throw error('Antigravity 请求已停止', 'AGY_CANCELLED', { writeState: 'not_written' });
+          created = await conn.rpc.request('session/new', { cwd: info.cwd, mcpServers: servers });
+        }
         catch (cause) {
           if (cause.writeState === 'not_written' || cause.rpcResponseReceived) await store.transaction(data => { delete data.creations[info.key]; });
           throw cause;
@@ -454,6 +480,10 @@ function createService(options = {}) {
       if (input.some(block => block.type === 'image') && !imageSupported(available)) throw error('当前 Antigravity 图片能力尚未通过验证，请保留附件', 'AGY_IMAGE_UNVERIFIED');
       const { conn, record } = await attach(cfg, context, info, run);
       await store.transaction(data => { data.sessions[info.key].clean = false; data.sessions[info.key].unknown = true; data.sessions[info.key].unknownSince = Date.now(); data.sessions[info.key].pendingInput = input; });
+      if (run.stopping) throw error('Antigravity 请求已停止', 'AGY_CANCELLED', { writeState: 'not_written' });
+      if (conn.projectMcp && cfg.antigravityProjectMcpEnabled === true) {
+        run.projectMcpActive = options.projectMcp.activate(run.context, conn.generation);
+      }
       phase(run, 'submitting', '正在提交 Antigravity，等待代理响应'); touch(run);
       const response = await conn.rpc.request('session/prompt', { sessionId: record.id, prompt: input }, { timeoutMs: options.promptTimeoutMs || 0, signal: run.transportController.signal, onWriteState: state => { run.writeState = typeof state === 'string' ? state : state.writeState; } });
       const reason = response?.stopReason;
@@ -483,6 +513,7 @@ function createService(options = {}) {
       phase(run, status, unknown ? 'Antigravity 提交或停止状态待核对，未自动重发' : cause.message);
       return result(status, { error: unknown ? 'Antigravity 提交或停止状态待核对，未自动重发' : cause.message, errorCode: cause.code || 'AGY_ERROR', submissionUnknown: !!unknown, writeState: state });
     } finally {
+      if (run.projectMcpActive) options.projectMcp.deactivate(run.context, run.conn.generation);
       clearTimeout(run.cancelTimer); settlePending(run); run.finished = true; runs.delete(context.requestId);
       if (run.nativeKey && nativeRuns.get(run.nativeKey) === run) nativeRuns.delete(run.nativeKey);
       if (run.normalEnd && run.info) queueReady(run.info, context).catch(cause => options.onDiagnostic?.({ code: cause.code, message: cause.message }));
@@ -496,6 +527,8 @@ function createService(options = {}) {
   function permissionResult(context, id, optionId) {
     const run = runs.get(context?.requestId), item = run?.pending.get(id);
     if (!run || !same(run.context, context) || run.stopping || run.finished || item?.kind !== 'permission' || optionId !== null && !item.details.choices.some(choice => choice.optionId === optionId && (choice.kind !== 'allow_once' || item.details.canAllow))) return { ok: false };
+    const allowing = item.details.choices.some(choice => choice.optionId === optionId && choice.kind === 'allow_once');
+    if (allowing && item.details.projectTree && !options.projectMcp.permit(run.context, run.conn.generation)) return { ok: false };
     run.pending.delete(id); item.resolve(optionId === null ? { outcome: { outcome: 'cancelled' } } : { outcome: { outcome: 'selected', optionId } }); item.reviewController.abort(); touch(run); return { ok: true };
   }
   function questionResult(context, id, answers) {
@@ -507,7 +540,9 @@ function createService(options = {}) {
   }
   function abort(requestId) {
     const run = runs.get(requestId); if (!run || run.finished) return false;
-    run.stopping = true; settlePending(run); phase(run, 'stopping', '正在停止 Antigravity，等待原轮次回执');
+    run.stopping = true;
+    if (run.projectMcpActive) options.projectMcp.deactivate(run.context, run.conn.generation);
+    settlePending(run); phase(run, 'stopping', '正在停止 Antigravity，等待原轮次回执');
     if (run.conn && run.record) {
       try { Promise.resolve(run.conn.rpc.notify('session/cancel', { sessionId: run.record.id })).catch(() => { run.disconnected = true; }); } catch { run.disconnected = true; }
       run.cancelTimer = setTimeout(() => run.transportController.abort(), options.cancelTimeoutMs || 15000); run.cancelTimer.unref?.();
@@ -531,7 +566,7 @@ function createService(options = {}) {
     return message;
   }
   async function changeInput(cfg, context, action = {}) {
-    if (['steer', 'steerQueued'].includes(action.kind)) throw error('当前 Antigravity 插入能力尚未通过实机验证，输入已保留，可排队发送', 'AGY_STEERING_UNVERIFIED');
+    if (['steer', 'steerQueued'].includes(action.kind)) throw error('当前 Antigravity 接口无法限定插入的原轮次，输入已保留，可排队发送', 'AGY_STEERING_UNVERIFIED');
     const info = await identity(context); await store.load();
     if (recordOf(info)?.external && !['list', 'remove', 'pause'].includes(action.kind)) throw error('Antigravity 外部会话首版仅供浏览', 'AGY_READ_ONLY');
     if (action.kind === 'reconcile') {
@@ -612,6 +647,7 @@ function createService(options = {}) {
       ...[...connections.values()].map(conn => closeConnection(conn, reason)),
       ...starting.values(),
     ]);
+    await options.projectMcp?.dispose();
     await store.flush();
   }
   const hasRun = context => [...runs.values()].some(run => run.context.sessionId === context?.sessionId &&

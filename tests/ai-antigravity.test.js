@@ -67,8 +67,38 @@ async function test(name, fn) { await fn(); passed++; console.log('PASS ' + name
     await test('connect and inspect never create sessions or claim authentication', async () => {
       const f = fixture(); try { const c = f.context(); const connected = await f.service.connect({}, c), info = await f.service.inspect({}, c); assert(connected.capabilities.send); assert.equal(connected.authentication, 'unconfirmed'); assert.equal(info.draft, true); assert(!f.calls.some(call => call.method === 'session/new')); const init = f.calls[0].params; assert(!init.clientCapabilities.fs); assert(!init.clientCapabilities.terminal); assert.deepEqual(init.clientCapabilities.elicitation, { form: {} }); } finally { await f.service.dispose(); }
     });
+    await test('native goal command is exposed only for the owning advertised session', async () => {
+      const f = fixture();
+      try {
+        const c = f.context();
+        const sent = await f.send(c);
+        assert.equal((await f.service.inspect({}, c)).capabilities.goal, false);
+        const rpc = f.connections[0];
+        rpc.update('unrelated-native-id', { sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'goal' }] });
+        assert.equal((await f.service.inspect({}, c)).capabilities.goal, false);
+        rpc.update(sent.nativeSessionId, { sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'goal' }] });
+        assert.equal((await f.service.inspect({}, c)).capabilities.goal, true);
+        rpc.update(sent.nativeSessionId, { sessionUpdate: 'available_commands_update', availableCommands: [] });
+        assert.equal((await f.service.inspect({}, c)).capabilities.goal, false);
+      } finally { await f.service.dispose(); }
+    });
     await test('execution gate is main-owned and ignores renderer config', async () => {
-      const f = fixture({ options: { allowExecution: () => false } }); try { const c = f.context(); assert.equal((await f.service.inspect({}, c)).executionAllowed, false); const result = await f.service.chat({ antigravityExecutionVerified: true }, [{ role: 'user', content: 'do it' }], [], c); assert.equal(result.errorCode, 'AGY_EXECUTION_UNVERIFIED'); assert(!f.calls.some(call => call.method === 'session/new')); } finally { await f.service.dispose(); }
+      let allowed = false;
+      const f = fixture({ options: { allowExecution: () => allowed } });
+      try {
+        const c = f.context();
+        assert.equal((await f.service.inspect({}, c)).executionAllowed, false);
+        const result = await f.service.chat({ antigravityExecutionVerified: true }, [{ role: 'user', content: 'do it' }], [], c);
+        assert.equal(result.errorCode, 'AGY_EXECUTION_UNVERIFIED');
+        assert(!f.calls.some(call => call.method === 'session/new'));
+
+        allowed = true;
+        assert((await f.send()).complete);
+        allowed = false;
+        assert.equal((await f.service.inspect({}, c)).capabilities.config, false);
+        await assert.rejects(f.service.setConfig({}, c, { configId: 'model', value: 'alternate' }), cause => cause.code === 'AGY_EXECUTION_UNVERIFIED');
+        assert(!f.calls.some(call => call.method === 'session/set_config_option'));
+      } finally { await f.service.dispose(); }
     });
     await test('unsupported scopes and missing directories are rejected before launching', async () => {
       const f = fixture(); try { for (const extra of [{ rootId: 'remote://host/project', workspaceRoot: 'remote://host/project' }, { page: { id: 'reader', projectContext: false } }, { rootId: path.join(temp, 'missing'), workspaceRoot: path.join(temp, 'missing') }]) assert.equal((await f.send(f.context(extra))).ok, false); assert.equal(f.connections.length, 0); } finally { await f.service.dispose(); }

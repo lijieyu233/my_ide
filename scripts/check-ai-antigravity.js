@@ -10,7 +10,8 @@ const { randomBytes } = require('node:crypto');
 const { app, BrowserWindow, ipcMain, session, clipboard, nativeImage } = require('electron');
 const { AcpTransport } = require('../src/main/antigravity/acp-transport');
 
-const live = process.argv.includes('--confirm-live-model');
+const verifyMcp = process.argv.includes('--confirm-live-mcp');
+const live = verifyMcp || process.argv.includes('--confirm-live-model');
 const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myide-antigravity-ui-')));
 const profile = path.join(temp, 'profile');
 const unrelated = path.join(temp, '编辑目录');
@@ -108,19 +109,46 @@ const watchdog = setTimeout(() => { console.error('Antigravity UI watchdog expir
   await until(() => page(() => !!window.App && !!window.AiPanel && !!document.getElementById('btn-open').onclick), 'app init');
   win.setContentSize(1440, 900);
 
-  const pilot = await page(async () => {
+  const pilot = await page(async projectMcpEnabled => {
     Object.defineProperty(document, 'hidden', { value: false, configurable: true });
-    const cfg = { engine: 'antigravity', antigravityEnabled: true, autoIdeContext: false, injectMyideRules: false };
+    const cfg = { engine: 'antigravity', antigravityEnabled: true, antigravityProjectMcpEnabled: projectMcpEnabled, autoIdeContext: false, injectMyideRules: false };
     const pilot = await window.myIDE.ai.antigravityPilot(cfg);
     if (!pilot.ok) return pilot;
     await App.setRoot(pilot.rootDir);
     App.showAi();
     await AiPanel.setConfig(cfg);
     return pilot;
-  });
+  }, verifyMcp);
   assert.equal(pilot.ok, true, JSON.stringify(pilot));
   await until(() => page(() => AiPanel.aiState().dshState === 'ready'), 'ACP connected');
   assert.equal(await page(() => document.getElementById('ai-engine').value), 'antigravity');
+  if (verifyMcp) {
+    const filename = 'ACP_TREE_FIXTURE_' + randomBytes(8).toString('hex').toUpperCase() + '.txt';
+    await fs.promises.writeFile(path.join(pilot.rootDir, filename), 'MyIDE isolated MCP fixture');
+    await page(() => {
+      void AiPanel.ask('Call the MCP tool whose name ends in myide_project_tree. Reply only with the full filename beginning ACP_TREE_FIXTURE_ from its result. Do not invoke another tool.');
+    });
+    await until(() => page(() => [...document.querySelectorAll('.ai-dsh-permission')].some(card => card.textContent.includes('读取当前试用项目树'))), 'official MCP permission', 60000);
+    await page(() => [...document.querySelectorAll('.ai-dsh-permission')].find(card =>
+      card.textContent.includes('读取当前试用项目树')).querySelector('button').click());
+    const approval = await until(async () => {
+      const view = win.contentView.children.find(item => item.webContents?.getURL().includes('ai-approval.html'));
+      return view && await view.webContents.executeJavaScript(
+        'document.body.textContent.includes("读取当前试用项目树") && !document.getElementById("accept").hidden'
+      ) ? view : null;
+    }, 'trusted official MCP review');
+    await approval.webContents.executeJavaScript('document.getElementById("accept").click()');
+    await until(() => page(expected => {
+      const replies = [...document.querySelectorAll('#ai-msgs .ai-msg.ai-assistant .ai-md')];
+      return replies.some(reply => reply.textContent.trim() === expected)
+        && !AiPanel.aiState().tasks.some(task => task.status === 'active');
+    }, filename), 'official MCP result from MyIDE project tree', 60000);
+    assert.equal(network, 0);
+    assert(BrowserWindow.getAllWindows().every(window => !window.isVisible()));
+    console.log('PASS official ACP worker, trusted one-time review and actual MyIDE project tree');
+    await finish(0);
+    return;
+  }
   if (live) {
     const marker = 'MYIDE_UI_' + randomBytes(8).toString('hex').toUpperCase();
     await page(text => {

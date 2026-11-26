@@ -47,7 +47,8 @@ async function test(name, fn) {
     production.push('src/main/codex/codex-shared-host.js','src/main/codex/codex-desktop-bridge.cs');
     production.push('src/main/browser/browser-proxy.js', 'src/main/codex/codex-questions.js');
     production.push('src/main/antigravity/antigravity-ipc.js', 'src/main/antigravity/ai-antigravity.js',
-      'src/main/antigravity/antigravity-store.js', 'src/main/antigravity/agy-runtime.js', 'src/main/antigravity/acp-transport.js');
+      'src/main/antigravity/antigravity-store.js', 'src/main/antigravity/agy-runtime.js', 'src/main/antigravity/acp-transport.js',
+      'src/main/antigravity/antigravity-project-mcp.js');
     for (const file of production) put(file, fs.readFileSync(path.join(root, file)));
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
     put('package.json', JSON.stringify({ main: 'main.js', dependencies: pkg.dependencies }));

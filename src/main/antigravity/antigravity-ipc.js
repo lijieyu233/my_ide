@@ -69,7 +69,7 @@ function runtimeState(result) {
   };
 }
 
-function createIpc({ ipcMain, service, sender, readView, assertRun, openApproval, pilotRoot }) {
+function createIpc({ ipcMain, service, sender, readView, assertRun, openApproval, pilotRoot, desktopPath, openDesktop }) {
   const activeReviews = new Set();
 
   async function currentTarget(event, cfg, requested = {}, requireSession = true, allowOtherMode = false) {
@@ -116,7 +116,14 @@ function createIpc({ ipcMain, service, sender, readView, assertRun, openApproval
   register('status', async (_event, cfg) => ({
     ...runtimeState(await service.status(cfg?.antigravityPath)),
     enabled: cfg?.antigravityEnabled === true,
+    desktopAvailable: Boolean(await desktopPath?.()),
   }));
+  register('open-app', async () => {
+    const executable = await desktopPath?.();
+    if (!executable) throw reject('ANTIGRAVITY_APP_NOT_FOUND', '未找到本机 Antigravity 桌面应用');
+    if (await openDesktop(executable)) throw reject('ANTIGRAVITY_APP_OPEN_FAILED', '无法打开 Antigravity 桌面应用');
+    return { ok: true, launchRequested: true };
+  });
   register('pilot', async (_event, cfg) => {
     if (cfg?.antigravityEnabled !== true) throw reject('ANTIGRAVITY_DISABLED', '请先启用 Antigravity 试用');
     return { ok: true, rootDir: await pilotDirectory(pilotRoot(), true) };
@@ -168,13 +175,13 @@ function createIpc({ ipcMain, service, sender, readView, assertRun, openApproval
     try {
       const accept = request.choices.find(choice => choice.kind === 'allow_once');
       const decline = request.choices.find(choice => choice.kind === 'reject_once');
-      const title = request.toolCall?.title || '工具操作';
-      const details = [];
+      const title = request.projectTree ? '读取当前试用项目树' : request.toolCall?.title || '工具操作';
+      const details = request.projectTree ? ['读取当前试用目录的文件和子目录名称，最多 250 项。'] : [];
       const raw = request.toolCall?.rawInput;
       for (const field of ['command', 'cmd', 'script', 'patch', 'diff', 'content', 'path', 'file_path', 'filePath', 'url']) {
         if (typeof raw?.[field] === 'string') details.push(field + '\n' + raw[field]);
       }
-      for (const part of request.toolCall?.content || []) {
+      for (const part of Array.isArray(request.toolCall?.content) ? request.toolCall.content : []) {
         if (part.type === 'diff' && typeof part.path === 'string') {
           details.push(part.path + '\n− ' + (part.oldText || '') + '\n+ ' + (part.newText || ''));
         }

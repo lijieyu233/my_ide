@@ -54,6 +54,16 @@ const CODEX=require('./src/main/codex/ai-codex').createService({
 });
 const antigravityIpc = require('./src/main/antigravity/antigravity-ipc');
 const antigravityPilotRoot = () => path.join(app.getPath('userData'), 'antigravity-pilot');
+async function antigravityDesktopPath() {
+  if (process.platform !== 'win32' || !process.env.LOCALAPPDATA) return null;
+  const expected = path.join(process.env.LOCALAPPDATA, 'Programs', 'antigravity', 'Antigravity.exe');
+  try {
+    const actual = await fs.promises.realpath(expected);
+    return path.basename(actual).toLowerCase() === 'antigravity.exe' && (await fs.promises.stat(actual)).isFile() ? actual : null;
+  } catch {
+    return null;
+  }
+}
 const antigravityQueueReady = new Map();
 async function antigravityEnvironment() {
   const { environmentFromSystemProxy } = require('./src/main/antigravity/agy-runtime');
@@ -65,9 +75,28 @@ async function antigravityEnvironment() {
     return process.env;
   }
 }
+const antigravityProjectMcp = require('./src/main/antigravity/antigravity-project-mcp').createProjectMcp({
+  async projectTree(scope, active) {
+    const contents = mainWindow?.webContents;
+    const check = () => {
+      if (!active() || !contents || contents.isDestroyed() || aiOwners.engine(contents.id, scope) !== 'antigravity') {
+        throw Error('Antigravity 项目树读取已失效');
+      }
+      const run = aiRuns.assert(aiOwners.owner(contents.id, scope), scope);
+      if (run.antigravityScope?.projectId !== scope.projectId || run.antigravityScope?.workspaceRoot !== scope.workspaceRoot) {
+        throw Error('Antigravity 项目树请求归属已变化');
+      }
+    };
+    check();
+    const call = AiToolContract.validate({ id: 'agy-project-tree', name: 'project_tree', args: {} });
+    const proof = aiProjectTools.prepare(call, scope);
+    return aiProjectTools.execute(proof, () => { check(); proof.verify(); });
+  },
+});
 const ANTIGRAVITY = require('./src/main/antigravity/ai-antigravity').createService({
   dataDir: () => path.join(app.getPath('userData'), 'antigravity'),
   resolveEnvironment: antigravityEnvironment,
+  projectMcp: antigravityProjectMcp,
   imageVerified: agent => agent?.version === '1.5.18',
   allowExecution: async root => {
     // The native CLI owns its tools. Until the effective host policy is proven,
@@ -918,6 +947,8 @@ const antigravityBridge = antigravityIpc.createIpc({
   ipcMain, service: ANTIGRAVITY, sender: (event, context) => aiSender(event, context), readView: antigravityView, assertRun: assertAntigravityRun,
   openApproval: (owner, scope, request) => aiPermissionsBridge.reviewAntigravity(owner, scope, request),
   pilotRoot: antigravityPilotRoot,
+  desktopPath: antigravityDesktopPath,
+  openDesktop: target => shell.openPath(target),
 });
 
 // AI 助手：流式对话（chunk 事件推送渲染层）+ 中断；tools = 原生 function calling
