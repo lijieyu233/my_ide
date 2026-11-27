@@ -595,6 +595,63 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
      !recent.querySelector('[data-hist-jump]');
  },firstProject.name));
 
+ if (process.argv.includes('--codex-activity-only')) {
+    const showView = view => js(view => document.querySelector('[data-hist-view="' + view + '"]').click(),view);
+    const rowHas = (id, marker) => js((id,marker)=>
+      !!document.querySelector('[data-id="codex:' + id + '"] ' + marker),id,marker);
+    const presentIds = () => js(()=>
+      [...document.querySelectorAll('#panel-sessions .ai-hist-row')].map(row=>row.dataset.id).sort());
+    const expected = [externalId,implicitId].map(id=>'codex:'+id).sort();
+    const external = fixture.threads.get(externalId);
+    const implicit = fixture.threads.get(implicitId);
+    const recent = fixture.threads.get(recentId);
+    check('Both session views are directly visible in the sidebar header',await js(()=>{
+      const all = document.querySelector('[data-hist-view="all"]');
+      const activity = document.querySelector('[data-hist-view="activity"]');
+      const a = all.getBoundingClientRect(), b = activity.getBoundingClientRect();
+      return all.checkVisibility() && activity.checkVisibility() && a.top === b.top && a.right <= b.left &&
+        all.getAttribute('aria-pressed') === 'true' && activity.getAttribute('aria-pressed') === 'false';
+    }));
+    external.desktopRunning = implicit.desktopRunning = true;
+    await until(async()=>await rowHas(externalId,'.ai-hist-run') && await rowHas(implicitId,'.ai-hist-run'),'two background turns detected');
+    external.turn = {id:'activity-filter-completed',status:'completed'};
+    external.desktopRunning = false;
+    await until(()=>rowHas(externalId,'.ai-hist-unread'),'background completion detected');
+
+    await js(()=>{Object.defineProperty(document,'hasFocus',{configurable:true,value:()=>true});});
+    await showView('activity');
+    const snapshot = await presentIds();
+    check('Activity lists only running and completed unread sessions and opens their project',
+      JSON.stringify(snapshot) === JSON.stringify(expected) &&
+      await js(()=>document.querySelector('[data-hist-view="activity"]').getAttribute('aria-pressed') === 'true' &&
+        document.querySelector('[data-codex-project="desktop-b"] [data-hist-toggle]').getAttribute('aria-expanded') === 'true' &&
+        !document.querySelector('[data-codex-project="desktop-empty"]')), {snapshot,expected});
+    await capture('codex-activity-filter');
+
+    await js(id=>{
+      document.querySelector('[data-id="codex:' + id + '"] .ai-hist-open').click();
+    },externalId);
+    await until(async()=>await rowHas(externalId,'.ai-hist-open') && !(await rowHas(externalId,'.ai-hist-unread')) &&
+      await js(()=>document.getElementById('ai-msgs').textContent.includes('CODEX_PREVIOUS_ANSWER')),'viewing clears the unread badge and retains the filtered row');
+
+    recent.desktopRunning = true;
+    implicit.turn = {id:'activity-filter-stopped',status:'interrupted'};
+    implicit.desktopRunning = false;
+    await until(async()=>!(await rowHas(implicitId,'.ai-hist-run')),'catalog refreshed after activity changed');
+    check('Viewing, stopping, and starting turns do not alter the snapshot',
+      JSON.stringify(await presentIds()) === JSON.stringify(expected));
+    await showView('activity');
+    check('Clicking the activity control again replaces the snapshot',
+      JSON.stringify(await presentIds()) === JSON.stringify(['codex:'+recentId]));
+    await showView('all');
+    check('All restores the regular tree immediately with its previous collapsed state',await js(()=>
+      document.querySelector('[data-hist-view="all"]').getAttribute('aria-pressed') === 'true' &&
+      !!document.querySelector('[data-codex-project="desktop-empty"]') &&
+      document.querySelector('[data-codex-project="desktop-b"] [data-hist-toggle]').getAttribute('aria-expanded') === 'false'));
+    await finish(0);
+    return;
+ }
+
  if (process.argv.includes('--codex-sync-only')) {
    await js(()=>{
      const project=document.querySelector('[data-codex-project="desktop-b"]');

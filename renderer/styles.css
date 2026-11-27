@@ -3961,6 +3961,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 @media (prefers-reduced-motion: reduce) { .ai-hist-run { animation: none; } }
 .ai-hist-b { display: grid; place-items: center; flex: none; width: 22px; height: 24px; padding: 0; color: var(--text-dim); border-radius: var(--ui-radius); }
 .ai-hist-b svg.ic { width: 13px; height: 13px; }
+.ai-hist-view-switch { display: flex; gap: 2px; }
+.ai-hist-view-switch .ai-hist-b[aria-pressed="true"] { background: var(--bg-hover); color: var(--accent); }
 .ai-hist-rows .ai-hist-b { height: var(--sidebar-tree-row-height); }
 .ai-hist-b:disabled { opacity: .5; cursor: default; }
 

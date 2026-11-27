@@ -4544,7 +4544,7 @@ const AiPanel = (() => {
   function bindCodexHistoryDrag(sidebar) {
     const rows = sidebar.querySelector('.ai-hist-rows');
     const anchorOf = event => event.target.closest(codexOrderTarget);
-    const canSort = () => histSidebarVisible && codexProjectHistory() && !historySearch && !codexArchiveOnly;
+    const canSort = () => histSidebarVisible && codexProjectHistory() && !historySearch && !codexArchiveOnly && !historyActivitySnapshot;
     function dropTarget(event) {
       if (!codexHistoryDrag || !canSort() || !event.dataTransfer?.types.includes(codexSortType)) return null;
       const anchor = anchorOf(event);
@@ -4628,7 +4628,7 @@ const AiPanel = (() => {
       if (choices.some(([value]) => value === stored?.[key])) historyPrefs[key] = stored[key];
     }
   } catch {}
-  let historySearch = '';
+  let historySearch = '', historyActivitySnapshot = null;
   const selectedHistoryRows = new Set();
   let historySelectionAnchor = null, historySelectionScope = '', historyBatchBusy = false;
 
@@ -4639,8 +4639,44 @@ const AiPanel = (() => {
     if (scope === historySelectionScope) return;
     selectedHistoryRows.clear();
     historySelectionAnchor = null;
+    historyActivitySnapshot = null;
     historySelectionScope = scope;
   }
+  function historyArchiveOnly(config) {
+    if (config.engine === 'dsh') return historyPrefs.archive === 'archived';
+    if (config.engine === 'antigravity') return antigravityArchiveOnly;
+    return codexProjectHistory() && codexArchiveOnly;
+  }
+
+  function historyActivityKeys(session) {
+    const keys = [historyRowKey(session.id, session.rootDir)];
+    if (session.codexThreadId) keys.push('codex:' + session.codexThreadId);
+    if (session.hostId) keys.push('host:' + session.hostId);
+    if (session.nativeSessionId) keys.push('native:' + session.nativeSessionId);
+    return keys;
+  }
+
+  function setHistoryView(view) {
+    const config = getConfig();
+    if (historyArchiveOnly(config)) return;
+    syncHistorySelection(config);
+    if (view === 'activity') {
+      markViewedHistoryReply();
+      const { all, running } = sessionsForHist();
+      const ids = new Set(all
+        .filter(session => !session.archived && (running.has(session.id) || historyReplyUnread(config.engine, session)))
+        .flatMap(historyActivityKeys));
+      // Status badges can update while the snapshot keeps its original members.
+      historyActivitySnapshot = { ids, expansion: historyActivitySnapshot?.expansion || new Map() };
+    } else {
+      if (!historyActivitySnapshot) return;
+      historyActivitySnapshot = null;
+    }
+    selectedHistoryRows.clear();
+    historySelectionAnchor = null;
+    refreshHistInPlace();
+  }
+
   function visibleHistoryRows() {
     return [...histSidebar.querySelectorAll('.ai-hist-row')].filter(row =>
       !row.closest('[hidden], .hidden') && !row.querySelector('.ai-hist-open').disabled);
@@ -4683,7 +4719,7 @@ const AiPanel = (() => {
     return key === root || items.some(session => isHistorySessionSelected(session) || running.has(session.id));
   }
 
-  function historyTree(entries, root, running) {
+  function historyTree(entries, expandedFor) {
     const keys = entries.map(([key]) => key).filter(Boolean).sort((a, b) => b.length - a.length);
     const children = new Map([[null, []]]);
     for (const entry of entries) {
@@ -4694,7 +4730,7 @@ const AiPanel = (() => {
     const result = [];
     function visit(parent, depth, collapsed) {
       for (const [key, items] of children.get(parent) || []) {
-        const expanded = historySearch || (historyWorkspaces.get(key)?.expanded ?? defaultHistoryExpanded(key, items, root, running));
+        const expanded = expandedFor(key, items);
         result.push([key, items, depth, collapsed, !!children.get(key)?.length]);
         if (key !== null) visit(key, depth + 1, collapsed || !expanded);
       }
@@ -4951,6 +4987,11 @@ const AiPanel = (() => {
     const title = sidebar.querySelector('[data-hist-title]');
     const panelTitle = codex && codexArchiveOnly ? '已归档' : '会话';
     if (title && title.textContent !== panelTitle) title.textContent = panelTitle;
+    const archiveOnly = historyArchiveOnly(config);
+    const activity = archiveOnly ? null : historyActivitySnapshot;
+    sidebar.querySelector('.ai-hist-view-switch').hidden = archiveOnly;
+    sidebar.querySelector('[data-hist-view="all"]').setAttribute('aria-pressed', String(!activity));
+    sidebar.querySelector('[data-hist-view="activity"]').setAttribute('aria-pressed', String(!!activity));
     const launcher = (config.engine==='antigravity' ? config.antigravityPath : codex ? config.codexPath : config.dshPath) || '';
     const request = config.engine==='antigravity' ? antigravityCatalogRequest : codex ? codexCatalogRequest : dshCatalogRequest;
     const histLoading = request?.launcher === launcher && !request.background;
@@ -4963,7 +5004,10 @@ const AiPanel = (() => {
     const editor = pathKey(editorRoot()), root = pathKey(workspaceRoot());
     const flat = dsh && historyPrefs.group === 'flat', tree = dsh && historyPrefs.group === 'tree';
     const query = historySearch.toLowerCase();
-    const narrow = !!query || (dsh && historyPrefs.archive === 'archived') || (codex && codexArchiveOnly);
+    const narrow = !!query || archiveOnly && (dsh || codex);
+    const expandedFor = (key, items) => activity
+      ? activity.expansion.get(key) ?? true
+      : narrow || (historyWorkspaces.get(key)?.expanded ?? defaultHistoryExpanded(key, items, root, running));
     const opened = dsh ? openWorkspaceRoots() : new Map();
     const catalog = currentCodexCatalog();
     const bindings = new Map((catalog?.bindings || []).map(entry => [pathKey(entry.rootDir), entry]));
@@ -4980,6 +5024,7 @@ const AiPanel = (() => {
       ? new Map((catalog?.projects || []).map(project => [codexProjectKey(project.id), project]))
       : catalogUsable() ? dshCatalog.workspaces : new Map();
     for (const session of all) {
+      if (activity && (session.archived || !historyActivityKeys(session).some(key => activity.ids.has(key)))) continue;
       let key = flat ? flatHistoryKey : session.unknownRoot ? null : pathKey(session.rootDir);
       if (codex) {
         const projectKey = codexProjectKey(session.codexProjectId ||
@@ -5003,7 +5048,7 @@ const AiPanel = (() => {
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(session);
     }
-    if (!flat && !narrow) {
+    if (!flat && !narrow && !activity) {
       for (const key of [...opened.keys(), ...registered.keys()]) {
         if (!groups.has(key) && (!codex || !codexArchivedProjects.has(registered.get(key)?.id))) groups.set(key, []);
       }
@@ -5021,11 +5066,11 @@ const AiPanel = (() => {
     const rank = (ranks, key) => ranks.get(key) ?? ranks.size;
     const defaultOrder = [...groups].sort(([a], [b]) => (manual || codex ? rank(workspaceRanks, a) - rank(workspaceRanks, b) : 0)
       || order(a) - order(b) || Number(b === root) - Number(a === root));
-    const orderAdditions = codex && catalog && !narrow ? new Map() : null;
+    const orderAdditions = codex && catalog && !narrow && !activity ? new Map() : null;
     const ordered = codex ? applyCodexOrder(defaultOrder, 'projects', ([key]) => key, orderAdditions) : defaultOrder;
-    const isOtherWorkspace = key => dsh && !flat && !tree && key !== root && !opened.has(key) && !registered.has(key);
+    const isOtherWorkspace = key => dsh && !activity && !flat && !tree && key !== root && !opened.has(key) && !registered.has(key);
     const showOther = narrow || (otherWorkspacesExpanded ?? ordered.every(([key]) => isOtherWorkspace(key)));
-    const entries = tree ? historyTree(ordered, root, running) : ordered;
+    const entries = tree ? historyTree(ordered, expandedFor) : ordered;
     const otherIds = [];
     let html = '', otherHtml = '', otherRunning = false, otherUnread = false;
     for (const [key, items, depth = 0, collapsed = false, hasChildren = false] of entries) {
@@ -5044,8 +5089,8 @@ const AiPanel = (() => {
         expanded: codex ? savedExpansion ?? current : defaultHistoryExpanded(key, items, root, running),
       });
       if (current && expandCurrent && savedExpansion === undefined) historyWorkspaces.get(key).expanded = true;
-      const { index, expanded: wasExpanded } = historyWorkspaces.get(key);
-      const expanded = (items.length > 0 || hasChildren) && (flat || narrow || wasExpanded);
+      const { index } = historyWorkspaces.get(key);
+      const expanded = (items.length > 0 || hasChildren) && (flat || expandedFor(key, items));
       const sessionOrder = flat ? flatOrder : workspace?.sessionIds || [];
       const sessionRanks = new Map(sessionOrder.map((id, index) => [id, index]));
       items.sort((a, b) => rank(pinRanks, a.hostId) - rank(pinRanks, b.hostId) ||
@@ -5065,7 +5110,7 @@ const AiPanel = (() => {
         (recent ? ' data-codex-recent' : codex ? ' data-codex-project="' + esc(workspace.id) + '"' : '') +
         (depth ? ' style="padding-inline-start:' + depth * 14 + 'px"' : '') +
         (collapsed || isOther && !showOther ? ' hidden' : '') + '>' +
-        (flat ? '' : '<div class="ai-hist-group-head"' + (codex && !recent && !narrow ? codexSortAttributes('projects', key) : '') + '><button type="button" class="ai-hist-group-title" data-hist-toggle aria-expanded="' + expanded + '" aria-controls="' + childId + '"' + (editorCurrent ? ' aria-current="location"' : '') +
+        (flat ? '' : '<div class="ai-hist-group-head"' + (codex && !recent && !narrow && !activity ? codexSortAttributes('projects', key) : '') + '><button type="button" class="ai-hist-group-title" data-hist-toggle aria-expanded="' + expanded + '" aria-controls="' + childId + '"' + (editorCurrent ? ' aria-current="location"' : '') +
           (groupState ? ' aria-label="' + esc(groupName + '，' + groupState) + '"' : '') + (codex || items.length || hasChildren ? '' : ' disabled') + ' title="' + esc(
           workspace?.createdAt ? groupRoot + '\n创建于 ' + new Date(workspace.createdAt).toLocaleString() :
           groupRoot || (unassigned ? 'DSH 未提供可用的工作区目录' : groupName)) + '">' +
@@ -5083,7 +5128,7 @@ const AiPanel = (() => {
         const hint = session.unknownRoot ? '工作区未经确认' : session.localOnly && dsh ? 'MyIDE 本地记录' : '';
         groupHtml += '<div class="ai-hist-row' + (selected ? ' cur' : '') + (isRunning ? ' running' : '') + '" data-id="' + esc(session.id) + '" data-root="' + esc(session.rootDir || '') + '"' +
           (selected ? ' aria-current="true"' : '') + (picked ? ' data-batch-selected' : '') + (pinRanks.has(session.hostId) ? ' data-pinned' : '') +
-          (codex && !narrow ? codexSortAttributes(codexSessionScope, codexSessionId(session)) : '') +
+          (codex && !narrow && !activity ? codexSortAttributes(codexSessionScope, codexSessionId(session)) : '') +
           '><button type="button" class="ai-hist-open"' + (session.unknownRoot ? ' disabled' : ' aria-haspopup="menu"') +
           (picked ? ' aria-pressed="true"' : '') + (state ? ' aria-label="' + esc(session.title + '，' + state) + '"' : '') + '>' +
           '<span class="ai-hist-session-icon">' + historyIcon('M2 3h12v8H7l-3 3v-3H2zM5 6h6M5 8.5h4') + '</span>' +
@@ -5108,7 +5153,11 @@ const AiPanel = (() => {
         '<span class="ai-hist-chevron">' + historyIcon('M4.6 6.4L8 9.8l3.4-3.4') + '</span><span class="ai-hist-workspace-name">其他工作区</span>' +
         historyStatusIcon(otherRunning, otherUnread) + '</button>' + otherHtml;
     }
-    if (!groups.size && !histLoading) html = '<div class="ai-hist-empty">' + (codex && codexArchiveOnly ? '暂无已归档会话' : '暂无会话') + '</div>';
+    if (!groups.size && !histLoading) {
+      const empty = activity && !query ? '没有运行中或已完成未查看的会话' :
+        codex && codexArchiveOnly ? '暂无已归档会话' : '暂无会话';
+      html = '<div class="ai-hist-empty">' + empty + '</div>';
+    }
     if (orderAdditions?.size) {
       try { saveCodexOrders(orderAdditions); } catch {}
     }
@@ -5187,6 +5236,9 @@ const AiPanel = (() => {
     histSidebar = sidebar;
     sidebar.className = 'ai-hist-dock';
     sidebar.innerHTML = '<div class="panel-title ai-hist-head"><span data-hist-title>会话</span><span class="panel-title-actions">' +
+      '<span class="ai-hist-view-switch" role="group" aria-label="会话视图">' +
+      '<button type="button" class="ai-hist-b" data-hist-view="all" aria-pressed="true" title="全部会话" aria-label="全部会话">' + historyIcon('M3 4h.01M3 8h.01M3 12h.01M6 4h7M6 8h7M6 12h7') + '</button>' +
+      '<button type="button" class="ai-hist-b" data-hist-view="activity" aria-pressed="false" title="运行中和未查看（再次点击更新）" aria-label="运行中和未查看">' + historyIcon('M2.5 4h11L9.5 8.5v3l-3 1.5V8.5z') + '</button></span>' +
       '<button type="button" class="ai-hist-b" data-project-picker title="切换项目" aria-label="切换项目">' + historyIcon('M2 5V3h5l2 2h5v8H2zM6 9h4m-2-2 2 2-2 2') + '</button>' +
       '<button type="button" class="ai-hist-b" data-hist-options title="会话列表选项" aria-label="会话列表选项" aria-haspopup="menu">' + historyIcon('M3 8h.01M8 8h.01M13 8h.01') + '</button>' +
       '<button type="button" class="ai-hist-b" data-hist-refresh title="刷新会话目录" aria-label="刷新会话目录">' + historyIcon('M13 7a5 5 0 1 0-1 4M13 3v4H9') + '</button>' +
@@ -5244,6 +5296,8 @@ const AiPanel = (() => {
         document.getElementById('tool-sessions')?.focus();
         return;
       }
+      const view = sender.closest('[data-hist-view]');
+      if (view) { setHistoryView(view.dataset.histView); return; }
       const picker = sender.closest('[data-project-picker]');
       if (picker) { event.stopPropagation(); App.showProjMenu(picker, true, () => App.showTool('sessions')); return; }
       const jump = sender.closest('[data-hist-jump]');
@@ -5278,6 +5332,11 @@ const AiPanel = (() => {
         const group = toggle.closest('.ai-hist-group');
         const items = group.querySelector('.ai-hist-items');
         if (codexProjectHistory() && !items.childElementCount) return;
+        if (historyActivitySnapshot && !historyArchiveOnly(getConfig())) {
+          historyActivitySnapshot.expansion.set(historyGroupKey(group), toggle.getAttribute('aria-expanded') !== 'true');
+          refreshHistInPlace();
+          return;
+        }
         if (getConfig().engine === 'dsh' && historyPrefs.group === 'tree' && !historySearch && historyPrefs.archive !== 'archived') {
           const state = historyWorkspaces.get(historyGroupKey(group));
           state.expanded = !state.expanded;
