@@ -61,13 +61,14 @@ test('选择模式即可连接，拒绝不可信调用及项目和会话失配',
   await assert.rejects(workspaceDirectory('remote://example/path'), { code: 'INVALID_ANTIGRAVITY_WORKSPACE' });
 });
 
-test('工具页可以连接和查看状态，项目级操作仍受页面约束', async t => {
+test('工具页沿当前工作区连接，阅读页保持独立', async t => {
   const f = await fixture(t);
   f.view.page = { id: 'tasks', projectContext: false };
   assert.equal((await f.invoke('connect', f.cfg)).connected, true);
   await f.invoke('options', f.cfg, 'session-a');
   assert.deepEqual(f.calls.map(([method, context]) => [method, context.page.id, context.page.projectContext]),
     [['connect', 'tasks', false], ['inspect', 'tasks', false]]);
+  f.view.page = { id: 'reader', projectContext: false };
   assert.equal((await f.invoke('options', f.cfg, 'session-a', { configId: 'model' })).errorCode, 'INVALID_ANTIGRAVITY_WORKSPACE');
   assert.equal((await f.invoke('history', f.cfg, f.view)).errorCode, 'INVALID_ANTIGRAVITY_WORKSPACE');
   assert.equal((await f.invoke('input', f.cfg, f.view, { kind: 'enqueue' })).errorCode, 'INVALID_ANTIGRAVITY_WORKSPACE');

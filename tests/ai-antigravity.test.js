@@ -82,27 +82,32 @@ async function test(name, fn) { await fn(); passed++; console.log('PASS ' + name
         assert.equal((await f.service.inspect({}, c)).capabilities.goal, false);
       } finally { await f.service.dispose(); }
     });
-    await test('ordinary local projects can send while tools outside the project page cannot dispatch', async () => {
+    await test('local project chats continue from tools without editor attachments, and reader scope is separate', async () => {
       const f = fixture();
       try {
         const context = f.context();
         const toolPage = { ...context, page: { id: 'tasks', projectContext: false } };
-        const inspected = await f.service.inspect({}, toolPage);
-        assert.equal(inspected.ok, true);
-        assert.equal(inspected.executionAllowed, false);
-        assert.equal(inspected.capabilities.send, false);
-        assert.equal(inspected.capabilities.config, false);
-        assert.equal(inspected.capabilities.queue, false);
-        await assert.rejects(f.service.listHistory({}, toolPage), { code: 'AGY_SCOPE' });
-        await assert.rejects(f.service.setConfig({}, toolPage, { configId: 'model' }), { code: 'AGY_SCOPE' });
-        assert.equal((await f.service.chat({}, [{ role: 'user', content: 'do it' }], [], toolPage)).errorCode, 'AGY_SCOPE');
+        const readerPage = { ...context, page: { id: 'reader', projectContext: false } };
+        assert.equal((await f.service.inspect({}, toolPage)).capabilities.send, true);
+        assert.equal((await f.service.inspect({}, readerPage)).capabilities.send, false);
+        assert.equal((await f.service.inspect({}, readerPage)).capabilities.config, false);
+        assert.equal((await f.service.inspect({}, readerPage)).capabilities.queue, false);
+        await assert.rejects(f.service.listHistory({}, readerPage), { code: 'AGY_SCOPE' });
+        await assert.rejects(f.service.setConfig({}, readerPage, { configId: 'model' }), { code: 'AGY_SCOPE' });
+        assert.equal((await f.service.chat({}, [{ role: 'user', content: 'do it' }], [], readerPage)).errorCode, 'AGY_SCOPE');
         assert(!f.calls.some(call => call.method === 'session/new'));
 
         const project = await f.service.inspect({}, context);
         assert.equal(project.executionAllowed, true);
         assert.equal(project.capabilities.send, true);
-        assert((await f.send(context)).complete);
+        const result = await f.service.chat({}, [{
+          role: 'user',
+          content: 'next message',
+          _antigravityAttachments: [{ kind: 'file', path: 'unrelated.txt', content: 'EDITOR_ATTACHMENT' }],
+        }], [], toolPage);
+        assert.equal(result.complete, true);
         assert.equal(f.calls.find(call => call.method === 'session/new').params.cwd, await fs.realpath(context.workspaceRoot));
+        assert.deepEqual(f.calls.find(call => call.method === 'session/prompt').params.prompt, [{ type: 'text', text: 'next message' }]);
       } finally { await f.service.dispose(); }
     });
     await test('unsupported scopes and missing directories are rejected before launching', async () => {

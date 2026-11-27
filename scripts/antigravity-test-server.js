@@ -82,6 +82,9 @@ createInterface({ input: process.stdin }).on('line', line => {
             { optionId: 'fixture-allow', kind: 'allow_once', name: 'Allow once' },
             { optionId: 'fixture-deny', kind: 'reject_once', name: 'Reject' },
           ] } });
+      } else if (value.includes('FIXTURE_TASK_PAGE')) {
+        text(id, 'agent_message_chunk', 'ACP_TASK_PAGE_REPLY');
+        end(id);
       } else if (value.includes('FIXTURE_STRESS')) {
         for (const kind of ['agent_thought_chunk', 'agent_message_chunk']) {
           for (let chunk = 0; chunk < 256; chunk++) text(id, kind, '片段。'.repeat(28) + (chunk % 8 === 7 ? '\n' : ''));

@@ -48,9 +48,9 @@ async function test(name,fn){const f=fixture();fixtures.push(f);await fn(f);pass
   f.type('只发送原话');f.enter();await until(()=>f.calls.length===1);assert.equal(f.calls[0].cfg.engine,'antigravity');assert.equal(f.calls[0].messages.length,1);assert.equal(f.calls[0].tools.length,0);
   assert.equal(f.calls[0].context.engine,'antigravity');f.finish(0);await tick();
  });
- await test('独立工具页面只读，关闭图片和插入能力时保留输入',async f=>{
+ await test('阅读页只读，关闭图片和插入能力时保留输入',async f=>{
   const projectPage=f.w.App.getPageContext;
-  f.w.App.getPageContext=()=>({id:'tasks',projectContext:false});
+  f.w.App.getPageContext=()=>({id:'reader',projectContext:false});
   f.executionAllowed=false;await f.enable();f.type('业务目录');f.enter();await tick();assert.equal(f.calls.length,0);assert.equal(f.w.document.getElementById('ai-input').value,'业务目录');
   assert.equal(f.w.document.getElementById('ai-dsh-info').textContent,'已连接 · 只读');
   assert.match(f.w.document.getElementById('ai-dsh-info').title,/当前页面只读/);

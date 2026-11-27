@@ -73,14 +73,14 @@ function createService(options = {}) {
   let disposed = false, generation = 0;
   async function identity(context, { connectionOnly = false } = {}) {
     if (!opaqueId(context?.sessionId) || context.engine && context.engine !== 'antigravity') throw error('Antigravity 会话身份无效', 'AGY_IDENTITY');
-    const projectPage = context.page?.projectContext !== false && !['reader', 'bookshelf'].includes(context.page?.id);
-    if (!projectPage && !connectionOnly) throw error('Antigravity 首版仅支持本地项目会话', 'AGY_SCOPE');
+    const workspaceChat = !['reader', 'bookshelf', 'welcome'].includes(context.page?.id);
+    if (!workspaceChat && !connectionOnly) throw error('Antigravity 需要在本地工程会话中发送', 'AGY_SCOPE');
     const projectId = context.projectId || context.page?.projectId || context.page?.id;
     if (!opaqueId(projectId)) throw error('Antigravity 项目归属未确认', 'AGY_SCOPE');
     const cwd = await canonical(context.workspaceRoot || context.rootId);
     if (context.rootId && norm(await canonical(context.rootId)) !== norm(cwd)) throw error('Antigravity 项目目录身份不一致', 'AGY_SCOPE');
     const root = norm(cwd), key = JSON.stringify(['antigravity', projectId, root, context.sessionId]);
-    return { projectId, cwd, root, key, projectPage };
+    return { projectId, cwd, root, key, workspaceChat };
   }
   async function serial(key, task) {
     const next = (locks.get(key) || Promise.resolve()).catch(() => {}).then(task); locks.set(key, next);
@@ -285,7 +285,7 @@ function createService(options = {}) {
     return verified && conn.capabilities.promptCapabilities?.image === true;
   }
   function featureFlags(info, conn, readOnly = false) {
-    const executionAllowed = info.projectPage && !readOnly;
+    const executionAllowed = info.workspaceChat && !readOnly;
     const record = recordOf(info), pending = record?.unknown || record?.configUnknown || blocked.has(info.key) || !!store.snapshot().creations?.[info.key];
     return { executionAllowed, capabilities: { ...clone(conn.capabilities), send: executionAllowed && !pending, config: executionAllowed && !pending, queue: executionAllowed, steering: false, goal: executionAllowed && !!record?.id && conn.goalCommands.has(record.id), image: imageSupported(conn) }, readOnly };
   }
@@ -478,7 +478,7 @@ function createService(options = {}) {
       const { conn, record } = await attach(cfg, context, info, run);
       await store.transaction(data => { data.sessions[info.key].clean = false; data.sessions[info.key].unknown = true; data.sessions[info.key].unknownSince = Date.now(); data.sessions[info.key].pendingInput = input; });
       if (run.stopping) throw error('Antigravity 请求已停止', 'AGY_CANCELLED', { writeState: 'not_written' });
-      if (conn.projectMcp && cfg.antigravityProjectMcpEnabled === true) {
+      if (conn.projectMcp && cfg.antigravityProjectMcpEnabled === true && context.page?.projectContext !== false) {
         run.projectMcpActive = options.projectMcp.activate(run.context, conn.generation);
       }
       phase(run, 'submitting', '正在提交 Antigravity，等待代理响应'); touch(run);

@@ -216,6 +216,13 @@ const watchdog = setTimeout(() => { console.error('Antigravity UI watchdog expir
     assert(metrics.finalRenderedMs < 250 && metrics.maxHeartbeatMs < 250, 'ACP stream UI exceeded 250ms');
   }
 
+  await page(() => App.setTool('tasks'));
+  await until(() => page(() => AiPanel.dshView().page.id === 'tasks' &&
+    AiPanel.aiState().dshState === 'ready'), 'Antigravity on the tasks page');
+  await page(() => AiPanel.ask('FIXTURE_TASK_PAGE'));
+  await until(() => page(() => document.getElementById('ai-msgs').textContent.includes('ACP_TASK_PAGE_REPLY') &&
+    !AiPanel.aiState().tasks.some(task => task.engine === 'antigravity' && task.status === 'active')), 'native reply on the tasks page');
+  console.log('PASS Antigravity continues the project conversation on the tasks page');
   await page(async root => { await App.setRoot(root); await AiPanel.setConfig({ engine: 'standard' }); }, unrelated);
   await until(() => page(() => document.getElementById('ai-engine').value === 'standard'), 'standard mode restored');
   assert.equal(network, 0);

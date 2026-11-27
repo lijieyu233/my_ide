@@ -65,13 +65,14 @@ function createIpc({ ipcMain, service, sender, readView, assertRun, openApproval
       throw reject('INVALID_ANTIGRAVITY_TARGET', 'Antigravity 会话视图已变化');
     }
     const projectPage = view.page.id === 'project' && view.page.projectContext === true;
-    if (!projectPage && !connectionOnly) {
+    if (['reader', 'bookshelf', 'welcome'].includes(view.page.id) && !connectionOnly) {
       throw reject('INVALID_ANTIGRAVITY_WORKSPACE', 'Antigravity 需要在本地项目中使用');
     }
     if (requested.sessionId !== undefined && requested.sessionId !== view.sessionId
         || requested.rootId !== undefined && requested.rootId !== view.rootId
         || requested.projectId !== undefined && requested.projectId !== view.projectId
-        || requested.page && requested.page.id !== view.page.id) {
+        || requested.page && (requested.page.id !== view.page.id ||
+          requested.page.projectContext !== undefined && requested.page.projectContext !== view.page.projectContext)) {
       throw reject('INVALID_ANTIGRAVITY_TARGET', 'Antigravity 会话视图已变化');
     }
     const root = await workspaceDirectory(view.rootId);
