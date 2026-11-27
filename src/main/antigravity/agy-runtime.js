@@ -81,11 +81,12 @@ function buildAgyEnvironment(env = process.env, options = {}) {
 }
 
 function reportedWorkspacePath(value, platform = process.platform) {
-  // Antigravity 1.5.18 lists Windows directories as /C:/path after a turn.
-  // Convert this spelling before checking the actual path and session binding.
-  return platform === 'win32' && typeof value === 'string' && /^\/[a-z]:\//i.test(value)
-    ? value.slice(1)
-    : value;
+  // ACP returns escaped URI paths such as /C:/%E9%A1%B9%E7%9B%AE after a turn.
+  // Decode only that spelling, then let the caller verify the real directory.
+  if (platform !== 'win32' || typeof value !== 'string' || !/^\/[a-z]:\//i.test(value)) return value;
+  const local = value.slice(1);
+  if (/%(?:2f|5c|00)/i.test(local)) return local;
+  try { return decodeURIComponent(local); } catch { return local; }
 }
 
 function environmentFromSystemProxy(proxy, env = process.env) {

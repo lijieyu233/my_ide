@@ -1,6 +1,6 @@
 // Hidden production Electron, preload, renderer, native service and transport.
 // By default only the ACP server is synthetic. The explicit live flag checks
-// one text-only official round with a separate MyIDE profile.
+// text-only official rounds and config changes use a separate MyIDE profile.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -11,11 +11,13 @@ const { app, BrowserWindow, ipcMain, session, clipboard, nativeImage } = require
 const { AcpTransport } = require('../src/main/antigravity/acp-transport');
 
 const verifyMcp = process.argv.includes('--confirm-live-mcp');
-const live = verifyMcp || process.argv.includes('--confirm-live-model');
+const verifyModelSwitch = process.argv.includes('--confirm-live-config');
+const live = verifyMcp || verifyModelSwitch || process.argv.includes('--confirm-live-model');
 const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myide-antigravity-ui-')));
 const profile = path.join(temp, 'profile');
 const workspace = path.join(temp, '当前工程');
 const unrelated = path.join(temp, '编辑目录');
+
 fs.mkdirSync(workspace);
 fs.mkdirSync(unrelated);
 // Isolate the MyIDE settings mirror without changing the official CLI login environment.
@@ -153,19 +155,51 @@ const watchdog = setTimeout(() => { console.error('Antigravity UI watchdog expir
     return;
   }
   if (live) {
-    const marker = 'MYIDE_UI_' + randomBytes(8).toString('hex').toUpperCase();
-    await page(text => {
-      void AiPanel.ask('Connection check. Reply exactly ' + text + '. No other text. Do not use tools or inspect anything.');
-    }, marker);
-    await until(() => page(expected => {
-      if (document.querySelector('.ai-dsh-permission button')) {
-        document.getElementById('ai-send').click();
-        throw Error('Official model requested an unexpected tool approval');
-      }
-      const replies = [...document.querySelectorAll('#ai-msgs .ai-msg.ai-assistant .ai-md')];
-      return replies.some(reply => reply.textContent.trim() === expected)
-        && !AiPanel.aiState().tasks.some(task => task.status === 'active');
-    }, marker), 'official assistant text and terminal', 120000);
+    const verifyReply = async description => {
+      const marker = 'MYIDE_UI_' + randomBytes(8).toString('hex').toUpperCase();
+      await page(text => {
+        void AiPanel.ask('Connection check. Reply exactly ' + text + '. No other text. Do not use tools or inspect anything.');
+      }, marker);
+      await until(() => page(expected => {
+        if (document.querySelector('.ai-dsh-permission button')) {
+          document.getElementById('ai-send').click();
+          throw Error('Official model requested an unexpected tool approval');
+        }
+        const replies = [...document.querySelectorAll('#ai-msgs .ai-msg.ai-assistant .ai-md')];
+        return replies.some(reply => reply.textContent.trim() === expected)
+          && AiPanel.aiState().dshState === 'ready'
+          && !AiPanel.aiState().tasks.some(task => task.status === 'active');
+      }, marker), description, verifyModelSwitch ? 65000 : 120000);
+    };
+    await verifyReply('official assistant text and terminal');
+    if (verifyModelSwitch) {
+      const selected = await page(async () => {
+        const { model, models } = AiPanel.aiState();
+        const alternatives = models.filter(option => option.id !== model && !option.disabled);
+        const next = alternatives.find(option => /flash|neon/i.test(option.name)) || alternatives[0];
+        if (!next) throw Error('Official CLI offered no alternative model');
+        const menu = document.getElementById('ai-model');
+        menu.value = next.id;
+        await menu.onchange();
+        const state = AiPanel.aiState();
+        return {
+          expected: next.id, model: state.model, connection: state.dshState, session: state.dshSession?.hostId,
+          view: document.getElementById('ai-dsh-info').title,
+        };
+      });
+      assert.equal(selected.model, selected.expected, JSON.stringify({ ...selected, session: Boolean(selected.session) }));
+      assert.equal(selected.connection, 'ready');
+      assert(selected.session, 'the official conversation must remain bound');
+      await verifyReply('official reply after changing models in the same conversation');
+      const after = await page(() => {
+        const state = AiPanel.aiState();
+        return { model: state.model, session: state.dshSession?.hostId, connection: state.dshState };
+      });
+      assert.equal(after.session, selected.session);
+      assert.equal(after.model, selected.model);
+      assert.equal(after.connection, 'ready');
+      console.log('PASS official CLI confirmed the alternate model and responded again in the original MyIDE conversation');
+    }
     assert.equal(network, 0, 'only the official CLI child may use the network');
     assert(BrowserWindow.getAllWindows().every(window => !window.isVisible()));
     console.log('PASS official Antigravity model through production MyIDE, with isolated userData');

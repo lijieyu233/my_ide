@@ -1424,11 +1424,20 @@ const AiPanel = (() => {
   async function refreshAntigravityOptions(apply = false) {
     if (getConfig().engine !== 'antigravity' || panel?.classList.contains('hidden')) return;
     const ticket = ++dshOptionsTicket, key = antigravityStateKey(), cfg = {...getConfig(),...dshView()};
+    const current = () => getConfig().engine === 'antigravity' && ticket === dshOptionsTicket && key === antigravityStateKey();
+    const requestOptions = async choice => {
+      try { return await window.myIDE.ai.antigravityOptions(cfg,cfg.sessionId,choice); }
+      catch(error) { return {ok:false,error:error.message}; }
+    };
     dshOptionsState = 'loading'; refreshModelSel(); setBusyUI(busy); antigravityConnectionInfo();
-    let result;
-    try { result = await window.myIDE.ai.antigravityOptions(cfg,curSessionId,apply); }
-    catch(error) { result = {ok:false,error:error.message}; }
-    if (getConfig().engine !== 'antigravity' || ticket !== dshOptionsTicket || key !== antigravityStateKey()) return;
+    let result = await requestOptions(apply);
+    if (!current()) return;
+    const configFailure = apply && typeof apply === 'object' && !result?.ok ? result || {ok:false} : null;
+    if (configFailure) {
+      // A rejected choice can leave the CLI connected and the old selection valid.
+      result = await requestOptions(false);
+      if (!current()) return;
+    }
     result = {...antigravityStates.get(key), error: '', errorCode: '', ...result};
     antigravityStates.set(key, result);
     dshOptionsState = result?.ok ? 'ready' : 'error';
@@ -1438,6 +1447,7 @@ const AiPanel = (() => {
       scope:dshScope(),epoch:pageEpoch,error:result.readOnly ? '该外部会话只读' : result.unknown || result.creationUnknown ? '原输入提交状态待核对，请先恢复原会话历史' : ''};
     antigravityConnectionInfo(); refreshModelSel(); setBusyUI(busy); void refreshNativeQueue(true);
     if(currentRun?.engine==='antigravity'&&currentRun.status==='completed')queueMicrotask(()=>dispatchAntigravityQueue(currentRun));
+    return configFailure || result;
   }
   async function reconnectAntigravity() {
     if(busy)return;
@@ -1453,10 +1463,10 @@ const AiPanel = (() => {
     if (busy || !antigravityCap('config')) return;
     const option = dshConfigOptions.find(item=>item.id===id), key = antigravityStateKey();
     if (!option) return;
-    await refreshAntigravityOptions({configId:option.configId,value});
-    if (key !== antigravityStateKey()) return;
+    const result = await refreshAntigravityOptions({configId:option.configId,value});
+    if (!result || key !== antigravityStateKey()) return;
     const actual = dshConfigOptions.find(item=>item.id===id)?.currentValue;
-    if (actual !== value) { MI.toast('Antigravity 尚未确认配置，保留原选择','err'); return; }
+    if (!result.ok || actual !== value) { MI.toast(result.error || 'Antigravity 尚未确认配置，保留原选择','err'); return; }
     await setConfig({[id === 'model' ? 'antigravityModel' : 'antigravityReasoning']:actual});
   }
   async function refreshAntigravityCatalog({manual = false,background = false} = {}) {

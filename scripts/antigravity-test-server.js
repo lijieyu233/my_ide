@@ -55,7 +55,7 @@ createInterface({ input: process.stdin }).on('line', line => {
     }
     case 'session/list':
       reply({ sessions: [...sessions.values()].filter(row => !args.cwd || row.cwd === args.cwd).map(row =>
-        ({ sessionId: row.sessionId, cwd: process.platform === 'win32' ? '/' + row.cwd.replaceAll('\\', '/') : row.cwd,
+        ({ sessionId: row.sessionId, cwd: process.platform === 'win32' ? require('node:url').pathToFileURL(row.cwd).pathname : row.cwd,
           title: '离线 Antigravity 会话', updatedAt: new Date().toISOString() })) });
       break;
     case 'session/load':

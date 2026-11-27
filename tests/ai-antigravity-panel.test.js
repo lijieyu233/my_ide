@@ -48,6 +48,22 @@ async function test(name,fn){const f=fixture();fixtures.push(f);await fn(f);pass
   f.type('只发送原话');f.enter();await until(()=>f.calls.length===1);assert.equal(f.calls[0].cfg.engine,'antigravity');assert.equal(f.calls[0].messages.length,1);assert.equal(f.calls[0].tools.length,0);
   assert.equal(f.calls[0].context.engine,'antigravity');f.finish(0);await tick();
  });
+ await test('模型切换被拒绝后保留会话和实际模型，可以重新选择',async f=>{
+  await f.enable();
+  const panel=f.w.AiPanel, select=f.w.document.getElementById('ai-model');
+  f.optionGate=(_cfg,_id,apply)=>{
+   assert.equal(apply?.value,'gemini-next');f.optionGate=null;
+   return {ok:false,errorCode:'AGY_CONFIG',error:'该模型当前不可用'};
+  };
+  select.value='gemini-next';await select.onchange();
+  assert.equal(f.notices.at(-1)?.text,'该模型当前不可用');
+  assert.equal(panel.aiState().dshState,'ready');
+  assert.match(f.w.document.getElementById('ai-dsh-info').textContent,/已连接/);
+  assert.equal(select.value,'gemini-test');assert.equal(select.disabled,false);
+  assert.equal(f.options.filter(call=>call.apply?.value==='gemini-next').length,1);
+  select.value='gemini-next';await select.onchange();
+  assert.equal(panel.aiState().model,'gemini-next');
+ });
  await test('阅读页只读，关闭图片和插入能力时保留输入',async f=>{
   const projectPage=f.w.App.getPageContext;
   f.w.App.getPageContext=()=>({id:'reader',projectContext:false});

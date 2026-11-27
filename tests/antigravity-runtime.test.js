@@ -107,6 +107,9 @@ for (const [label, replies, code, overrides] of [
 }));
 test('normalizes only the reported Windows /drive:/path spelling', () => {
   assert.equal(reportedWorkspacePath('/C:/Users/user/project', 'win32'), 'C:/Users/user/project');
+  assert.equal(reportedWorkspacePath('/D:/%E9%A1%B9%E7%9B%AE%20A/%2520%23', 'win32'), 'D:/项目 A/%20#');
+  assert.equal(reportedWorkspacePath('D:/project%20A', 'win32'), 'D:/project%20A');
+  assert.equal(reportedWorkspacePath('/D:/project%2fother', 'win32'), 'D:/project%2fother');
   assert.equal(reportedWorkspacePath('/C:/Users/user/project', 'linux'), '/C:/Users/user/project');
   assert.equal(reportedWorkspacePath('C:/Users/user/project', 'win32'), 'C:/Users/user/project');
   assert.equal(reportedWorkspacePath('//C:/network/path', 'win32'), '//C:/network/path');
