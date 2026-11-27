@@ -39,7 +39,7 @@ async function test(name,fn){const f=fixture();fixtures.push(f);await fn(f);pass
 (async()=>{
  await test('Antigravity 默认关闭，独立配置来自实际回执且不会派发 DSH/Codex',async f=>{
   const choice=f.w.document.querySelector('#ai-engine [value="antigravity"]');
-  assert.equal(choice.hidden,false);assert.equal(choice.disabled,false);
+  assert.equal(choice.hidden,false);assert.equal(choice.disabled,false);assert.equal(choice.textContent,'Antigravity');
   assert.notEqual(f.w.AiPanel.getConfig().antigravityEnabled,true);assert.equal(f.options.length,0);
   await f.enable();assert.equal(f.w.AiPanel.getConfig().antigravityEnabled,true);
   assert.equal(f.w.AiPanel.aiState().model,'gemini-test');assert.match(f.w.document.getElementById('ai-dsh-info').textContent,/无沙箱/);assert.match(f.w.document.getElementById('ai-dsh-info').title,/沙箱不可用/);
@@ -50,6 +50,8 @@ async function test(name,fn){const f=fixture();fixtures.push(f);await fn(f);pass
  });
  await test('业务目录只读，关闭图片和插入能力时保留输入',async f=>{
   f.executionAllowed=false;await f.enable();f.type('业务目录');f.enter();await tick();assert.equal(f.calls.length,0);assert.equal(f.w.document.getElementById('ai-input').value,'业务目录');
+  assert.equal(f.w.document.getElementById('ai-dsh-info').textContent,'已连接 · 只读');
+  assert.match(f.w.document.getElementById('ai-dsh-info').title,/当前项目只读/);
   f.executionAllowed=true;await f.w.AiPanel.setConfig({antigravityPath:'C:/official/agy.exe'});await f.root('C:/fixture/B');f.type('第一轮');f.enter();await until(()=>f.calls.length===1);
   f.type('补充要求');f.enter({altKey:true});await tick();assert.equal(f.inputs.length,0);assert.equal(f.w.document.getElementById('ai-input').value,'补充要求');assert(f.notices.some(item=>item.text.includes('未开放插入')));
  });
@@ -66,6 +68,15 @@ async function test(name,fn){const f=fixture();fixtures.push(f);await fn(f);pass
   const state=f.w.AiPanel.aiState();assert.equal(JSON.parse(f.w.localStorage.getItem('myide-antigravity-composer:'+JSON.stringify([state.scope,state.current]))).text,'');
   f.finish(0);await until(()=>f.calls.length===2);assert.equal(f.calls[1].context.antigravityQueueItemId,'q-1');assert.equal(f.calls[1].messages.length,0);assert.notEqual(f.calls[0].context.requestId,f.calls[1].context.requestId);
   await f.event({type:'queueReady',target:{sessionId:f.calls[0].context.sessionId,rootId:f.calls[0].context.rootId}});await tick();assert.equal(f.calls.length,2);
+ });
+ await test('编辑器切工程时标明 Antigravity 会话仍绑定原工程',async f=>{
+  await f.enable();f.type('A 草稿');
+  f.w.AiPanel.beforeProjectChange('C:/fixture/B');
+  f.w.App.root='C:/fixture/B';f.w.AiPanel.onEditorProjectChange();
+  const origin=f.w.document.getElementById('ai-session-origin');
+  assert.equal(origin.textContent,'会话工程 · A');
+  assert.equal(f.w.AiPanel.dshView().rootId,'C:/fixture/A');
+  assert.equal(f.w.document.getElementById('ai-input').value,'A 草稿');
  });
  await test('切项目和模式保留后台原身份、未回答问题和独立草稿',async f=>{
   await f.enable();f.type('A 任务');f.enter();await until(()=>f.calls.length===1);const a=f.calls[0].context;await f.event({type:'question',id:'unanswered',context:a,questions:[{id:'q',question:'等待回答',allowCustom:true}]});f.type('A 草稿');

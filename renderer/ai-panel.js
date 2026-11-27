@@ -1408,8 +1408,12 @@ const AiPanel = (() => {
     const state = antigravityState(), info = document.getElementById('ai-dsh-info');
     const sandbox = antigravitySandboxLabel(state);
     if (info) {
-      info.textContent = dshOptionsState === 'loading' ? '连接中…' : state.ok ? '已连接 · '+(state.sandbox?.available === false || ['unavailable','unsupported'].includes(state.sandbox?.status || state.sandbox?.state) ? '无沙箱' : sandbox) : '未连接';
-      info.title = ['Antigravity',state.error,state.permission?.label || '原生权限待确认',sandbox,state.sandbox?.reason,state.executionAllowed === false ? '当前项目只读；可在设置中打开试用目录' : '',dshSessionAccess?.error].filter(Boolean).join('\n');
+      const readOnly = state.executionAllowed === false || state.readOnly === true;
+      const sandboxUnavailable = state.sandbox?.available === false || ['unavailable', 'unsupported'].includes(state.sandbox?.status || state.sandbox?.state);
+      const access = readOnly ? '只读' : sandboxUnavailable ? '无沙箱' : sandbox;
+      info.textContent = dshOptionsState === 'loading' ? '连接中…' : state.ok ? '已连接 · ' + access : '未连接';
+      const accessNote = state.readOnly ? '当前会话只读' : readOnly ? '当前项目只读，可在设置中打开试用目录' : '';
+      info.title = ['Antigravity', state.error, state.permission?.label || '原生权限待确认', sandbox, state.sandbox?.reason, accessNote, dshSessionAccess?.error].filter(Boolean).join('\n');
     }
     syncPermBtn();
   }
@@ -4007,7 +4011,9 @@ const AiPanel = (() => {
       origin.classList.remove('hidden');
       const label = foreign || detached || page.projectContext ? sessionRootLabel(root) : page.name;
       origin.title = foreign || detached ? '会话工程：'+root : page.projectContext ? '当前工程：'+(root || '未打开工程') : page.name+'（未附带项目文件）';
-      origin.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h5l2 2h5v7H2zM2 4V2h5l2 2h5v2"/></svg><span>'+(foreign && getConfig().engine === 'dsh' ? '<span class="ai-origin-scope">会话工程 · </span>' : '')+'<b>'+esc(label)+'</b></span>';
+      const engine = getConfig().engine;
+      const showOrigin = (foreign && engine === 'dsh') || (detached && engine === 'antigravity');
+      origin.innerHTML = '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h5l2 2h5v7H2zM2 4V2h5l2 2h5v2"/></svg><span>'+(showOrigin ? '<span class="ai-origin-scope">会话工程 · </span>' : '')+'<b>'+esc(label)+'</b></span>';
     }
     if (bar) {
       const openDshProject = foreign && detached && getConfig().engine === 'dsh';
