@@ -195,10 +195,7 @@ const AiPanel = (() => {
     setRunState(run, antigravityOutcome || inputStatus || (status === 'limited' ? '已达本次工具操作上限，可继续处理剩余任务' : status === 'cancelled' ? run.engine==='dsh'?'已停止本地派发；DSH 停止和队列撤回状态请刷新确认':run.engine==='codex'?'已请求停止 Codex；以原生回执为准':'已停止' : status === 'incomplete' ? '回复未完成，未执行工具' : status === 'failed' ? '生成失败' : '已完成'), true);
     if (curStream === run.stream?.element) { curStream = null; curText = ''; }
     if (status === 'completed') {
-      const { sessionId, rootId, requestId } = run.identity;
-      const threadId = run.engine === 'codex' && run.nativeState?.threadId;
-      const key = threadId ? historyCodexKey(threadId) : historyRunKey(run.engine, sessionId, rootId);
-      saveHistoryCompletion(key, run.nativeState?.turnId || requestId, !canSeeHistoryReply());
+      saveHistoryCompletion(historyCompletionKey(run), run.nativeState?.turnId || run.identity.requestId, !canSeeHistoryReply());
     }
     busy = false; setBusyUI(false); persistSession(); markRegen();
     if (!backgroundView) document.getElementById('ai-stop')?.classList.add('hidden');
@@ -3884,6 +3881,11 @@ const AiPanel = (() => {
   } catch {}
   const historyRunKey = (engine, id, root) => JSON.stringify([engine, pathKey(root), id]);
   const historyCodexKey = id => 'codex:' + id;
+  function historyCompletionKey(run) {
+    const { sessionId, rootId } = run.identity;
+    const threadId = run.engine === 'codex' && run.nativeState?.threadId;
+    return threadId ? historyCodexKey(threadId) : historyRunKey(run.engine, sessionId, rootId);
+  }
   const canSeeHistoryReply = () => !backgroundView && panel && !panel.classList.contains('hidden') &&
     !document.hidden && document.hasFocus() && !historyReplayJob &&
     (!dshSessionAccess || dshSessionAccess.state === 'ready');
@@ -5758,7 +5760,14 @@ const AiPanel = (() => {
       if (codexHistory) parked.record.view.dshSessionAccess = access;
       // 先把当前会话也挂起来，否则它的 DOM 会被这次接回顶掉。
       const rest = restoreBackgroundRun({ sessionId: id, hit: parked });
-      if (rest) { rememberSession(); if (!foreign) localStorage.removeItem(sessKey()+':draft'); refreshDshOptions(); renderUsage(); MI.toast('已接回运行中的会话', 'ok'); return; }
+      if (rest) {
+        rememberSession();
+        if (!foreign) localStorage.removeItem(sessKey()+':draft');
+        refreshDshOptions();
+        renderUsage();
+        if (parked.record.run.status === 'active') MI.toast('已接回运行中的会话', 'ok');
+        return;
+      }
     }
     const host = catalogOf(id);
     if (host && (!host.cwd || pathKey(host.cwd) !== pathKey(localRoot))) {
@@ -6220,10 +6229,7 @@ const AiPanel = (() => {
     const record={run,scope,view:{...captureRunView(),msgsEl:container},pending:[]};
     const key=runKeyOf(scope,curSessionId);
     backgroundRuns.set(key,record);run.background=record;
-    // 不再往 msgsEl 里插占位提示（2026-10-29）：
-    // 那会给「消息容器内容」增加一个非消息节点，既有用例按文本/节点数断言时会受影响；
-    // 而且提示本身已经由下面的后台状态条（#ai-background-status）承担，
-    // 用户可以点它接回 —— 两处重复没必要。
+    // 挂起的消息保持原样，会话栏负责接回运行中的任务。
     withBackgroundView(record,persistSession);
     currentRun=null;busy=false;curStream=null;curText='';setBusyUI(false);
     document.getElementById('ai-stop')?.classList.add('hidden');
@@ -6324,15 +6330,34 @@ const AiPanel = (() => {
     ensureDshWatch(record.run.status !== 'active');
     return true;
   }
+  let visibleBackgroundCompletions = [];
   function renderBackgroundStatus() {
-    let status=document.getElementById('ai-background-status');
-    if(!status){status=document.createElement('div');status.id='ai-background-status';status.className='ai-run-state';document.getElementById('ai-runstate')?.after(status);}
-    status.replaceChildren();status.classList.toggle('hidden',!backgroundRuns.size);
-    for(const record of backgroundRuns.values()){
-      const button=document.createElement('button');button.className='tb-btn';
-      const name=record.run.identity.rootId.split(/[\\/]/).filter(Boolean).at(-1)||'独立会话';
-      const waiting=record.pending.some(event=>event.type==='tool')||record.pending.some(event=>event.type==='permission'||event.type==='question')||!!record.view.msgsEl.querySelector('.ai-dsh-permission button:not(:disabled), .ai-codex-question button:not(:disabled)');
-      button.textContent=name+' · '+(record.run.status==='active'?(waiting?'等待返回处理':'后台运行'):record.run.status==='completed'?'后台已完成':'后台已结束');
+    refreshHistInPlace();
+    let status = document.getElementById('ai-background-status');
+    if (!status) {
+      status = document.createElement('div');
+      status.id = 'ai-background-status';
+      status.className = 'hidden';
+      status.setAttribute('role', 'group');
+      status.setAttribute('aria-label', '已完成未查看的会话');
+      document.getElementById('ai-runstate')?.after(status);
+    }
+    const completions = [...backgroundRuns.values()].filter(({ run }) =>
+      run.status === 'completed' && historyCompletions.get(historyCompletionKey(run))?.unread);
+    // Active background runs can update frequently. Keep the buttons and scroll position while the list is unchanged.
+    if (completions.length === visibleBackgroundCompletions.length &&
+        completions.every((record, index) => record === visibleBackgroundCompletions[index])) return;
+    visibleBackgroundCompletions = completions;
+    status.classList.toggle('hidden', completions.length === 0);
+    const buttons = [];
+    for (const record of completions) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'tb-btn';
+      const name = document.createElement('span');
+      name.textContent = record.run.identity.rootId ? sessionRootLabel(record.run.identity.rootId) : '独立会话';
+      button.title = name.textContent + ' · ' + sessTitle(record.view.msgs);
+      button.append(name, ' · 后台已完成');
       button.onclick=async()=>{
         if(getConfig().engine!==record.run.engine)await setConfig({engine:record.run.engine});
         const access = record.view.dshSessionAccess;
@@ -6348,9 +6373,9 @@ const AiPanel = (() => {
         const entry = [...backgroundRuns.entries()].find(([, value]) => value === record);
         if (entry) restoreBackgroundRun({ sessionId: record.view.curSessionId, hit: { key: entry[0], record } });
       };
-      status.appendChild(button);
+      buttons.push(button);
     }
-    refreshHistInPlace();
+    status.replaceChildren(...buttons);
   }
   function beforeProjectChange(nextRoot) {
     const root = editorRoot();
@@ -6423,9 +6448,7 @@ const AiPanel = (() => {
       if(getConfig().engine==='antigravity')restoreAntigravityComposer();
       if(saved)usageSum=Object.assign(usageSum,saved.usage||{});
     }
-    // 只接管「仍在跑」的记录（2026-10-29）：已结束的记录要留在后台状态条上
-    // 让用户自己点，自动接回来会把当前会话刚渲染好的内容顶掉 ——
-    // 实测会让「已停止」这类提示消失。
+    // 恢复原会话时取回对应的后台记录，保留其完整消息。
     const restored=harness&&restoreBackgroundRun();
     renderBackgroundStatus();
     // 宿主恢复会立即清空消息区；先回放数千条缓存只会白建DOM，身份无法确认时仍由恢复分支回放只读缓存。
@@ -7632,7 +7655,7 @@ const AiPanel = (() => {
     resetDshWatch();
     sessionLoadTicket++;
     // 2026-11-01：新建对话也是「切换会话」，同样不能掐断正在跑的 DSH 任务。
-    // 挂起后它会出现在输入框上方的后台状态条里，点一下即可回去接着看。
+    // 从会话栏选回原会话可继续查看后台输出。
     releaseSessionPermissions(detachRun());
     persistSession();          // 先把当前这轮存进历史，再开新的
     const changingRoot = pathKey(sessionRoot()) !== pathKey(root);

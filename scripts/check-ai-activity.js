@@ -530,18 +530,27 @@ const watchdog = setTimeout(() => { console.error('FAIL activity fixture watchdo
       const hit = r && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
       return { attached: !!status?.isConnected, inInputBar: !!status?.closest('#ai-input-bar, .ai-input-bar'), shown: !!status && window.__activityShown(status), button: !!button && !button.disabled && !!hit && (button === hit || button.contains(hit)), text: status?.textContent };
     });
+    const openOriginal = async () => {
+      await page(() => App.showTool('sessions'));
+      await until(() => page(id => !!document.querySelector('[data-id="' + id + '"] .ai-hist-open'), original), 'parked run available in sessions');
+      await page(id => {
+        const button = document.querySelector('[data-id="' + id + '"] .ai-hist-open');
+        if (button.closest('.ai-hist-items').hidden) button.closest('.ai-hist-group').querySelector('[data-hist-toggle]').click();
+        document.querySelector('[data-id="' + id + '"] .ai-hist-open').click();
+      }, original);
+    };
     await native({ sessionUpdate: 'usage_update', used: 1600, size: 64000 });
     assertNoUsage(await panelMetrics());
     await page(() => document.getElementById('ai-new').click());
-    await until(() => page(() => AiPanel.__testParked().backgroundRuns === 1 && !!document.querySelector('#ai-background-status button')), 'parked run recovery button');
+    await until(() => page(() => AiPanel.__testParked().backgroundRuns === 1), 'parked run');
     await settled(); const parked = await backgroundStatus();
-    assert(parked.attached && parked.inInputBar && parked.shown && parked.button && /后台运行/.test(parked.text), JSON.stringify(parked));
+    assert(parked.attached && parked.inInputBar && !parked.shown && !parked.button, JSON.stringify(parked));
     win.webContents.send('ai:chunk', { context: pendingChat.context, messageId: 'fixture-background-body', delta: 'FIXTURE_BACKGROUND_APPEND：后台持续输出。\n' + '离线fixture消息滚动行。\n'.repeat(45) });
     await page(() => true); await settled();
     assert(!await page(() => document.getElementById('ai-msgs').textContent.includes('FIXTURE_BACKGROUND_APPEND')));
     await capture('fixture-background-recovery');
-    await page(() => document.querySelector('#ai-background-status button').click());
-    await until(() => page(id => AiPanel.aiState().current === id && AiPanel.__testParked().backgroundRuns === 0, original), 'background button restores exact run');
+    await openOriginal();
+    await until(() => page(id => AiPanel.aiState().current === id && AiPanel.__testParked().backgroundRuns === 0, original), 'session sidebar restores exact run');
     assert(await page(() => document.querySelector('.ai-tool-group') === window.__layoutOriginalGroup && document.getElementById('ai-msgs').textContent.includes('FIXTURE_BACKGROUND_APPEND')));
 
     const bindsBefore = ipcCalls.filter(call => call === 'bind').length;
@@ -569,8 +578,8 @@ const watchdog = setTimeout(() => { console.error('FAIL activity fixture watchdo
     assert.equal(ipcCalls.filter(call => call === 'bind').length, bindsBefore + 1);
     assertNoUsage(await panelMetrics());
     await capture('fixture-foreign-session');
-    assert((await backgroundStatus()).button, 'Recovery remains reachable while a foreign session is open');
-    await page(() => document.querySelector('#ai-background-status button').click());
+    assert(!(await backgroundStatus()).button, 'An active turn does not appear in the completion strip');
+    await openOriginal();
     await until(() => page(id => AiPanel.aiState().current === id && !document.getElementById('ai-input').readOnly && AiPanel.__testParked().backgroundRuns === 0, original), 'recover original run from foreign session');
     const restored = await page(() => {
       const input = document.getElementById('ai-input'), messages = document.getElementById('ai-msgs');

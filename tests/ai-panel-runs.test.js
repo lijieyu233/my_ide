@@ -700,12 +700,15 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     const aContext=f.calls[0].context;f.switchRoot(f.B);assert.equal(f.aborts.length,0);assert(!f.text().includes('A前言'));
     f.send('B项目任务');await until(()=>f.calls.length===2);f.chunk(1,'B正文');
     f.chunk(0,'A后台正文');await f.dshEvent({type:'native',context:aContext,update:{sessionUpdate:'tool_call',toolCallId:'background-read',title:'原生读取A',status:'completed',content:[{content:{text:'A文件输出'}}]}});
+    assert(f.element('#ai-background-status').classList.contains('hidden'),'运行时不占用完成提示栏');
     f.chunk(0,'A结论');f.done(0,{ok:true,text:'A前言A后台正文A结论'});
     assert(f.text().includes('B正文'));assert(!f.text().includes('A后台正文'));assert.equal(f.element('#ai-send').textContent,'⏹');
     const key='myide-ai-sessions:'+f.A+':dsh',history=JSON.parse(f.w.localStorage.getItem(key));
     assert(history[0].msgs.some(m=>m.content==='A前言A后台正文A结论'));assert(!JSON.stringify(history).includes('B正文'));
-    assert(f.element('#ai-background-status').textContent.includes('后台已完成'));
+    const strip=f.element('#ai-background-status');
+    assert.equal(strip.children.length,1);assert(strip.textContent.includes('后台已完成'));
     f.switchRoot(f.A);assert.equal(f.aborts.length,0);assert(f.text().includes('A后台正文'));assert(f.text().includes('A文件输出'));assert(f.text().includes('A结论'));assert(!f.text().includes('B正文'));
+    assert(strip.classList.contains('hidden'),'查看原会话后移除完成提示');
     assert.equal(f.element('#ai-send').textContent,'➤');f.switchRoot(f.B);assert(f.text().includes('B正文'));assert.equal(f.element('#ai-send').textContent,'⏹');
     f.stop();await until(()=>f.element('#ai-send').textContent==='➤');assert.equal(f.aborts.length,1);assert.equal(f.aborts[0].requestId,f.calls[1].context.requestId);
   });
@@ -1255,7 +1258,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     rows2.find(r=>r.textContent.includes('会话B')).click();await tick();await tick();
     assert.equal(f.element('#ai-send').textContent,'⏹','B 也仍在跑');
     assert.equal(f.aborts.length,0,'全程没有一次取消');
-    assert((f.element('#ai-background-status')||{textContent:''}).textContent.includes('后台运行'),'另一个会话在后台状态条可见');
+    assert(f.element('#ai-background-status').classList.contains('hidden'),'另一个运行中的会话仅在会话栏标记');
   });
   await test('当前查看置顶且独占勾选，后台运行只在状态栏标记，切换后选中身份同步',async()=>{
     const f=fixture();await f.w.AiPanel.setConfig({engine:'dsh'});f.hold=true;
@@ -1282,7 +1285,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     // ① 新建对话：任务转后台，不中断
     f.element('#ai-new').click();await tick();
     assert.equal(f.aborts.length,0,'新建对话不能中断');
-    assert(f.element('#ai-background-status').textContent.includes('后台运行'),'旧任务进后台状态条');
+    assert(f.element('#ai-background-status').classList.contains('hidden'),'运行中不显示完成提示');
 
     // ② 从历史切回原会话：接回同一个任务，仍在跑
     f.openSessions();
@@ -1301,7 +1304,7 @@ const test = async (name, fn) => { await fn(); passed++; console.log('  ok ' + n
     // ④ 回到 A 项目、从历史切回原会话：任务仍在后台跑，接回前没有任何 cancel
     f.switchRoot(f.A);await tick();
     assert.equal(f.aborts.length,0,'切回项目不中断');
-    assert(f.element('#ai-background-status').textContent.includes('后台运行'),'任务一直在后台跑');
+    assert.equal(f.w.AiPanel.__testParked().backgroundRuns,1,'任务一直在后台跑');
     f.openSessions();
     const again=[...f.w.document.querySelectorAll('.ai-hist-row')].find(r=>r.textContent.includes('长任务'));
     assert(again,'原会话仍在历史里');again.click();await tick();await tick();

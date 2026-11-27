@@ -115,6 +115,57 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  let releaseStatus;
  if (lifecycleOnly) statusGate = new Promise(resolve => { releaseStatus = resolve; });
  await js(async root=>{Object.defineProperty(document,'hidden',{value:false,configurable:true});await App.setRoot(root);App.showAi();await AiPanel.setConfig({engine:'codex',autoIdeContext:false,injectMyideRules:false});return true;},roots[0]);await until(()=>js(()=>AiPanel.aiState().dshState==='ready'),'Codex options');check('Codex connects in existing mode selector and shows native model',await js(()=>document.getElementById('ai-engine').value==='codex'&&document.getElementById('ai-model').textContent.includes('Codex offline fixture')));check('inspect never creates a thread or starts a turn',!fixture.requests.some(r=>['thread/start','turn/start'].includes(r.method)));
+ if (process.argv.includes('--codex-background-only')) {
+   const longRoot = path.join(temp, '这是一个适合验证提醒省略的超长项目目录名称'.repeat(3));
+   fs.mkdirSync(longRoot);
+   await js(async root=>{await App.setRoot(root);document.getElementById('ai-new').click();},longRoot);
+   const notices = () => js(()=>document.querySelectorAll('#ai-background-status button').length);
+   const sessions = [];
+   for (let i=0; i<5; i++) {
+     await until(()=>js(()=>AiPanel.aiState().dshSession?.canSend),'new session can send');
+     assert(await js(i=>AiPanel.ask('HOLD_CODEX handoff fixture '+(i+1)),i));
+     await until(()=>fixture.requests.filter(r=>r.method==='turn/start').length===i+1 &&
+       js(()=>AiPanel.aiState().tasks[0]?.status==='active'),'start background fixture turn');
+     await until(()=>typeof fixture.control.finishHandoff==='function','fixture can complete');
+     sessions.push({id:await js(()=>AiPanel.aiState().current),finish:fixture.control.finishHandoff});
+     fixture.control.finishHandoff = null;
+     await js(()=>document.getElementById('ai-new').click());
+   }
+   check('Running background turns do not appear in the completion strip',await notices()===0 &&
+     await js(()=>AiPanel.__testParked().backgroundRuns===5 && document.querySelector('#ai-background-status').classList.contains('hidden')));
+   for (const entry of sessions.slice(0,4)) entry.finish();
+   await until(async()=>await notices()===4,'four unread completed turns');
+   for (const width of [380,1100]) {
+     await js(width=>{ document.getElementById('ai-panel').style.width=width+'px'; },width);
+     const fits = await js(()=>{
+       const strip = document.getElementById('ai-background-status'), composer = document.querySelector('.ai-input-box');
+       const rect = strip.getBoundingClientRect(), input = composer.getBoundingClientRect();
+       const buttons = [...strip.querySelectorAll('button')];
+       const label = buttons[0].querySelector('span');
+       return Math.abs(input.left-rect.left)<1 && Math.abs(input.right-rect.right)<1 &&
+         buttons.every(button=>button.offsetTop===buttons[0].offsetTop && button.offsetWidth<=strip.clientWidth) &&
+         label.scrollWidth>label.clientWidth && getComputedStyle(label).textOverflow==='ellipsis' &&
+         getComputedStyle(strip).overflowX==='auto';
+     });
+     check('Completed notices stay in one row within the composer width at '+width,fits);
+     await capture('codex-background-completed-'+width);
+   }
+   await js(()=>{
+     const strip=document.getElementById('ai-background-status');
+     strip.scrollLeft=strip.scrollWidth;
+   });
+   check('Overflowed notices remain reachable by scrolling',await js(()=>document.getElementById('ai-background-status').scrollLeft>0));
+   for (let i=0; i<4; i++) {
+     await js(()=>document.querySelector('#ai-background-status button').click());
+     await until(async()=>await notices()===3-i &&
+       await js(id=>AiPanel.aiState().current===id && document.getElementById('ai-msgs').textContent.includes('交接前本轮已结束'),sessions[i].id),'open matching completed reply');
+   }
+   check('Viewing a completed reply removes only that notice and hides the empty strip',await js(()=>
+     AiPanel.__testParked().backgroundRuns===1 && document.querySelector('#ai-background-status').classList.contains('hidden')));
+   await finish(0);
+   return;
+ }
+
  if (process.argv.includes('--codex-skills-only')) {
    const input = value => js(value => {
      const field = document.getElementById('ai-input');
@@ -1341,7 +1392,9 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  const interruptsBeforeViewChange=fixture.requests.filter(r=>r.method==='turn/interrupt').length;
  await js(id=>document.querySelector('[data-id="codex:'+id+'"] .ai-hist-open').click(),late.id);
  await until(()=>js(id=>AiPanel.aiState().current==='codex:'+id&&AiPanel.aiState().dshState==='ready',late.id),'leave an active cross-project turn');
- await js(()=>document.querySelector('#ai-background-status button').click());
+ check('An active background turn leaves no completion notice above the composer',await js(()=>
+   !document.querySelector('#ai-background-status button')));
+ await js(id=>document.querySelector('[data-id="codex:'+id+'"] .ai-hist-open').click(),externalId);
  await until(()=>js(id=>AiPanel.aiState().current==='codex:'+id&&AiPanel.aiState().tasks[0]?.status==='active',externalId),'reattach active cross-project turn');
  check('Returning to a background Codex turn does not switch projects or restart the turn',
    fixture.requests.filter(r=>r.method==='turn/interrupt').length===interruptsBeforeViewChange&&
