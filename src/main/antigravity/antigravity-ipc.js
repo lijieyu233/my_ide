@@ -72,7 +72,7 @@ function runtimeState(result) {
 function createIpc({ ipcMain, service, sender, readView, assertRun, openApproval, pilotRoot, desktopPath, openDesktop }) {
   const activeReviews = new Set();
 
-  async function currentTarget(event, cfg, requested = {}, requireSession = true, allowOtherMode = false) {
+  async function currentTarget(event, cfg, requested = {}, { requireSession = true, allowOtherMode = false, connectionOnly = false } = {}) {
     sender(event);
     if (cfg?.engine !== ENGINE || cfg.antigravityEnabled !== true) {
       throw reject('ANTIGRAVITY_DISABLED', '请先在 AI 助手设置中启用 Antigravity');
@@ -81,7 +81,8 @@ function createIpc({ ipcMain, service, sender, readView, assertRun, openApproval
     if (!view?.page || !allowOtherMode && view.engine !== ENGINE) {
       throw reject('INVALID_ANTIGRAVITY_TARGET', 'Antigravity 会话视图已变化');
     }
-    if (!view.page.projectContext || view.page.id !== 'project') {
+    const projectPage = view.page.id === 'project' && view.page.projectContext === true;
+    if (!projectPage && !connectionOnly) {
       throw reject('INVALID_ANTIGRAVITY_WORKSPACE', 'Antigravity 需要在本地项目中使用');
     }
     if (requested.sessionId !== undefined && requested.sessionId !== view.sessionId
@@ -97,7 +98,7 @@ function createIpc({ ipcMain, service, sender, readView, assertRun, openApproval
       rootId: view.rootId,
       workspaceRoot: root,
       projectId,
-      page: { id: view.page.id, projectContext: true, projectId },
+      page: { id: view.page.id, projectContext: projectPage, projectId },
       sessionId: identifier(view.sessionId || (!requireSession ? 'antigravity-catalog' : ''), '会话标识无效'),
     };
   }
@@ -129,17 +130,18 @@ function createIpc({ ipcMain, service, sender, readView, assertRun, openApproval
     return { ok: true, rootDir: await pilotDirectory(pilotRoot(), true) };
   });
   register('connect', async (event, cfg, target) => {
-    const context = await currentTarget(event, cfg, target, false, true);
+    const context = await currentTarget(event, cfg, target, { requireSession: false, allowOtherMode: true, connectionOnly: true });
     if (target?.reconnect === true) await service.disconnect(cfg, context);
     return runtimeState(await service.connect(cfg, context));
   });
   register('options', async (event, cfg, sessionId, apply) => {
-    const context = await currentTarget(event, cfg, { sessionId }, false);
-    if (apply && typeof apply === 'object') return runtimeState(await service.setConfig(cfg, context, apply));
+    const applying = apply && typeof apply === 'object';
+    const context = await currentTarget(event, cfg, { sessionId }, { requireSession: false, connectionOnly: !applying });
+    if (applying) return runtimeState(await service.setConfig(cfg, context, apply));
     return runtimeState(await service.inspect(cfg, context));
   });
   register('sessions', async (event, cfg, target, cursor) => service.listHistory(
-    cfg, await currentTarget(event, cfg, target, false), { cursor }
+    cfg, await currentTarget(event, cfg, target, { requireSession: false }), { cursor }
   ));
   register('history', async (event, cfg, target) => {
     const context = await currentTarget(event, cfg, target);

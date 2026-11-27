@@ -51,7 +51,7 @@ async function fixture(t) {
   };
 }
 
-test('试用须显式启用，拒绝子页面及项目和会话失配', async t => {
+test('试用须显式启用，拒绝不可信调用及项目和会话失配', async t => {
   const f = await fixture(t);
   assert.equal((await f.invoke('pilot', {})).errorCode, 'ANTIGRAVITY_DISABLED');
   assert.equal((await f.invoke('pilot', f.cfg)).rootDir, path.join(f.root, 'pilot'));
@@ -60,10 +60,21 @@ test('试用须显式启用，拒绝子页面及项目和会话失配', async t 
   assert.equal((await f.invoke('options', f.cfg, 'stale-session')).ok, false);
   assert.equal(f.calls.length, 0);
   assert.equal((await f.invoke('connect', f.cfg, f.view)).connected, true);
-  f.view.page = { id: 'reader', projectContext: false };
-  assert.equal((await f.invoke('connect', f.cfg)).errorCode, 'INVALID_ANTIGRAVITY_WORKSPACE');
-  assert.equal(f.calls.length, 1);
   await assert.rejects(workspaceDirectory('remote://example/path'), { code: 'INVALID_ANTIGRAVITY_WORKSPACE' });
+});
+
+test('工具页可以连接和查看状态，项目级操作仍受页面约束', async t => {
+  const f = await fixture(t);
+  f.view.page = { id: 'tasks', projectContext: false };
+  assert.equal((await f.invoke('connect', f.cfg)).connected, true);
+  await f.invoke('options', f.cfg, 'session-a');
+  assert.deepEqual(f.calls.map(([method, context]) => [method, context.page.id, context.page.projectContext]),
+    [['connect', 'tasks', false], ['inspect', 'tasks', false]]);
+  assert.equal((await f.invoke('options', f.cfg, 'session-a', { configId: 'model' })).errorCode, 'INVALID_ANTIGRAVITY_WORKSPACE');
+  assert.equal((await f.invoke('history', f.cfg, f.view)).errorCode, 'INVALID_ANTIGRAVITY_WORKSPACE');
+  assert.equal((await f.invoke('input', f.cfg, f.view, { kind: 'enqueue' })).errorCode, 'INVALID_ANTIGRAVITY_WORKSPACE');
+  f.view.rootId = 'remote://example/path';
+  assert.equal((await f.invoke('connect', f.cfg)).errorCode, 'INVALID_ANTIGRAVITY_WORKSPACE');
 });
 
 test('主窗口不能回传批准选项，可信确认仅使用该请求的原生单次选项', async t => {

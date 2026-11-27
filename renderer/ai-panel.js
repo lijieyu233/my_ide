@@ -1412,7 +1412,9 @@ const AiPanel = (() => {
       const sandboxUnavailable = state.sandbox?.available === false || ['unavailable', 'unsupported'].includes(state.sandbox?.status || state.sandbox?.state);
       const access = readOnly ? '只读' : sandboxUnavailable ? '无沙箱' : sandbox;
       info.textContent = dshOptionsState === 'loading' ? '连接中…' : state.ok ? '已连接 · ' + access : '未连接';
-      const accessNote = state.readOnly ? '当前会话只读' : readOnly ? '当前项目只读，可在设置中打开试用目录' : '';
+      const accessNote = state.readOnly ? '当前会话只读'
+        : readOnly && !currentPage().projectContext ? '当前页面只读，回到项目页可使用此工程的可用功能'
+        : readOnly ? '当前项目只读，可在设置中打开试用目录' : '';
       info.title = ['Antigravity', state.error, state.permission?.label || '原生权限待确认', sandbox, state.sandbox?.reason, accessNote, dshSessionAccess?.error].filter(Boolean).join('\n');
     }
     syncPermBtn();
@@ -1430,7 +1432,8 @@ const AiPanel = (() => {
     try { result = await window.myIDE.ai.antigravityOptions(cfg,curSessionId,apply); }
     catch(error) { result = {ok:false,error:error.message}; }
     if (getConfig().engine !== 'antigravity' || ticket !== dshOptionsTicket || key !== antigravityStateKey()) return;
-    result={...antigravityStates.get(key),...result};antigravityStates.set(key,result);
+    result = {...antigravityStates.get(key), error: '', errorCode: '', ...result};
+    antigravityStates.set(key, result);
     dshOptionsState = result?.ok ? 'ready' : 'error';
     dshConfigOptions = result?.ok ? antigravityOptions(result.configOptions) : [];
     if (result?.ok && dshSessionAccess?.state !== 'loading') dshSessionAccess = {...dshSessionAccess,

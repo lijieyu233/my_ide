@@ -71,15 +71,16 @@ function createService(options = {}) {
   const store = options.store || createStore(storeFile, options.storeOptions);
   const connections = new Map(), starting = new Map(), attached = new Map(), runs = new Map(), nativeRuns = new Map(), locks = new Map(), replay = new Map(), blocked = new Map(), queueNotified = new Set(), closing = new Set();
   let disposed = false, generation = 0;
-  async function identity(context) {
+  async function identity(context, { connectionOnly = false } = {}) {
     if (!opaqueId(context?.sessionId) || context.engine && context.engine !== 'antigravity') throw error('Antigravity 会话身份无效', 'AGY_IDENTITY');
-    if (context.page?.projectContext === false || ['reader', 'bookshelf'].includes(context.page?.id)) throw error('Antigravity 首版仅支持本地项目会话', 'AGY_SCOPE');
+    const projectPage = context.page?.projectContext !== false && !['reader', 'bookshelf'].includes(context.page?.id);
+    if (!projectPage && !connectionOnly) throw error('Antigravity 首版仅支持本地项目会话', 'AGY_SCOPE');
     const projectId = context.projectId || context.page?.projectId || context.page?.id;
     if (!opaqueId(projectId)) throw error('Antigravity 项目归属未确认', 'AGY_SCOPE');
     const cwd = await canonical(context.workspaceRoot || context.rootId);
     if (context.rootId && norm(await canonical(context.rootId)) !== norm(cwd)) throw error('Antigravity 项目目录身份不一致', 'AGY_SCOPE');
     const root = norm(cwd), key = JSON.stringify(['antigravity', projectId, root, context.sessionId]);
-    return { projectId, cwd, root, key };
+    return { projectId, cwd, root, key, projectPage };
   }
   async function serial(key, task) {
     const next = (locks.get(key) || Promise.resolve()).catch(() => {}).then(task); locks.set(key, next);
@@ -284,12 +285,12 @@ function createService(options = {}) {
     return verified && conn.capabilities.promptCapabilities?.image === true;
   }
   async function featureFlags(info, conn, readOnly = false) {
-    const executionAllowed = !readOnly && !!options.allowExecution && !!await options.allowExecution(info.cwd);
+    const executionAllowed = info.projectPage && !readOnly && !!options.allowExecution && !!await options.allowExecution(info.cwd);
     const record = recordOf(info), pending = record?.unknown || record?.configUnknown || blocked.has(info.key) || !!store.snapshot().creations?.[info.key];
     return { executionAllowed, capabilities: { ...clone(conn.capabilities), send: executionAllowed && !pending, config: executionAllowed && !pending, queue: executionAllowed, steering: false, goal: executionAllowed && !!record?.id && conn.goalCommands.has(record.id), image: imageSupported(conn) }, readOnly };
   }
   async function connect(cfg, context) {
-    const info = await identity(context), conn = await connectInfo(cfg, info);
+    const info = await identity(context, { connectionOnly: true }), conn = await connectInfo(cfg, info);
     return { ok: true, connected: true, protocolVersion: 1, generation: conn.generation, agentInfo: conn.agentInfo, capabilities: conn.capabilities, authentication: conn.authentication, steering: false, ...await featureFlags(info, conn) };
   }
   async function status(executablePath) {
@@ -299,7 +300,7 @@ function createService(options = {}) {
     } catch (cause) { return { ok: false, available: false, connected: false, error: cause.message, errorCode: cause.code }; }
   }
   async function disconnect(cfg, context) {
-    const info = await identity(context); await store.load();
+    const info = await identity(context, { connectionOnly: true }); await store.load();
     const conn = connections.get(info.root);
     if (starting.has(info.root) || closing.has(info.root) || conn && connectionBusy(conn)) throw error('Antigravity 当前项目仍有运行、恢复或待核对提交，请先完成处理', 'AGY_BUSY');
     if (conn) await closeConnection(conn);
@@ -389,7 +390,7 @@ function createService(options = {}) {
     });
   }
   async function inspect(cfg, context) {
-    const info = await identity(context); await store.load();
+    const info = await identity(context, { connectionOnly: true }); await store.load();
     const conn = await connectInfo(cfg, info), record = recordOf(info);
     if (!record) return { ok: true, draft: true, configOptions: [], creationUnknown: !!store.snapshot().creations?.[info.key], ...await featureFlags(info, conn) };
     assertRecord(record, info, context);

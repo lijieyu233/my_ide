@@ -93,6 +93,14 @@ async function test(name, fn) { await fn(); passed++; console.log('PASS ' + name
         assert(!f.calls.some(call => call.method === 'session/new'));
 
         allowed = true;
+        const toolPage = { ...c, page: { id: 'tasks', projectContext: false } };
+        const inspected = await f.service.inspect({}, toolPage);
+        assert.equal(inspected.ok, true);
+        assert.equal(inspected.executionAllowed, false);
+        assert.equal(inspected.capabilities.send, false);
+        assert.equal(inspected.capabilities.config, false);
+        assert.equal(inspected.capabilities.queue, false);
+        await assert.rejects(f.service.listHistory({}, toolPage), { code: 'AGY_SCOPE' });
         assert((await f.send()).complete);
         allowed = false;
         assert.equal((await f.service.inspect({}, c)).capabilities.config, false);
