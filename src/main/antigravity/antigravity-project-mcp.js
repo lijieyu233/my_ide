@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const name = 'myide_project_tree';
 const definition = Object.freeze({
   name,
-  description: 'Read the file and directory names in the current MyIDE trial project root. This does not read file contents.',
+  description: 'Read the file and directory names in the current MyIDE project root. This does not read file contents.',
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 });

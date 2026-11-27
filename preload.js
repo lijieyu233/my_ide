@@ -262,7 +262,7 @@ contextBridge.exposeInMainWorld('myIDE', {
       antigravityStatus: 'status', antigravityConnect: 'connect', antigravityOptions: 'options',
       antigravitySessions: 'sessions', antigravityHistory: 'history', antigravityInput: 'input',
       antigravityQueue: 'queue', antigravityReview: 'review', antigravityQuestionResult: 'question-result',
-      antigravityPilot: 'pilot', antigravityOpenApp: 'open-app',
+      antigravityOpenApp: 'open-app',
     }).map(([method, operation]) => [method, (...args) => ipcRenderer.invoke('ai:antigravity-' + operation, ...args)])),
     onAntigravityEvent: callback => {
       const listener = (_event, value) => callback(value);

@@ -14,7 +14,9 @@ const verifyMcp = process.argv.includes('--confirm-live-mcp');
 const live = verifyMcp || process.argv.includes('--confirm-live-model');
 const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myide-antigravity-ui-')));
 const profile = path.join(temp, 'profile');
+const workspace = path.join(temp, '当前工程');
 const unrelated = path.join(temp, '编辑目录');
+fs.mkdirSync(workspace);
 fs.mkdirSync(unrelated);
 // Isolate the MyIDE settings mirror without changing the official CLI login environment.
 os.homedir = () => temp;
@@ -106,22 +108,18 @@ const watchdog = setTimeout(() => { console.error('Antigravity UI watchdog expir
   await until(() => page(() => !!window.App && !!window.AiPanel && !!document.getElementById('btn-open').onclick), 'app init');
   win.setContentSize(1440, 900);
 
-  const pilot = await page(async projectMcpEnabled => {
+  await page(async (currentProject, projectMcpEnabled) => {
     Object.defineProperty(document, 'hidden', { value: false, configurable: true });
-    const cfg = { engine: 'antigravity', antigravityEnabled: true, antigravityProjectMcpEnabled: projectMcpEnabled, autoIdeContext: false, injectMyideRules: false };
-    const pilot = await window.myIDE.ai.antigravityPilot(cfg);
-    if (!pilot.ok) return pilot;
-    await App.setRoot(pilot.rootDir);
+    await App.setRoot(currentProject);
     App.showAi();
     const engine = document.getElementById('ai-engine');
     const choice = engine.querySelector('[value="antigravity"]');
-    if (choice.hidden || choice.disabled || AiPanel.getConfig().antigravityEnabled === true) throw Error('Antigravity 模式首次显示不正确');
-    await AiPanel.setConfig({ antigravityProjectMcpEnabled: projectMcpEnabled });
+    if (choice.hidden || choice.disabled || AiPanel.getConfig().engine === 'antigravity') throw Error('Antigravity 模式首次显示不正确');
+    await AiPanel.setConfig({ antigravityProjectMcpEnabled: projectMcpEnabled, autoIdeContext: false, injectMyideRules: false });
     engine.value = 'antigravity';
     await engine.onchange();
-    return pilot;
-  }, verifyMcp);
-  assert.equal(pilot.ok, true, JSON.stringify(pilot));
+  }, workspace, verifyMcp);
+  assert.equal(path.resolve(await page(() => App.root)), workspace);
   const storage = await page(() => window.myIDE.settings.probe());
   assert.equal(storage.userData, profile);
   assert.equal(storage.mirror, path.join(temp, '.myide', 'settings.json'));
@@ -129,17 +127,17 @@ const watchdog = setTimeout(() => { console.error('Antigravity UI watchdog expir
   assert.equal(await page(() => document.getElementById('ai-engine').value), 'antigravity');
   if (verifyMcp) {
     const filename = 'ACP_TREE_FIXTURE_' + randomBytes(8).toString('hex').toUpperCase() + '.txt';
-    await fs.promises.writeFile(path.join(pilot.rootDir, filename), 'MyIDE isolated MCP fixture');
+    await fs.promises.writeFile(path.join(workspace, filename), 'MyIDE isolated MCP fixture');
     await page(() => {
       void AiPanel.ask('Call the MCP tool whose name ends in myide_project_tree. Reply only with the full filename beginning ACP_TREE_FIXTURE_ from its result. Do not invoke another tool.');
     });
-    await until(() => page(() => [...document.querySelectorAll('.ai-dsh-permission')].some(card => card.textContent.includes('读取当前试用项目树'))), 'official MCP permission', 60000);
+    await until(() => page(() => [...document.querySelectorAll('.ai-dsh-permission')].some(card => card.textContent.includes('读取当前项目树'))), 'official MCP permission', 60000);
     await page(() => [...document.querySelectorAll('.ai-dsh-permission')].find(card =>
-      card.textContent.includes('读取当前试用项目树')).querySelector('button').click());
+      card.textContent.includes('读取当前项目树')).querySelector('button').click());
     const approval = await until(async () => {
       const view = win.contentView.children.find(item => item.webContents?.getURL().includes('ai-approval.html'));
       return view && await view.webContents.executeJavaScript(
-        'document.body.textContent.includes("读取当前试用项目树") && !document.getElementById("accept").hidden'
+        'document.body.textContent.includes("读取当前项目树") && !document.getElementById("accept").hidden'
       ) ? view : null;
     }, 'trusted official MCP review');
     await approval.webContents.executeJavaScript('document.getElementById("accept").click()');
@@ -222,7 +220,7 @@ const watchdog = setTimeout(() => { console.error('Antigravity UI watchdog expir
   await until(() => page(() => document.getElementById('ai-engine').value === 'standard'), 'standard mode restored');
   assert.equal(network, 0);
   assert(BrowserWindow.getAllWindows().every(window => !window.isVisible()));
-  assert.equal(await page(() => AiPanel.getConfig().antigravityEnabled), true);
+  assert.equal(await page(() => AiPanel.getConfig().engine), 'standard');
   console.log('PASS standard mode switch, hidden production renderer, and offline profile isolation');
   await finish(0);
 })().catch(async error => {

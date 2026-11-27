@@ -13,7 +13,7 @@ function fixture(settings = {}) {
   const root = settings.root || temp;
   const context = (extra = {}) => ({ engine: 'antigravity', requestId: 'request-' + ++sequence, sessionId: 'local', rootId: root, workspaceRoot: root, projectId: 'project-a', generation: sequence, round: 0, page: { id: 'project', projectContext: true }, ...extra });
   const options = {
-    allowExecution: () => true, idleWarningMs: 0, ...settings.options,
+    idleWarningMs: 0, ...settings.options,
     connectFactory: async ({ generation, onRequest }) => {
       const rpc = new EventEmitter(); rpc.closed = false; rpc.generation = generation;
       rpc.update = (id, update, gen = generation) => rpc.emit('notification', { method: 'session/update', params: { sessionId: id, update }, generation: gen });
@@ -82,18 +82,11 @@ async function test(name, fn) { await fn(); passed++; console.log('PASS ' + name
         assert.equal((await f.service.inspect({}, c)).capabilities.goal, false);
       } finally { await f.service.dispose(); }
     });
-    await test('execution gate is main-owned and ignores renderer config', async () => {
-      let allowed = false;
-      const f = fixture({ options: { allowExecution: () => allowed } });
+    await test('ordinary local projects can send while tools outside the project page cannot dispatch', async () => {
+      const f = fixture();
       try {
-        const c = f.context();
-        assert.equal((await f.service.inspect({}, c)).executionAllowed, false);
-        const result = await f.service.chat({ antigravityExecutionVerified: true }, [{ role: 'user', content: 'do it' }], [], c);
-        assert.equal(result.errorCode, 'AGY_EXECUTION_UNVERIFIED');
-        assert(!f.calls.some(call => call.method === 'session/new'));
-
-        allowed = true;
-        const toolPage = { ...c, page: { id: 'tasks', projectContext: false } };
+        const context = f.context();
+        const toolPage = { ...context, page: { id: 'tasks', projectContext: false } };
         const inspected = await f.service.inspect({}, toolPage);
         assert.equal(inspected.ok, true);
         assert.equal(inspected.executionAllowed, false);
@@ -101,11 +94,15 @@ async function test(name, fn) { await fn(); passed++; console.log('PASS ' + name
         assert.equal(inspected.capabilities.config, false);
         assert.equal(inspected.capabilities.queue, false);
         await assert.rejects(f.service.listHistory({}, toolPage), { code: 'AGY_SCOPE' });
-        assert((await f.send()).complete);
-        allowed = false;
-        assert.equal((await f.service.inspect({}, c)).capabilities.config, false);
-        await assert.rejects(f.service.setConfig({}, c, { configId: 'model', value: 'alternate' }), cause => cause.code === 'AGY_EXECUTION_UNVERIFIED');
-        assert(!f.calls.some(call => call.method === 'session/set_config_option'));
+        await assert.rejects(f.service.setConfig({}, toolPage, { configId: 'model' }), { code: 'AGY_SCOPE' });
+        assert.equal((await f.service.chat({}, [{ role: 'user', content: 'do it' }], [], toolPage)).errorCode, 'AGY_SCOPE');
+        assert(!f.calls.some(call => call.method === 'session/new'));
+
+        const project = await f.service.inspect({}, context);
+        assert.equal(project.executionAllowed, true);
+        assert.equal(project.capabilities.send, true);
+        assert((await f.send(context)).complete);
+        assert.equal(f.calls.find(call => call.method === 'session/new').params.cwd, await fs.realpath(context.workspaceRoot));
       } finally { await f.service.dispose(); }
     });
     await test('unsupported scopes and missing directories are rejected before launching', async () => {
@@ -238,7 +235,7 @@ async function test(name, fn) { await fn(); passed++; console.log('PASS ' + name
         else if (req.id === 'approve-native') { permissionResult = req.result; send({ method: 'session/update', params: { sessionId: 'real-transport-id', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'real transport answer' } } } }); send({ id: promptId, result: { stopReason: 'end_turn' } }); }
       } });
       const runtime = { resolveAgyExecutable: async () => ({ executablePath: 'fixture' }), spawnAgy: () => child };
-      const service = createService({ runtime, allowExecution: () => true, idleWarningMs: 0 }); const c = fixture().context(), events = [];
+      const service = createService({ runtime, idleWarningMs: 0 }); const c = fixture().context(), events = [];
       try { const chat = service.chat({}, [{ role: 'user', content: 'test' }], [], c, event => events.push(event)); await until(() => events.some(e => e.type === 'permission')); const id = events.find(e => e.type === 'permission').id; assert(service.permissionRequest(c, id).canAllow); assert(service.permissionResult(c, id, 'once').ok); const result = await chat; assert.equal(result.text, 'real transport answer'); assert(result.complete); assert.equal(permissionResult.outcome.optionId, 'once'); } finally { await service.dispose(); assert.equal(killed, 1); }
     });
     await test('catalog preserves local origin ID from new records and legacy mapping keys', async () => {

@@ -1,5 +1,5 @@
 const path = require('node:path');
-const { lstat, mkdir, realpath, stat } = require('node:fs/promises');
+const { realpath, stat } = require('node:fs/promises');
 const { sandboxStatus } = require('./agy-runtime');
 
 const ENGINE = 'antigravity';
@@ -30,23 +30,6 @@ async function workspaceDirectory(value) {
   }
 }
 
-function sameDirectory(left, right) {
-  return path.relative(left, right) === '';
-}
-
-async function pilotDirectory(requested, create = false) {
-  const parent = path.dirname(requested);
-  if (create) await mkdir(parent, { recursive: true });
-  const expected = path.join(await workspaceDirectory(parent), path.basename(requested));
-  if (create) await mkdir(expected, { recursive: true });
-  const info = await lstat(expected);
-  const actual = await workspaceDirectory(expected);
-  if (info.isSymbolicLink() || !sameDirectory(expected, actual)) {
-    throw reject('INVALID_ANTIGRAVITY_WORKSPACE', '试用目录不能重定向到其他路径');
-  }
-  return actual;
-}
-
 function failure(error) {
   // Unrecognized errors may originate in the CLI, filesystem, or transport.
   if (typeof error?.code === 'string' && /^[A-Z0-9_]{1,80}$/.test(error.code)
@@ -69,13 +52,13 @@ function runtimeState(result) {
   };
 }
 
-function createIpc({ ipcMain, service, sender, readView, assertRun, openApproval, pilotRoot, desktopPath, openDesktop }) {
+function createIpc({ ipcMain, service, sender, readView, assertRun, openApproval, desktopPath, openDesktop }) {
   const activeReviews = new Set();
 
   async function currentTarget(event, cfg, requested = {}, { requireSession = true, allowOtherMode = false, connectionOnly = false } = {}) {
     sender(event);
-    if (cfg?.engine !== ENGINE || cfg.antigravityEnabled !== true) {
-      throw reject('ANTIGRAVITY_DISABLED', '请先在 AI 助手设置中启用 Antigravity');
+    if (cfg?.engine !== ENGINE) {
+      throw reject('ANTIGRAVITY_DISABLED', '请将接入方式切换为 Antigravity');
     }
     const view = await readView(event);
     if (!view?.page || !allowOtherMode && view.engine !== ENGINE) {
@@ -116,7 +99,6 @@ function createIpc({ ipcMain, service, sender, readView, assertRun, openApproval
 
   register('status', async (_event, cfg) => ({
     ...runtimeState(await service.status(cfg?.antigravityPath)),
-    enabled: cfg?.antigravityEnabled === true,
     desktopAvailable: Boolean(await desktopPath?.()),
   }));
   register('open-app', async () => {
@@ -124,10 +106,6 @@ function createIpc({ ipcMain, service, sender, readView, assertRun, openApproval
     if (!executable) throw reject('ANTIGRAVITY_APP_NOT_FOUND', '未找到本机 Antigravity 桌面应用');
     if (await openDesktop(executable)) throw reject('ANTIGRAVITY_APP_OPEN_FAILED', '无法打开 Antigravity 桌面应用');
     return { ok: true, launchRequested: true };
-  });
-  register('pilot', async (_event, cfg) => {
-    if (cfg?.antigravityEnabled !== true) throw reject('ANTIGRAVITY_DISABLED', '请先启用 Antigravity 试用');
-    return { ok: true, rootDir: await pilotDirectory(pilotRoot(), true) };
   });
   register('connect', async (event, cfg, target) => {
     const context = await currentTarget(event, cfg, target, { requireSession: false, allowOtherMode: true, connectionOnly: true });
@@ -178,7 +156,7 @@ function createIpc({ ipcMain, service, sender, readView, assertRun, openApproval
       const accept = request.choices.find(choice => choice.kind === 'allow_once');
       const decline = request.choices.find(choice => choice.kind === 'reject_once');
       const title = request.projectTree ? '读取当前试用项目树' : request.toolCall?.title || '工具操作';
-      const details = request.projectTree ? ['读取当前试用目录的文件和子目录名称，最多 250 项。'] : [];
+      const details = request.projectTree ? ['读取当前项目的文件和子目录名称，最多 250 项。'] : [];
       const raw = request.toolCall?.rawInput;
       for (const field of ['command', 'cmd', 'script', 'patch', 'diff', 'content', 'path', 'file_path', 'filePath', 'url']) {
         if (typeof raw?.[field] === 'string') details.push(field + '\n' + raw[field]);
@@ -215,4 +193,4 @@ function createIpc({ ipcMain, service, sender, readView, assertRun, openApproval
   return { currentTarget };
 }
 
-module.exports = { ENGINE, createIpc, failure, pilotDirectory, sameDirectory, workspaceDirectory };
+module.exports = { ENGINE, createIpc, failure, workspaceDirectory };

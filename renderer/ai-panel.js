@@ -267,7 +267,7 @@ const AiPanel = (() => {
   const dshModelUnavailable = () => dshConfigOptions.find(option=>option.id==='model')?.available === false;
   const dshCanSend = (codexIdle = false) => getConfig().engine==='antigravity' ? antigravityCanSend() : !nativeEngine() || (codexIdle || !codexObservedRunning()) && (getConfig().engine!=='codex'||dshOptionsState==='ready') && !historyReplayJob && (!dshSessionAccess || dshSessionAccess.state === 'ready' && !dshScopeMismatch()) && (codexDesktopOwnsCurrentSession() || !dshModelUnavailable());
   function rejectDshSend(codexIdle = false) {
-    if(getConfig().engine==='antigravity'){if(antigravityCanSend())return false;MI.toast(dshSessionAccess?.error || antigravityState().error || (antigravityState().executionAllowed===false?'当前项目只读，请在设置中打开 Antigravity 试用目录':'Antigravity 尚未确认连接和发送能力'),'err');return true;}
+    if(getConfig().engine==='antigravity'){if(antigravityCanSend())return false;MI.toast(dshSessionAccess?.error || antigravityState().error || (antigravityState().executionAllowed===false?'当前页面无法发送 Antigravity 消息':'Antigravity 尚未确认连接和发送能力'),'err');return true;}
     if (!codexIdle && codexObservedRunning()) return true;
     if (codexSelectedHistoryItem()?.archived) {
       MI.toast('请先取消归档再发送', 'err');
@@ -716,7 +716,7 @@ const AiPanel = (() => {
     closePermPop();
     if(getConfig().engine==='antigravity'){
       const state=antigravityState(),pop=document.createElement('div');pop.className='ai-perm-pop';pop.dataset.scope=inputViewKey();
-      for(const text of [state.permission?.label || '原生权限待确认',antigravitySandboxLabel(state),state.executionAllowed===false?'当前项目只读':'原生工具请求通过单次审批确认']){const row=document.createElement('div');row.className='ai-perm-note';row.textContent=text;pop.append(row);}
+      for(const text of [state.permission?.label || '原生权限待确认',antigravitySandboxLabel(state),state.readOnly?'当前会话只读':state.executionAllowed===false?'当前页面只读':'按原生工具的授权请求确认']){const row=document.createElement('div');row.className='ai-perm-note';row.textContent=text;pop.append(row);}
       panel.append(pop);permPop=pop;document.getElementById('ai-perm')?.setAttribute('aria-expanded','true');return;
     }
     const segHtml = (key, cur, labels = myidePermissionLabels) => {
@@ -1343,9 +1343,8 @@ const AiPanel = (() => {
     try {
       const config={ autoIdeContext:false, injectMyideRules:false, ...JSON.parse(localStorage.getItem(LS_CFG) || '{}'), ...(authorityConfig || {}) };
       // ACP 的旧模型即使在桌面目录里仍然可用，也不能自动覆盖用户原生 DSH 的选择。
-      if(config.engine==='antigravity'&&config.antigravityEnabled!==true)config.engine='standard';
       if(config.dshConnection!=='desktop-native-v1'){delete config.dshModel;delete config.dshReasoning;}
-      return backgroundView?.run.engine==='antigravity' ? {...config,...backgroundView.run.config,engine:'antigravity',antigravityEnabled:config.antigravityEnabled===true} : config;
+      return backgroundView?.run.engine==='antigravity' ? {...config,...backgroundView.run.config,engine:'antigravity'} : config;
     } catch { return authorityConfig || {}; }
   }
   // setConfig 改为合并：局部更新（如只切模型）不丢 apiKey 等其他字段
@@ -1395,7 +1394,7 @@ const AiPanel = (() => {
   }
   function antigravityCanSend() {
     if(backgroundView){try{const live=JSON.parse(localStorage.getItem(LS_CFG)||'{}');if((live.antigravityPath || '')!==(backgroundView.run.config?.antigravityPath || ''))return false;}catch{return false;}}
-    return getConfig().antigravityEnabled === true && antigravityState().executionAllowed === true &&
+    return antigravityState().executionAllowed === true &&
       antigravityCap('send') && dshOptionsState === 'ready' && !historyReplayJob && !currentRun?.antigravityStopping &&
       !dshScopeMismatch() && (!dshSessionAccess || dshSessionAccess.state === 'ready') &&
       !loadSessions().find(item=>item.id===curSessionId)?.archived;
@@ -1412,7 +1411,7 @@ const AiPanel = (() => {
       info.textContent = dshOptionsState === 'loading' ? '连接中…' : state.ok ? '已连接 · ' + access : failure;
       const accessNote = state.readOnly ? '当前会话只读'
         : readOnly && !currentPage().projectContext ? '当前页面只读，回到项目页可使用此工程的可用功能'
-        : readOnly ? '当前项目只读，可在设置中打开试用目录' : '';
+        : readOnly ? '当前会话只读' : '';
       info.title = ['Antigravity', state.error, state.permission?.label || '原生权限待确认', sandbox, state.sandbox?.reason, accessNote, dshSessionAccess?.error].filter(Boolean).join('\n');
     }
     syncPermBtn();
@@ -7704,8 +7703,7 @@ const AiPanel = (() => {
   function init() {
     const engine = document.getElementById('ai-engine');
     if (engine) engine.onchange = async () => {
-      const selected = engine.value;
-      await setConfig({ engine: selected, ...(selected === 'antigravity' && { antigravityEnabled: true }) });
+      await setConfig({ engine: engine.value });
     };
     document.getElementById('ai-dsh-reasoning')?.addEventListener('change', event => { void changeNativeEffort(event.target.value); });
     document.getElementById('ai-dsh-reconnect')?.addEventListener('click',()=>{

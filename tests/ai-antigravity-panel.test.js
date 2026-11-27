@@ -40,18 +40,21 @@ async function test(name,fn){const f=fixture();fixtures.push(f);await fn(f);pass
  await test('Antigravity 默认关闭，独立配置来自实际回执且不会派发 DSH/Codex',async f=>{
   const choice=f.w.document.querySelector('#ai-engine [value="antigravity"]');
   assert.equal(choice.hidden,false);assert.equal(choice.disabled,false);assert.equal(choice.textContent,'Antigravity');
-  assert.notEqual(f.w.AiPanel.getConfig().antigravityEnabled,true);assert.equal(f.options.length,0);
-  await f.enable();assert.equal(f.w.AiPanel.getConfig().antigravityEnabled,true);
+  assert.notEqual(f.w.AiPanel.getConfig().engine,'antigravity');assert.equal(f.options.length,0);
+  await f.enable();assert.equal(f.w.AiPanel.getConfig().engine,'antigravity');
   assert.equal(f.w.AiPanel.aiState().model,'gemini-test');assert.match(f.w.document.getElementById('ai-dsh-info').textContent,/无沙箱/);assert.match(f.w.document.getElementById('ai-dsh-info').title,/沙箱不可用/);
   const select=f.w.document.getElementById('ai-model');select.value='gemini-next';select.dispatchEvent(new f.w.Event('change'));await until(()=>f.w.AiPanel.aiState().model==='gemini-next');
   assert(f.options.some(item=>item.apply?.configId==='model-selector'&&item.apply.value==='gemini-next'));
   f.type('只发送原话');f.enter();await until(()=>f.calls.length===1);assert.equal(f.calls[0].cfg.engine,'antigravity');assert.equal(f.calls[0].messages.length,1);assert.equal(f.calls[0].tools.length,0);
   assert.equal(f.calls[0].context.engine,'antigravity');f.finish(0);await tick();
  });
- await test('业务目录只读，关闭图片和插入能力时保留输入',async f=>{
+ await test('独立工具页面只读，关闭图片和插入能力时保留输入',async f=>{
+  const projectPage=f.w.App.getPageContext;
+  f.w.App.getPageContext=()=>({id:'tasks',projectContext:false});
   f.executionAllowed=false;await f.enable();f.type('业务目录');f.enter();await tick();assert.equal(f.calls.length,0);assert.equal(f.w.document.getElementById('ai-input').value,'业务目录');
   assert.equal(f.w.document.getElementById('ai-dsh-info').textContent,'已连接 · 只读');
-  assert.match(f.w.document.getElementById('ai-dsh-info').title,/当前项目只读/);
+  assert.match(f.w.document.getElementById('ai-dsh-info').title,/当前页面只读/);
+  f.w.App.getPageContext=projectPage;
   f.executionAllowed=true;await f.w.AiPanel.setConfig({antigravityPath:'C:/official/agy.exe'});await f.root('C:/fixture/B');f.type('第一轮');f.enter();await until(()=>f.calls.length===1);
   f.type('补充要求');f.enter({altKey:true});await tick();assert.equal(f.inputs.length,0);assert.equal(f.w.document.getElementById('ai-input').value,'补充要求');assert(f.notices.some(item=>item.text.includes('未开放插入')));
  });

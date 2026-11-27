@@ -210,7 +210,7 @@ function createService(options = {}) {
       return new Promise(resolve => {
         run.pending.set(id, { kind: 'permission', details, resolve, reviewController: new AbortController() });
         signal?.addEventListener('abort', () => { const item = run.pending.get(id); if (item) { run.pending.delete(id); item.reviewController.abort(); item.resolve(cancelled()); touch(run); } }, { once: true });
-        emit(run, { type: 'permission', id, toolCall: { toolCallId: toolCall.toolCallId, title: projectTree ? '读取当前试用项目树' : toolCall.title }, options: safeChoices, reviewRequired: true });
+        emit(run, { type: 'permission', id, toolCall: { toolCallId: toolCall.toolCallId, title: projectTree ? '读取当前项目树' : toolCall.title }, options: safeChoices, reviewRequired: true });
       });
     }
     if (params?.mode !== 'form' || !formSchema(params.requestedSchema, params.message)) throw error('Unsupported elicitation form', -32602);
@@ -252,7 +252,7 @@ function createService(options = {}) {
         const resolved = await runtime.resolveAgyExecutable({ executablePath: executablePath || undefined, projectRoot: info.cwd });
         const env = await options.resolveEnvironment?.();
         const filename = resolved.executablePath || resolved.path || resolved;
-        if (options.projectMcp && await options.allowExecution?.(info.cwd)) {
+        if (options.projectMcp) {
           const installation = await runtime.probeAgy({ executablePath: filename, projectRoot: info.cwd }).catch(() => null);
           conn.workerMode = installation?.version === '1.5.18' && installation.processPerSession === true;
         }
@@ -284,14 +284,14 @@ function createService(options = {}) {
     const verified = typeof options.imageVerified === 'function' ? options.imageVerified(conn.agentInfo) : options.imageVerified === true;
     return verified && conn.capabilities.promptCapabilities?.image === true;
   }
-  async function featureFlags(info, conn, readOnly = false) {
-    const executionAllowed = info.projectPage && !readOnly && !!options.allowExecution && !!await options.allowExecution(info.cwd);
+  function featureFlags(info, conn, readOnly = false) {
+    const executionAllowed = info.projectPage && !readOnly;
     const record = recordOf(info), pending = record?.unknown || record?.configUnknown || blocked.has(info.key) || !!store.snapshot().creations?.[info.key];
     return { executionAllowed, capabilities: { ...clone(conn.capabilities), send: executionAllowed && !pending, config: executionAllowed && !pending, queue: executionAllowed, steering: false, goal: executionAllowed && !!record?.id && conn.goalCommands.has(record.id), image: imageSupported(conn) }, readOnly };
   }
   async function connect(cfg, context) {
     const info = await identity(context, { connectionOnly: true }), conn = await connectInfo(cfg, info);
-    return { ok: true, connected: true, protocolVersion: 1, generation: conn.generation, agentInfo: conn.agentInfo, capabilities: conn.capabilities, authentication: conn.authentication, steering: false, ...await featureFlags(info, conn) };
+    return { ok: true, connected: true, protocolVersion: 1, generation: conn.generation, agentInfo: conn.agentInfo, capabilities: conn.capabilities, authentication: conn.authentication, steering: false, ...featureFlags(info, conn) };
   }
   async function status(executablePath) {
     try {
@@ -338,7 +338,7 @@ function createService(options = {}) {
     throw error('Antigravity 会话目录分页过多', 'AGY_CATALOG_LIMIT');
   }
   async function mcpServers(conn, info, sessionId, external = false) {
-    if (external || !conn.projectMcp || !await options.allowExecution?.(info.cwd)) return [];
+    if (external || !conn.projectMcp) return [];
     return options.projectMcp.servers({ workspaceRoot: info.cwd, projectId: info.projectId, sessionId }, conn.generation);
   }
   async function restore(conn, info, record, forceLoad = false) {
@@ -392,14 +392,13 @@ function createService(options = {}) {
   async function inspect(cfg, context) {
     const info = await identity(context, { connectionOnly: true }); await store.load();
     const conn = await connectInfo(cfg, info), record = recordOf(info);
-    if (!record) return { ok: true, draft: true, configOptions: [], creationUnknown: !!store.snapshot().creations?.[info.key], ...await featureFlags(info, conn) };
+    if (!record) return { ok: true, draft: true, configOptions: [], creationUnknown: !!store.snapshot().creations?.[info.key], ...featureFlags(info, conn) };
     assertRecord(record, info, context);
-    return { ok: true, sessionId: record.id, nativeSessionId: record.id, configOptions: clone(record.configOptions || []), historyIncomplete: record.historyCacheFull === true || record.outputTruncated === true, configUnknown: record.configUnknown === true, readOnly: record.external === true, unknown: record.unknown === true, ...await featureFlags(info, conn, record.external === true) };
+    return { ok: true, sessionId: record.id, nativeSessionId: record.id, configOptions: clone(record.configOptions || []), historyIncomplete: record.historyCacheFull === true || record.outputTruncated === true, configUnknown: record.configUnknown === true, readOnly: record.external === true, unknown: record.unknown === true, ...featureFlags(info, conn, record.external === true) };
   }
   async function setConfig(cfg, context, choice) {
     const info = await identity(context); await store.load();
     return serial(info.key, async () => {
-      await execution(info);
       const conn = await connectInfo(cfg, info); let record = recordOf(info); assertRecord(record, info, context);
       if (record.external) throw error('Antigravity 外部会话首版仅供浏览', 'AGY_READ_ONLY');
       if (record.unknown || blocked.has(info.key)) throw error('Antigravity 上次提交状态待核对', 'AGY_SUBMISSION_UNKNOWN');
@@ -426,9 +425,6 @@ function createService(options = {}) {
       if (response.configOptions.find(option => option.id === choice.configId)?.currentValue !== choice.value) throw error('Antigravity 配置未生效', 'AGY_CONFIG');
       return { ok: true, configOptions: clone(response.configOptions) };
     });
-  }
-  async function execution(info) {
-    if (!options.allowExecution || !await options.allowExecution(info.cwd)) throw error('此项目尚未完成 Antigravity 执行权限验证，当前仅供连接和浏览', 'AGY_EXECUTION_UNVERIFIED');
   }
   async function attach(cfg, context, info, run) {
     await store.load();
@@ -475,7 +471,7 @@ function createService(options = {}) {
     runs.set(context.requestId, run);
     const result = (status, extra = {}) => ({ ok: status === 'completed', status, complete: status === 'completed', aborted: status === 'aborted', finishReason: status === 'completed' ? 'stop' : null, engine: 'antigravity', text: run.text, context: run.context, toolCalls: [], outputTruncated: run.outputTruncated, ...(run.outputTruncated ? { localStatus: 'content_limit', warning: '本轮本地显示内容已达上限，原生终态仍按真实回执记录' } : {}), ...extra });
     try {
-      const info = await identity(context); run.info = info; const input = promptContent(messages, context.page); await execution(info);
+      const info = await identity(context); run.info = info; const input = promptContent(messages, context.page);
       phase(run, 'connecting', '正在连接 Antigravity');
       const available = await connectInfo(cfg, info);
       if (input.some(block => block.type === 'image') && !imageSupported(available)) throw error('当前 Antigravity 图片能力尚未通过验证，请保留附件', 'AGY_IMAGE_UNVERIFIED');
@@ -612,7 +608,7 @@ function createService(options = {}) {
     await queueReady(info, context); return result;
   }
   async function dispatchQueued(cfg, context, itemId, onEvent = () => {}) {
-    const info = await identity(context); await store.load(); await execution(info);
+    const info = await identity(context); await store.load();
     if (!opaqueId(context.requestId) || runs.has(context.requestId)) throw error('Antigravity 队列执行需要全新的请求身份', 'AGY_IDENTITY');
     let message;
     await store.transaction(data => {

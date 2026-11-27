@@ -11,7 +11,7 @@ async function fixture(t) {
   const root = await realpath(parent);
   const handlers = new Map();
   const calls = [];
-  const cfg = { engine: 'antigravity', antigravityEnabled: true };
+  const cfg = { engine: 'antigravity' };
   const view = { engine: 'antigravity', rootId: root, page: { id: 'project', projectContext: true }, sessionId: 'session-a', projectId: 'project-a' };
   const trusted = { frame: 'main' };
   let review = () => ({ approved: true });
@@ -40,7 +40,6 @@ async function fixture(t) {
       return { owner: 'owner-a', scope };
     },
     openApproval: (...args) => review(...args),
-    pilotRoot: () => path.join(root, 'pilot'),
     desktopPath: () => path.join(root, 'Antigravity.exe'),
     openDesktop: opened => { calls.push(['openDesktop', opened]); return ''; },
   });
@@ -51,10 +50,9 @@ async function fixture(t) {
   };
 }
 
-test('试用须显式启用，拒绝不可信调用及项目和会话失配', async t => {
+test('选择模式即可连接，拒绝不可信调用及项目和会话失配', async t => {
   const f = await fixture(t);
-  assert.equal((await f.invoke('pilot', {})).errorCode, 'ANTIGRAVITY_DISABLED');
-  assert.equal((await f.invoke('pilot', f.cfg)).rootDir, path.join(f.root, 'pilot'));
+  assert.equal((await f.invoke('connect', {engine: 'dsh'}, f.view)).errorCode, 'ANTIGRAVITY_DISABLED');
   assert.equal((await f.handlers.get('ai:antigravity-status')({}, f.cfg)).errorCode, 'INVALID_AI_SENDER');
   assert.equal((await f.invoke('connect', f.cfg, { rootId: f.root, projectId: 'other' })).ok, false);
   assert.equal((await f.invoke('options', f.cfg, 'stale-session')).ok, false);

@@ -53,7 +53,6 @@ const CODEX=require('./src/main/codex/ai-codex').createService({
   desktopOwnsProjectThreads: () => process.platform === 'win32' && !!app.getApplicationNameForProtocol('codex://threads/'),
 });
 const antigravityIpc = require('./src/main/antigravity/antigravity-ipc');
-const antigravityPilotRoot = () => path.join(app.getPath('userData'), 'antigravity-pilot');
 async function antigravityDesktopPath() {
   if (process.platform !== 'win32' || !process.env.LOCALAPPDATA) return null;
   const expected = path.join(process.env.LOCALAPPDATA, 'Programs', 'antigravity', 'Antigravity.exe');
@@ -101,16 +100,6 @@ const ANTIGRAVITY = require('./src/main/antigravity/ai-antigravity').createServi
   resolveEnvironment: antigravityEnvironment,
   projectMcp: antigravityProjectMcp,
   imageVerified: agent => agent?.version === '1.5.18',
-  allowExecution: async root => {
-    // The native CLI owns its tools. Until the effective host policy is proven,
-    // only a deliberately opened, empty pilot workspace can receive a prompt.
-    try {
-      const real = await antigravityIpc.pilotDirectory(antigravityPilotRoot());
-      return antigravityIpc.sameDirectory(real, root);
-    } catch {
-      return false;
-    }
-  },
   onQueueReady: ({ context, item }) => {
     const wc = mainWindow?.webContents;
     if (!wc || wc.isDestroyed()) return;
@@ -949,7 +938,6 @@ function assertAntigravityRun(event, context) {
 const antigravityBridge = antigravityIpc.createIpc({
   ipcMain, service: ANTIGRAVITY, sender: (event, context) => aiSender(event, context), readView: antigravityView, assertRun: assertAntigravityRun,
   openApproval: (owner, scope, request) => aiPermissionsBridge.reviewAntigravity(owner, scope, request),
-  pilotRoot: antigravityPilotRoot,
   desktopPath: antigravityDesktopPath,
   openDesktop: target => shell.openPath(target),
 });
@@ -1011,8 +999,7 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
       if (context?.antigravityQueueItemId) {
         const key = JSON.stringify([e.sender.id, context.rootId, context.sessionId, context.antigravityQueueItemId]);
         queued = antigravityQueueReady.get(key);
-        const enabled = await e.sender.executeJavaScript('AiPanel.getConfig().antigravityEnabled === true');
-        if (!queued || !enabled) throw Object.assign(Error('待发会话已变化，请刷新后再继续'), {code:'ANTIGRAVITY_QUEUE_STALE'});
+        if (!queued) throw Object.assign(Error('待发会话已变化，请刷新后再继续'), {code:'ANTIGRAVITY_QUEUE_STALE'});
       }
       antigravityScope = queued || await antigravityBridge.currentTarget(e, cfg, context);
       const admission = JSON.stringify([e.sender.id, antigravityScope.workspaceRoot, antigravityScope.projectId, antigravityScope.sessionId]);
