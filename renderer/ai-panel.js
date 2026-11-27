@@ -2237,6 +2237,17 @@ const AiPanel = (() => {
     expand.textContent='放大查看';
     expand.disabled=true;
     expand.setAttribute('aria-expanded','false');
+    function returnToChat() {
+      if(!surface.matches(':popover-open'))return false;
+      surface.hidePopover();
+      syncExpanded();
+      return true;
+    }
+    function onPreviewMessage(event) {
+      if(event.source===frame.contentWindow&&event.origin==='null'&&event.data==='myide:visualization-escape'){
+        returnToChat();
+      }
+    }
     function syncExpanded() {
       const open=surface.matches(':popover-open');
       const wasOpen=expand.getAttribute('aria-expanded')==='true';
@@ -2251,18 +2262,18 @@ const AiPanel = (() => {
       expand.setAttribute('aria-expanded',String(open));
       expand.textContent=open?'返回对话':'放大查看';
       if(open!==wasOpen){
+        if(open)window.addEventListener('message',onPreviewMessage);
+        else window.removeEventListener('message',onPreviewMessage);
         window.BrowserPanel?.syncOverlay?.();
         if(expand.isConnected)expand.focus({preventScroll:true});
       }
     }
     surface.addEventListener('toggle',syncExpanded);
     expand.onclick=()=>{
-      if(surface.matches(':popover-open'))surface.hidePopover();
-      else{
-        // 顶层显示同一个 iframe，切换尺寸时保留演示中的输入和滚动位置。
-        surface.setAttribute('popover','auto');
-        surface.showPopover();
-      }
+      if(returnToChat())return;
+      // 顶层显示同一个 iframe，切换尺寸时保留演示中的输入和滚动位置。
+      surface.setAttribute('popover','auto');
+      surface.showPopover();
       syncExpanded();
     };
     toolbar.append(expand);

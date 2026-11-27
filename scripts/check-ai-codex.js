@@ -84,18 +84,51 @@ async function verifyVisualization() {
    const button=document.querySelector('.ai-visualization button');
    return !document.querySelector('.ai-visualization-surface:popover-open')&&button===document.activeElement&&button.textContent==='放大查看';
  })&&await widgetFrame.executeJavaScript('document.querySelector("#increment").textContent==="计数 1"'));
+  const togglePreview=()=>js(()=>document.querySelector('.ai-visualization button').click());
+  const previewOpen=()=>js(()=>!!document.querySelector('.ai-visualization-surface:popover-open'));
+  const pressEscape=()=>{
+    for(const type of ['keyDown','keyUp']) win.webContents.sendInputEvent({type,keyCode:'Escape'});
+  };
+  await togglePreview();
+  pressEscape();
+  await until(async()=>!await previewOpen(),'Escape from preview toolbar returns to chat');
+  await togglePreview();
+  await widgetFrame.executeJavaScript('document.querySelector("#increment").focus()');
+  check('The sandboxed visualization has keyboard focus',await js(()=>
+    document.activeElement===document.querySelector('.ai-visualization iframe')));
+  await js(()=>new Promise(resolve=>{
+    window.postMessage('myide:visualization-escape','*');
+    window.addEventListener('message',()=>resolve(true),{once:true});
+  }));
+  check('Only the expanded visualization frame can request to return',await previewOpen());
+  // Hidden Electron windows deliver sendInputEvent to the host, so dispatch
+  // inside the actual sandboxed document to cover the iframe-to-host bridge.
+  const pressEscapeInFrame='document.activeElement.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}))';
+  await widgetFrame.executeJavaScript(pressEscapeInFrame);
+  await until(async()=>!await previewOpen(),'Escape inside the visualization returns to chat');
+  check('Escape returns focus to the preview button without resetting the iframe',
+    await js(()=>document.activeElement===document.querySelector('.ai-visualization button'))&&
+    await widgetFrame.executeJavaScript('document.querySelector("#increment").textContent==="计数 1"'));
  await js(()=>{document.getElementById('ai-panel').style.width='370px';});
  check('A narrow chat panel keeps the compact preview inside the prose without horizontal overflow',await js(fitsInline));
  await js(width=>{document.getElementById('ai-panel').style.width=width;},savedWidth);
- const formResult = await widgetFrame.executeJavaScript(`(() => {
+  await togglePreview();
+  await widgetFrame.executeJavaScript(`(() => {
    const dialog = document.createElement('dialog');
    dialog.innerHTML = '<form method="dialog"><button>Close</button></form>';
    document.body.append(dialog);
    dialog.showModal();
+  })()`);
+  await widgetFrame.executeJavaScript(pressEscapeInFrame);
+  await sleep(80);
+  check('Escape inside a visualization dialog leaves the expanded preview open',await previewOpen());
+  const formResult = await widgetFrame.executeJavaScript(`(() => {
+    const dialog = document.querySelector('dialog');
    dialog.querySelector('button').click();
    return !dialog.open;
  })()`);
  check('Visualization dialogs can close through a local form', formResult);
+  await togglePreview();
  await widgetFrame.executeJavaScript(`(() => {
    const form = document.createElement('form');
    form.action = 'https://visualization.invalid/form';

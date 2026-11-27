@@ -5,6 +5,14 @@ const {randomBytes} = require('crypto');
 const TextFormat=require('../files/text-format');
 const KEY_BRIDGE='<script>document.addEventListener("keydown",function(e){parent.postMessage({__myideKey:1,key:e.key,ctrlKey:e.ctrlKey,shiftKey:e.shiftKey,altKey:e.altKey,metaKey:e.metaKey},"*");});</script>';
 const WIDGET_STATE='<script>window.openai={widgetState:null,setWidgetState(state){this.widgetState=state}};</script>';
+const VISUALIZATION_ESCAPE_BRIDGE = `<script>
+window.addEventListener('keydown', event => {
+  if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.repeat) return;
+  // 预览自己的对话框、弹层和全屏优先处理 Esc。
+  if (document.fullscreenElement || document.querySelector(':modal, :popover-open')) return;
+  parent.postMessage('myide:visualization-escape', '*');
+});
+</script>`;
 const WIDGET_LIMIT=2*1024*1024;
 const SCHEME = 'myide-preview';
 const MIME = {html:'text/html',htm:'text/html',css:'text/css',js:'text/javascript',mjs:'text/javascript',json:'application/json',svg:'image/svg+xml',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',ico:'image/x-icon',woff:'font/woff',woff2:'font/woff2',ttf:'font/ttf',mp4:'video/mp4',webm:'video/webm',wasm:'application/wasm',txt:'text/plain'};
@@ -57,7 +65,7 @@ function createService() {
         content=decoded.content.replace(/^\uFEFF/,'').replace(/^\s*< ?!DOCTYPE/i,'<!DOCTYPE');
         if(entry.visualization){
           const doctype=/^<!DOCTYPE[^>]*>/i.exec(content)?.[0]||'';
-          content=(doctype||'<!doctype html>')+WIDGET_STATE+content.slice(doctype.length);
+          content=(doctype||'<!doctype html>')+WIDGET_STATE+VISUALIZATION_ESCAPE_BRIDGE+content.slice(doctype.length);
         }else content+=KEY_BRIDGE;
       }
       const type=MIME[path.extname(file).slice(1).toLowerCase()]||'application/octet-stream';
