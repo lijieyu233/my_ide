@@ -250,6 +250,8 @@ const AiPanel = (() => {
   let dshSessionAccess = null;
   const editorRoot = () => window.App?.root || '';
   let conversationRoot = null, conversationPage = null;
+  const codexModeSelections = new Map();
+  const codexModeSelectionKey = () => JSON.stringify([getConfig().codexPath || '', pathKey(workspaceRoot())]);
   const workspaceRoot = () => conversationRoot ?? editorRoot();
   const sessionRoot = () => backgroundView?.run.engine==='antigravity' ? backgroundView.run.identity.rootId : dshSessionAccess?.foreign ? dshSessionAccess.rootDir : workspaceRoot();
   function dshView() {
@@ -1354,6 +1356,13 @@ const AiPanel = (() => {
     const contextChanged=Object.hasOwn(c||{},'autoIdeContext')&&c.autoIdeContext!==previousConfig.autoIdeContext;
     const switching=!!c?.engine&&c.engine!==(getConfig().engine||'standard');
     if(switching&&previousConfig.engine==='antigravity')saveAntigravityComposer();
+    if (switching && previousConfig.engine === 'codex' && dshScope() === 'project') {
+      const key = codexModeSelectionKey(), access = dshSessionAccess;
+      if (access?.foreign && access.hostId && curSessionId) {
+        codexModeSelections.set(key, { id: curSessionId, codexThreadId: access.hostId, rootDir: access.rootDir,
+          title: access.title, archived: codexSelectedHistoryItem()?.archived === true || access.restoreTarget?.archived === true });
+      } else codexModeSelections.delete(key);
+    }
     if(switching){resetDshWatch();persistSession();if(['codex','antigravity'].includes(currentRun?.engine))detachRun();else stopRun(true);dshOptionsTicket++;dshConfigOptions=[];dshOptionsState='idle';}
     const keys = ['permWrite','permRun','allowPaths','denyCmds','codexPermission'];
     const other = Object.fromEntries(Object.entries(c || {}).filter(([key])=>!keys.includes(key)));
@@ -1367,7 +1376,7 @@ const AiPanel = (() => {
     }
     // 确认取消时保留整份草稿；等待期间的新模型选择也不能被旧配置快照覆盖。
     localStorage.setItem(LS_CFG, JSON.stringify({ ...getConfig(), ...other }));
-    if(switching)onProjectChange();
+    if(switching)onProjectChange(true);
     if (switching || previousConfig.dshPath !== getConfig().dshPath || previousConfig.codexPath !== getConfig().codexPath || previousConfig.antigravityPath !== getConfig().antigravityPath) {
       refreshHistInPlace();
       syncHistoryCatalog();
@@ -1666,7 +1675,7 @@ const AiPanel = (() => {
   }
 
   async function refreshCodexOptions(apply=false){
-    if(getConfig().engine!=='codex'||panel?.classList.contains('hidden'))return;
+    if(getConfig().engine!=='codex'||panel?.classList.contains('hidden')||dshSessionAccess?.restoreTarget)return;
     if(loadedSessionKey!==sessKey()){onProjectChange();return;}
     if(!curSessionId){curSessionId='s-'+window.crypto.randomUUID();rememberSession();}
     const ticket=++dshOptionsTicket,sessionId=curSessionId,root=sessionRoot(),page=currentPage(),epoch=pageEpoch;
@@ -1767,7 +1776,7 @@ const AiPanel = (() => {
       resetDshWatch();
       releaseSessionPermissions(detachRun());
     }
-    if (v && inputEl) {inputEl.focus();refreshDshOptions();restoreBackgroundRun();ensureDshWatch();}
+    if (v && inputEl) {inputEl.focus();restoreBackgroundRun();refreshDshOptions();ensureDshWatch();}
     if (['codex','antigravity'].includes(getConfig().engine)) syncHistoryCatalog();
     if (v) refreshHistInPlace();
   }
@@ -5721,6 +5730,32 @@ const AiPanel = (() => {
     }
   }
 
+  function restoreCodexModeSelection(target) {
+    const { id, rootDir, codexThreadId, title } = target;
+    if (parkedCodexRecordOf(id, rootDir)) {
+      openSession(id, false, { rootDir, threadId: codexThreadId, title });
+      return;
+    }
+    switchSessionDraft(id, rootDir, true);
+    curSessionId = id;
+    const access = { foreign: true, rootDir, sessionId: id, hostId: codexThreadId, title,
+      state: 'loading', scope: 'project', epoch: pageEpoch, restoreTarget: target };
+    dshSessionAccess = access;
+    dshOptionsState = 'loading';
+    refreshModelSel();
+    setBusyUI(false);
+    void openCodexHistory(target).then(() => {
+      if (dshSessionAccess !== access) return;
+      access.state = 'blocked';
+      access.error = '无法恢复原 Codex 会话，请重新连接';
+      dshOptionsState = 'error';
+      const info = document.getElementById('ai-dsh-info');
+      if (info) info.textContent = access.error;
+      refreshModelSel();
+      setBusyUI(false);
+    });
+  }
+
   async function openCodexHistory(target, fork = false) {
     const threadId = target.codexThreadId;
     if (fork && codexForksInFlight.has(threadId)) return;
@@ -6330,6 +6365,10 @@ const AiPanel = (() => {
       ensureDshWatch(record.run.status !== 'active');
       return true;
     }
+    if (getConfig().engine === 'codex' && dshSessionAccess?.foreign) {
+      const hit = parkedCodexRecordOf(curSessionId, dshSessionAccess.rootDir);
+      return takeable(hit?.record) ? restoreBackgroundRun({ sessionId: curSessionId, hit }) : false;
+    }
     const key = runKeyOf(sessKey(), curSessionId);
     let record = takeable(backgroundRuns.get(key)) ? backgroundRuns.get(key) : null;
     // 兜底只在「刚离开同一会话」时用：会话 id 可能在挂起与恢复之间从 null 变成真实值。
@@ -6413,7 +6452,7 @@ const AiPanel = (() => {
     }
   }
   // 恢复首次连接或用户主动切换的会话范围。
-  function onProjectChange() {
+  function onProjectChange(restoreModeSelection = false) {
     if(getConfig().engine==='antigravity'&&loadedSessionKey?.endsWith(':antigravity'))saveAntigravityComposer();
     const nextKey=sessKey(),harness=nativeEngine(),codex=getConfig().engine==='codex';
     // 同一项目重复通知不能重置对话；重启后恢复明确的当前选择，项目之间仍保持独立历史。
@@ -6458,6 +6497,13 @@ const AiPanel = (() => {
     syncPermBtn();
     loadProjectRules();
     followActive();
+    const modeSelection = restoreModeSelection && codexProjectHistory() && codexModeSelections.get(codexModeSelectionKey());
+    if (modeSelection) {
+      restoreCodexModeSelection(modeSelection);
+      renderBackgroundStatus();
+      if (visibleHistoryRefresh()) void refreshCodexCatalog({ background: true });
+      return;
+    }
     let saved;
     if(harness){
       const all=loadSessions(),active=localStorage.getItem(nextKey+':active'),draft=localStorage.getItem(nextKey+':draft');
@@ -7730,6 +7776,10 @@ const AiPanel = (() => {
     document.getElementById('ai-dsh-reconnect')?.addEventListener('click',()=>{
       if(getConfig().engine==='antigravity'){void reconnectAntigravity();return;}
       syncCodexLifecycle(true);
+      if (getConfig().engine === 'codex' && dshSessionAccess?.restoreTarget) {
+        restoreCodexModeSelection(dshSessionAccess.restoreTarget);
+        return;
+      }
       if(!busy)refreshDshOptions(false,true);
     });
     initCodexLifecycleButtons();

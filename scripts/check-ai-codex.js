@@ -767,6 +767,71 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
    return;
  }
 
+ if (process.argv.includes('--codex-mode-switch-only')) {
+   const openExternal = () => js(()=>{
+     const group = document.querySelector('[data-codex-project="desktop-b"]');
+     const toggle = group.querySelector('[data-hist-toggle]');
+     if (toggle.getAttribute('aria-expanded') === 'false') toggle.click();
+     [...group.querySelectorAll('.ai-hist-open')].find(row=>row.textContent.includes('Codex')).click();
+   });
+   const selected = () => js(()=>({
+     engine: document.getElementById('ai-engine').value,
+     root: AiPanel.dshView().rootId,
+     id: AiPanel.dshView().sessionId,
+     hostId: AiPanel.dshView().foreignHostId,
+   }));
+   const switchMode = mode => js(async mode=>{
+     const engine = document.getElementById('ai-engine');
+     engine.value = mode;
+     await engine.onchange();
+   },mode);
+   await openExternal();
+   await until(()=>js(()=>document.getElementById('ai-msgs').textContent.includes('CODEX_PREVIOUS_ANSWER')),'foreign conversation shown');
+   const expected = await selected();
+   assert.equal(expected.hostId,externalId);
+   await js(()=>{
+     const input=document.getElementById('ai-input');
+     input.value='保留另一个工程的草稿';
+     input.dispatchEvent(new Event('input',{bubbles:true}));
+   });
+   const starts = fixture.requests.filter(request=>request.method==='turn/start').length;
+   await switchMode('standard');
+   assert.equal((await selected()).engine,'standard');
+   await switchMode('codex');
+   await until(()=>js(()=>AiPanel.aiState().dshState==='ready' &&
+     document.getElementById('ai-msgs').textContent.includes('CODEX_PREVIOUS_ANSWER')),'return to the original foreign conversation');
+   check('Switching modes restores the same foreign Codex thread and draft without sending',
+     JSON.stringify(await selected()) === JSON.stringify(expected) &&
+     fixture.requests.filter(request=>request.method==='turn/start').length===starts &&
+     await js(()=>document.getElementById('ai-input').value==='保留另一个工程的草稿'));
+
+   await switchMode('standard');
+   const external = fixture.threads.get(externalId);
+   fixture.threads.delete(externalId);
+   await switchMode('codex');
+   await until(()=>js(()=>AiPanel.dshView().access==='blocked'),'original thread temporarily unavailable');
+   check('An unavailable original thread cannot send a message to a fallback session',
+     JSON.stringify(await selected())===JSON.stringify(expected) &&
+     await js(()=>document.getElementById('ai-send').disabled));
+   fixture.threads.set(externalId,external);
+   await js(()=>document.getElementById('ai-dsh-reconnect').click());
+   await until(()=>js(()=>AiPanel.dshView().access==='ready' && AiPanel.aiState().dshState==='ready'),'retry original thread');
+
+   await js(()=>AiPanel.ask('HOLD_CODEX 右栏恢复'));
+   await until(()=>fixture.requests.some(request=>request.method==='turn/start' && request.params.threadId===externalId),'foreign turn started');
+   await until(()=>js(()=>AiPanel.__testParked().currentRun==='active' &&
+     document.getElementById('ai-msgs').textContent.includes('离线 Codex 已开始。')),'foreign stream attached');
+   await js(()=>{App.setAiOpen(false);});
+   assert(await js(()=>AiPanel.__testParked().backgroundRuns>0));
+   await js(()=>{App.showAi();});
+   check('Reopening the right panel restores the running foreign Codex thread',
+     JSON.stringify(await selected())===JSON.stringify(expected) &&
+     await js(()=>AiPanel.__testParked().currentRun==='active' &&
+       document.getElementById('ai-msgs').textContent.includes('离线 Codex 已开始。')));
+   await finish(0);
+   return;
+ }
+
  if (process.argv.includes('--codex-order-only')) {
    const project = id => '[data-codex-project="' + id + '"]';
    const group = (id = '') => '#panel-sessions ' + project(id);
