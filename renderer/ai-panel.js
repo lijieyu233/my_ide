@@ -1411,7 +1411,8 @@ const AiPanel = (() => {
       const readOnly = state.executionAllowed === false || state.readOnly === true;
       const sandboxUnavailable = state.sandbox?.available === false || ['unavailable', 'unsupported'].includes(state.sandbox?.status || state.sandbox?.state);
       const access = readOnly ? '只读' : sandboxUnavailable ? '无沙箱' : sandbox;
-      info.textContent = dshOptionsState === 'loading' ? '连接中…' : state.ok ? '已连接 · ' + access : '未连接';
+      const failure = state.errorCode === 'AGY_PROXY_UNREACHABLE' ? '本机代理不可达' : '未连接';
+      info.textContent = dshOptionsState === 'loading' ? '连接中…' : state.ok ? '已连接 · ' + access : failure;
       const accessNote = state.readOnly ? '当前会话只读'
         : readOnly && !currentPage().projectContext ? '当前页面只读，回到项目页可使用此工程的可用功能'
         : readOnly ? '当前项目只读，可在设置中打开试用目录' : '';

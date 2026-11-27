@@ -1,7 +1,7 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('fs/promises'), path = require('path'), os = require('os');
 const { EventEmitter } = require('events'), { PassThrough } = require('stream');
-const { resolveAgyExecutable, probeAgy, spawnAgy, buildAgyEnvironment, environmentFromSystemProxy, reportedWorkspacePath, sandboxStatus } = require('../src/main/antigravity/agy-runtime');
+const { resolveAgyExecutable, probeAgy, spawnAgy, buildAgyEnvironment, environmentFromSystemProxy, verifyLocalProxy, reportedWorkspacePath, sandboxStatus } = require('../src/main/antigravity/agy-runtime');
 async function fixture(run) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'myide-agy-runtime-'));
   const projectRoot = path.join(root, 'project'), tools = path.join(root, '中文 CLI 空格');
@@ -112,6 +112,18 @@ test('normalizes only the reported Windows /drive:/path spelling', () => {
   assert.equal(reportedWorkspacePath('//C:/network/path', 'win32'), '//C:/network/path');
   assert.equal(reportedWorkspacePath('/projects/user', 'win32'), '/projects/user');
 });
+test('loopback proxy check reflects whether its local listener is running', async () => {
+  const server = require('node:net').createServer(socket => socket.end());
+  await new Promise((resolve, reject) => server.listen(0, '127.0.0.1', resolve).once('error', reject));
+  const proxy = 'http://127.0.0.1:' + server.address().port;
+  try {
+    await verifyLocalProxy(proxy);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+  await assert.rejects(verifyLocalProxy(proxy), { code: 'AGY_PROXY_UNREACHABLE' });
+});
+
 test('only Antigravity child inherits the first supported system proxy or its existing override', () => {
   const env = { SystemRoot: 'C:/Windows' };
   assert.deepEqual(environmentFromSystemProxy('PROXY 127.0.0.1:10808; DIRECT', env), {

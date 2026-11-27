@@ -66,14 +66,17 @@ async function antigravityDesktopPath() {
 }
 const antigravityQueueReady = new Map();
 async function antigravityEnvironment() {
-  const { environmentFromSystemProxy } = require('./src/main/antigravity/agy-runtime');
+  const { environmentFromSystemProxy, verifyLocalProxy } = require('./src/main/antigravity/agy-runtime');
+  let route;
   try {
     const isolated = session.fromPartition('antigravity-system-network', { cache: false });
-    const route = await isolated.resolveProxy('https://daily-cloudcode-pa.googleapis.com/');
-    return environmentFromSystemProxy(route);
+    route = await isolated.resolveProxy('https://daily-cloudcode-pa.googleapis.com/');
   } catch {
     return process.env;
   }
+  const environment = environmentFromSystemProxy(route);
+  if (environment !== process.env) await verifyLocalProxy(environment.HTTPS_PROXY);
+  return environment;
 }
 const antigravityProjectMcp = require('./src/main/antigravity/antigravity-project-mcp').createProjectMcp({
   async projectTree(scope, active) {

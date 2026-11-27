@@ -2,6 +2,7 @@ const fs = require('fs/promises');
 const fsSync = require('fs');
 const path = require('path');
 const os = require('os');
+const net = require('node:net');
 const { spawn } = require('child_process');
 
 // Google documents agy.exe as the native Windows CLI; wrappers and shell commands
@@ -97,6 +98,28 @@ function environmentFromSystemProxy(proxy, env = process.env) {
   return { ...env, HTTPS_PROXY: `${scheme}://${match[2]}:${match[3]}` };
 }
 
+async function verifyLocalProxy(proxy) {
+  const url = new URL(proxy);
+  const host = url.hostname.replace(/^\[|\]$/g, '');
+  if (!['127.0.0.1', 'localhost', '::1'].includes(host)) return;
+  const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
+  await new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host, port });
+    const timeout = setTimeout(unavailable, 1500);
+    function unavailable() {
+      clearTimeout(timeout);
+      socket.destroy();
+      reject(failure('AGY_PROXY_UNREACHABLE', 'Antigravity 无法连接系统配置的本机代理，请启动代理后重连'));
+    }
+    socket.once('error', unavailable);
+    socket.once('connect', () => {
+      clearTimeout(timeout);
+      socket.destroy();
+      resolve();
+    });
+  });
+}
+
 function sandboxStatus({ platform = process.platform, release = os.release() } = {}) {
   // A new Windows build alone does not prove the required August 2026 patch.
   // https://antigravity.google/docs/sandbox/?tab=cli
@@ -188,4 +211,4 @@ async function probeAgy(options = {}) {
   return { ok: true, ...runtime, version, acpAvailable: true, processPerSession: help.processPerSession || /--process-per-session\b/.test(help.output), authentication: 'unverified', sandbox: sandboxStatus(options) };
 }
 
-module.exports = { resolveAgyExecutable, probeAgy, spawnAgy, buildAgyEnvironment, environmentFromSystemProxy, reportedWorkspacePath, sandboxStatus };
+module.exports = { resolveAgyExecutable, probeAgy, spawnAgy, buildAgyEnvironment, environmentFromSystemProxy, verifyLocalProxy, reportedWorkspacePath, sandboxStatus };
