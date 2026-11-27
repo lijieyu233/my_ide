@@ -39,7 +39,7 @@ async function test(name,fn){const f=fixture();fixtures.push(f);await fn(f);pass
 (async()=>{
  await test('Antigravity 默认关闭，独立配置来自实际回执且不会派发 DSH/Codex',async f=>{
   const choice=f.w.document.querySelector('#ai-engine [value="antigravity"]');
-  assert.equal(choice.hidden,false);assert.equal(choice.disabled,false);assert.equal(choice.textContent,'Antigravity');
+  assert.equal(choice.hidden,false);assert.equal(choice.disabled,false);assert.equal(choice.textContent,'Antigravity（CLI）');
   assert.notEqual(f.w.AiPanel.getConfig().engine,'antigravity');assert.equal(f.options.length,0);
   await f.enable();assert.equal(f.w.AiPanel.getConfig().engine,'antigravity');
   assert.equal(f.w.AiPanel.aiState().model,'gemini-test');assert.match(f.w.document.getElementById('ai-dsh-info').textContent,/无沙箱/);assert.match(f.w.document.getElementById('ai-dsh-info').title,/沙箱不可用/);
