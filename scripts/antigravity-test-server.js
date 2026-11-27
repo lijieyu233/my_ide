@@ -75,7 +75,7 @@ createInterface({ input: process.stdin }).on('line', line => {
       inflight.set(id, { id: request.id, review: value.includes('FIXTURE_APPROVAL') });
       if (value.includes('FIXTURE_APPROVAL')) {
         const toolCall = { toolCallId: 'permission-fx', title: '只读 Git 状态', kind: 'execute',
-          rawInput: { command: 'git status --short' }, status: 'pending' };
+          rawInput: { CommandLine: 'git status --short', WaitMsBeforeAsync: 1000 }, status: 'pending' };
         sendUpdate(id, { sessionUpdate: 'tool_call', ...toolCall });
         send({ id: 'permission-fixture', method: 'session/request_permission',
           params: { sessionId: id, toolCall, options: [

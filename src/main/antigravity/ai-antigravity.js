@@ -202,7 +202,9 @@ function createService(options = {}) {
       // Titles alone do not show the operation being authorized. A trustworthy approval needs command/patch/path evidence.
       if (Buffer.byteLength(JSON.stringify(toolCall)) > 256 * 1024) throw error('Permission details exceed limit', -32602);
       const target = input && ['path', 'file_path', 'filePath', 'url'].some(key => typeof input[key] === 'string' && input[key].trim());
-      const hasOperation = projectTree || input && typeof input === 'object' && (['command', 'cmd', 'script'].some(key => typeof input[key] === 'string' && input[key].trim()) || target && (['patch', 'diff', 'content'].some(key => typeof input[key] === 'string') || ['read', 'search', 'fetch'].includes(toolCall.kind))) ||
+      const commandFields = ['command', 'cmd', 'script'];
+      if (toolCall.kind === 'execute') commandFields.push('CommandLine'); // Official CLI terminal tool.
+      const hasOperation = projectTree || input && typeof input === 'object' && (commandFields.some(key => typeof input[key] === 'string' && input[key].trim()) || target && (['patch', 'diff', 'content'].some(key => typeof input[key] === 'string') || ['read', 'search', 'fetch'].includes(toolCall.kind))) ||
         Array.isArray(toolCall.content) && toolCall.content.some(block => block.type === 'diff' && typeof block.path === 'string' && (typeof block.newText === 'string' || typeof block.oldText === 'string'));
       const safeChoices = choices.filter(choice => choice.kind !== 'allow_once' || hasOperation);
       const details = freeze({ id, kind: 'permission', context: clone(run.context), nativeSessionId: run.record.id, cwd: run.info.cwd, projectId: run.info.projectId, toolCall, projectTree: !!projectTree, choices: safeChoices, canAllow: !!hasOperation });

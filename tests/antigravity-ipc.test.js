@@ -24,7 +24,7 @@ async function fixture(t) {
       ok: available,
       canAllow: true,
       choices: [{ kind: 'allow_once', optionId: 'native-approve' }, { kind: 'reject_once', optionId: 'native-reject' }],
-      toolCall: { title: 'Run command', rawInput: { command: 'git status' } },
+      toolCall: { title: 'Run command', kind: 'execute', rawInput: { CommandLine: 'git status', WaitMsBeforeAsync: 1000 } },
     }),
     permissionResult: (_scope, id, option) => { calls.push(['permissionResult', id, option]); return { ok: true }; },
     questionResult: (_scope, id, answers) => { calls.push(['questionResult', id, answers]); return { ok: true }; },
@@ -83,7 +83,7 @@ test('主窗口不能回传批准选项，可信确认仅使用该请求的原�
     assert.equal(owner, 'owner-a');
     assert.equal(scope.sessionId, 'session-a');
     assert.equal(request.canAllow, true);
-    assert.match(request.details[0], /git status/);
+    assert.deepEqual(request.details, ['CommandLine\ngit status']);
     return { approved: true };
   });
   assert.equal((await f.invoke('review', f.scope, 'permission-1', 'forged')).ok, true);

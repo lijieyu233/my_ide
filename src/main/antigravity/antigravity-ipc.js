@@ -159,7 +159,9 @@ function createIpc({ ipcMain, service, sender, readView, assertRun, openApproval
       const title = request.projectTree ? '读取当前试用项目树' : request.toolCall?.title || '工具操作';
       const details = request.projectTree ? ['读取当前项目的文件和子目录名称，最多 250 项。'] : [];
       const raw = request.toolCall?.rawInput;
-      for (const field of ['command', 'cmd', 'script', 'patch', 'diff', 'content', 'path', 'file_path', 'filePath', 'url']) {
+      const fields = ['command', 'cmd', 'script', 'patch', 'diff', 'content', 'path', 'file_path', 'filePath', 'url'];
+      if (request.toolCall?.kind === 'execute') fields.unshift('CommandLine');
+      for (const field of fields) {
         if (typeof raw?.[field] === 'string') details.push(field + '\n' + raw[field]);
       }
       for (const part of Array.isArray(request.toolCall?.content) ? request.toolCall.content : []) {

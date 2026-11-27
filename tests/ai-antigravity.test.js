@@ -236,7 +236,7 @@ async function test(name, fn) { await fn(); passed++; console.log('PASS ' + name
       child.stdin.on('data', data => { for (const line of data.toString().trim().split('\n')) { const req = JSON.parse(line);
         if (req.method === 'initialize') send({ id: req.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
         else if (req.method === 'session/new') send({ id: req.id, result: { sessionId: 'real-transport-id' } });
-        else if (req.method === 'session/prompt') { promptId = req.id; send({ id: 'approve-native', method: 'session/request_permission', params: { sessionId: 'real-transport-id', toolCall: { toolCallId: 'tool', rawInput: { command: 'echo fixture' } }, options: [{ optionId: 'once', kind: 'allow_once' }] } }); }
+        else if (req.method === 'session/prompt') { promptId = req.id; send({ id: 'approve-native', method: 'session/request_permission', params: { sessionId: 'real-transport-id', toolCall: { toolCallId: 'tool', kind: 'execute', rawInput: { CommandLine: 'echo fixture', WaitMsBeforeAsync: 1000 } }, options: [{ optionId: 'once', kind: 'allow_once' }] } }); }
         else if (req.id === 'approve-native') { permissionResult = req.result; send({ method: 'session/update', params: { sessionId: 'real-transport-id', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'real transport answer' } } } }); send({ id: promptId, result: { stopReason: 'end_turn' } }); }
       } });
       const runtime = { resolveAgyExecutable: async () => ({ executablePath: 'fixture' }), spawnAgy: () => child };
