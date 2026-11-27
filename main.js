@@ -443,7 +443,7 @@ function createBwView(tabId) {
   wc.on('before-input-event', (ev, input) => {
     if (input.type !== 'keyDown') return;
     const tool=browserToolKeys.match(input);
-    if(tool){ev.preventDefault();mainWindow?.webContents.send('browser:tool-shortcut',tool);return;}
+    if(tool){ev.preventDefault();if(!input.isAutoRepeat)mainWindow?.webContents.send('browser:tool-shortcut',tool);return;}
     const k = (input.key || '').toLowerCase();
     let cmd = null;
     if (input.alt && !input.control && k === 'arrowleft') cmd = 'back';

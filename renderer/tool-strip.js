@@ -7,6 +7,11 @@ window.ToolStrip = (() => {
   // ⚠ 这几个声明必须在 init() 之前：init 内部会调用 applyRightHidden / rightMenu，
   //   而 const/let 存在暂时性死区，写在文件末尾会直接抛 ReferenceError。
   const rightActions={ai:'tool-ai'};
+  const panelActions = {
+    'tool-sidebar': 'toggle-sidebar',
+    'btn-editor-collapse': 'button:btn-editor-collapse',
+    'tool-sidebar-r': 'toggle-sidebar-right',
+  };
   const rightLabels={ai:'AI 助手'};
   const rightHiddenKey='myide-tool-strip-right-hidden';
   let rightHidden=new Set();
@@ -22,6 +27,7 @@ window.ToolStrip = (() => {
   // 那个按钮点了完全没反应（剪贴板历史就是这样漏掉的 —— 我加按钮时只改了
   // index.html 和 app.js 的 ALL_TOOLS，忘了这里，真实点击走不通）。
   const actions={sessions:'tool-sessions',project:'tool-project',outline:'tool-outline',search:'search-panel',git:'commit-tool-window',browser:'tool-browser',bookshelf:'tool-bookshelf',remote:'tool-remote',clipboard:'tool-clipboard',db:'tool-db',tasks:'tool-tasks',launch:'tool-launch','quick-launch':'tool-quick-launch',log:'git-log'};
+  const browserActions = [...Object.values(actions), ...Object.values(panelActions)];
   // 右侧工具条（AI 助手等右侧停靠工具）的按钮与动作。左右两条是同一套交互：
   // 右键设快捷键、拖拽排序、隐藏。之前只给左侧做了这些，右侧只有两个裸按钮，
   // 右键毫无反应 —— 用户截图里问的就是这个。
@@ -186,20 +192,31 @@ window.ToolStrip = (() => {
     } catch (error) {
       if (browserKeySync !== request) return;
       browserKeySync = null;
-      console.warn('[tool-strip] 浏览器内的跳转快捷键同步失败', error);
+      console.warn('[tool-strip] 浏览器内的工具和面板快捷键同步失败', error);
+    }
+  }
+
+  function syncPanelTitles() {
+    for (const [buttonId, id] of Object.entries(panelActions)) {
+      const button = document.getElementById(buttonId);
+      if (!button) continue;
+      const shortcuts = Shortcuts.effectiveKeys(id).join(' / ');
+      const label = button.getAttribute('aria-label') || button.textContent.trim();
+      button.title = shortcuts ? label + '（' + shortcuts + '）' : label;
     }
   }
 
   function syncKeys() {
-    const bindings=new Map(Shortcuts.bindings().map(binding=>[binding.id,binding])),native=[];
+    const bindings=new Map(Shortcuts.bindings().map(binding=>[binding.id,binding]));
     for(const [name,id] of Object.entries(actions)) {
       const button=document.getElementById('tool-'+name),binding=bindings.get(id);if(!button||!binding)continue;
       button.title=labels[name]+'（'+(binding.effectiveCombos.join(' / ')||'未设置快捷键')+'）';button.setAttribute('aria-label',labels[name]);
-      button.setAttribute('aria-keyshortcuts',binding.effectiveCombos.map(combo=>combo.split('+').map(key=>({ctrl:'Control',alt:'Alt',shift:'Shift'})[key]||key).join('+')).join(' '));native.push({id,combos:binding.effectiveCombos});
+      button.setAttribute('aria-keyshortcuts',binding.effectiveCombos.map(combo=>combo.split('+').map(key=>({ctrl:'Control',alt:'Alt',shift:'Shift'})[key]||key).join('+')).join(' '));
     }
-    const collapse=document.getElementById('tool-sidebar'),sidebar=bindings.get('toggle-sidebar');
-    if(collapse&&sidebar)collapse.title='收起 / 展开侧栏（'+(sidebar.effectiveCombos.join(' / ')||'未设置快捷键')+'）';
-    void syncBrowserToolKeys(native);
+    syncPanelTitles();
+    void syncBrowserToolKeys(browserActions.map(id => ({
+      id, combos: Shortcuts.effectiveKeys(id).filter(combo => /^(?:ctrl\+|alt\+)|^f(?:[1-9]|1[0-2])$/.test(combo)),
+    })));
   }
   const fixedAliases = {
     'btn-open': 'open-folder', 'btn-open2': 'open-folder', 'btn-commands': 'command-palette',
@@ -235,7 +252,8 @@ window.ToolStrip = (() => {
     const commands = [];
     const add = (key, desc, locate, palette = false) => {
       const id = 'button:' + key;
-      commands.push({ id, desc, keys: [], palette, category: '固定按钮',
+      const panelToggle = id === panelActions['btn-editor-collapse'];
+      commands.push({ id, desc, keys: panelToggle ? ['ctrl+alt+`'] : [], palette, panelToggle, category: '固定按钮',
         bindingGuard: combo => /^(?:ctrl\+|alt\+|f(?:[1-9]|1[0-2])$)/.test(combo),
         isEnabled: () => buttonUsable(locate()) || '按钮当前不可用',
         run: () => { const button = locate(); if (buttonUsable(button)) button.click(); },
@@ -295,8 +313,8 @@ window.ToolStrip = (() => {
     // prepend 兜底按钮，而 nodes 只收 strip 的原始子节点，顺序不能错。
     readHidden();applyHidden();
     initFixedShortcuts();
-    Shortcuts.markToolJumps(Object.values(actions));Shortcuts.onChanged(syncKeys);syncKeys();
-    window.myIDE?.browser?.onToolShortcut?.(id=>{if(Object.values(actions).includes(id)&&!Modal.stack.length)Shortcuts.execute(id);});
+    Shortcuts.markToolJumps(browserActions);Shortcuts.onChanged(syncKeys);syncKeys();
+    window.myIDE?.browser?.onToolShortcut?.(id=>{if(browserActions.includes(id)&&!Modal.stack.length&&!Shortcuts.isCapturing()&&!document.querySelector('dialog[open]'))Shortcuts.execute(id);});
     for(const [name,id] of Object.entries(actions)) {
       const button=document.getElementById('tool-'+name);if(!button)continue;button.draggable=true;
       button.addEventListener('dragstart',event=>{closeMenu();dragging=button.id;button.classList.add('tool-dragging');event.dataTransfer?.setData('application/x-myide-tool',button.id);if(event.dataTransfer)event.dataTransfer.effectAllowed='move';});
@@ -409,5 +427,5 @@ window.ToolStrip = (() => {
     const onDown=event=>{if(!menu.contains(event.target))close();};
     document.addEventListener('pointerdown',onDown,true);
   }
-  return {init,showAll,hide:hideTool,show:showTool_,hiddenTools:()=>[...hidden]};
+  return {init,showAll,hide:hideTool,show:showTool_,hiddenTools:()=>[...hidden],syncPanelTitles};
 })();

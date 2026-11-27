@@ -404,27 +404,23 @@ const App = (() => {
 
   // ---------- 侧栏整体收起 / 展开 ----------
   function toggleSidebar(force) {
-    const collapsed = typeof force === 'boolean' ? force : !document.body.classList.contains('sidebar-collapsed');
+    const manual = typeof force !== 'boolean';
+    const collapsed = manual ? !sideCollapsed && !document.body.classList.contains('sidebar-collapsed') : force;
+    if (manual && !collapsed) sideCollapsed = false;
     document.body.classList.toggle('sidebar-collapsed', collapsed);
-    const btn = document.getElementById('tool-sidebar');
-    if (btn) {
-      btn.classList.toggle('collapsed', collapsed); // 图标翻转交给 CSS（不再切字符）
-      btn.title = (collapsed ? '展开' : '收起') + '侧栏 (Ctrl+`)';
-    }
     renderToolStrip();
   }
 
   // ---------- 右侧栏整体收起 / 展开（AI 面板所在右栏，Alt+`） ----------
   function setRightSidebarCollapsed(collapsed) {
     document.body.classList.toggle('rsb-collapsed', collapsed);
-    const btn = document.getElementById('tool-sidebar-r');
-    if (btn) {
-      btn.classList.toggle('collapsed', collapsed); // 图标翻转交给 CSS
-      btn.title = (collapsed ? '展开' : '收起') + '右侧栏 (Alt+`)';
-    }
   }
 
   function toggleRightSidebar(force) {
+    if (typeof force !== 'boolean' && !aiOpen) {
+      showAi();
+      return;
+    }
     setRightSidebarCollapsed(typeof force === 'boolean' ? force : !isRightSidebarCollapsed());
     renderToolStrip();
   }
@@ -433,6 +429,13 @@ const App = (() => {
     const body = document.body;
     const left = !sideCollapsed && !body.classList.contains('sidebar-collapsed');
     const right = isAiVisible();
+    for (const [id, expanded, label] of [['tool-sidebar', left, '左侧栏'], ['tool-sidebar-r', right, '右侧栏']]) {
+      const button = document.getElementById(id);
+      if (!button) continue;
+      button.classList.toggle('collapsed', !expanded);
+      button.setAttribute('aria-expanded', String(expanded));
+      button.setAttribute('aria-label', (expanded ? '收起' : '展开') + label);
+    }
     const wasCollapsed = body.classList.contains('editor-collapsed');
     const centerTool = ['db', 'remote', 'clipboard', 'launch', 'log', 'quick-launch', 'bookshelf'].includes(activeTool) ||
       (activeTool === 'tasks' && window.Tasks?.view === 'dag');
@@ -449,6 +452,7 @@ const App = (() => {
       button.title = editorCollapsed ? '展开编辑区' : '收起编辑区';
       button.setAttribute('aria-label', button.title);
     }
+    window.ToolStrip?.syncPanelTitles?.();
   }
 
   function setEditorCollapsed(collapsed) {
@@ -1306,7 +1310,8 @@ const App = (() => {
       if (!d || d.__myideKey !== 1) return;
       if (![...document.querySelectorAll('.editor-pane-view iframe.html-frame, #viewer iframe.html-frame')].some(frame=>frame.contentWindow===e.source)) return;
       document.dispatchEvent(new KeyboardEvent('keydown', {
-        key: d.key, ctrlKey: !!d.ctrlKey, shiftKey: !!d.shiftKey, altKey: !!d.altKey, metaKey: !!d.metaKey,
+        key: d.key, code: d.code, repeat: !!d.repeat, isComposing: !!d.isComposing,
+        ctrlKey: !!d.ctrlKey, shiftKey: !!d.shiftKey, altKey: !!d.altKey, metaKey: !!d.metaKey,
         bubbles: true, cancelable: true,
       }));
     });

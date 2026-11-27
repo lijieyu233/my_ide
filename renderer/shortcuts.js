@@ -13,12 +13,12 @@ const Shortcuts = (() => {
   const MODS = ['control', 'alt', 'shift', 'meta'];
 
   // 事件 → 归一化组合串：'ctrl+shift+c'
-  function comboOf(e) {
+  function comboOf(e, key = e.key) {
     const parts = [];
     if (e.ctrlKey || e.metaKey) parts.push('ctrl');
     if (e.altKey) parts.push('alt');
     if (e.shiftKey) parts.push('shift');
-    let k = (e.key || '').toLowerCase();
+    let k = (key || '').toLowerCase();
     if (k === ' ') k = 'space';
     if (MODS.includes(k)) return null; // 纯修饰键不算
     if (!k || k.length > 1 && !['tab', 'escape', 'enter', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'backspace', 'delete', 'home', 'end', 'pageup', 'pagedown', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12'].includes(k)) return null;
@@ -57,13 +57,15 @@ const Shortcuts = (() => {
     rebuild();
   }
 
+  const effectiveKeys = id => registry[id] ? keysOf(id).filter(combo => keyMap[combo] === id) : [];
+
   // 绑定列表（设置面板用）
   function bindings() {
     return Object.keys(registry).map((id) => ({
       id,
       desc: registry[id].desc,
       combos: [...keysOf(id)], category: registry[id].category, scope: registry[id].scope,
-      effectiveCombos: keysOf(id).filter(combo => keyMap[combo] === id),
+      effectiveCombos: effectiveKeys(id),
       custom: custom(id),
     }));
   }
@@ -108,7 +110,8 @@ const Shortcuts = (() => {
     for (const id of ids) if (registry[id]) {
       const action = registry[id];
       if (!action.toolJump) { const enabled = action.isEnabled; action.isEnabled = ctx => ctx.modalDepth ? '请先关闭弹窗' : (enabled?.(ctx) ?? true); }
-      action.toolJump = true; action.bindingGuard = jumpCombo;
+      action.toolJump = true;
+      if (!action.panelToggle) action.bindingGuard = jumpCombo;
     }
     rebuild();
   }
@@ -172,14 +175,23 @@ const Shortcuts = (() => {
   const composing=e=>e.isComposing||e.keyCode===229||navigationComposing?.isConnected&&navigationComposing.contains(e.target);
   document.addEventListener('compositionstart',e=>{navigationComposing=e.target;},true);
   document.addEventListener('compositionend',()=>{navigationComposing=null;},true);
+  document.addEventListener('focusout',e=>{if(navigationComposing===e.target)navigationComposing=null;},true);
   window.addEventListener('blur',()=>{navigationComposing=null;});
   // 工具跳转先于编辑器/终端处理，避免内部 stopPropagation 吞键；其余位置导航仍沿同一注册表判断。
   document.addEventListener('keydown',e=>{
     if(composing(e)||captureCb||e.defaultPrevented||e.target.closest?.('.img-lightbox'))return;
-    const id=keyMap[comboOf(e)];
-    if (registry[id]?.toolJump) {
-      if (window.Modal?.stack.length) return;
-      e.preventDefault();e.stopImmediatePropagation();execute(id);return;
+    const combo = comboOf(e);
+    let id = keyMap[combo];
+    if (!id && e.code === 'Backquote' && (e.ctrlKey || e.altKey || e.metaKey)) {
+      const candidate = keyMap[comboOf(e, '`')];
+      if (registry[candidate]?.panelToggle) id = candidate;
+    }
+    const action = registry[id];
+    if (action?.toolJump && (!action.panelToggle || jumpCombo(combo || comboOf(e, '`')))) {
+      if (window.Modal?.stack.length || action.panelToggle && document.querySelector('dialog[open]')) return;
+      e.preventDefault();e.stopImmediatePropagation();
+      if (!action.panelToggle || !e.repeat) execute(id);
+      return;
     }
     if(e.target.closest?.('#remote-terminal-panes'))return;
     if (['md-task', 'md-table', 'md-line-up', 'md-line-down'].includes(id)) {
@@ -276,12 +288,13 @@ const Shortcuts = (() => {
     if (e.defaultPrevented) return; // textarea 等已自行处理
     const id = keyMap[combo];
     if (!id) return;
+    if (registry[id].panelToggle && (e.repeat || window.Modal?.stack.length || e.target.closest?.('.img-lightbox') || document.querySelector('dialog[open]'))) return;
     if (['md-task', 'md-table', 'md-line-up', 'md-line-down'].includes(id)) return; // 仅编辑区捕获，不改动搜索框、其他工具或只读视图。
     e.preventDefault();
     execute(id).then(result => { if (result.disabled) window.MI?.toast(result.error, 'err'); });
   });
 
-  return { register, syncActions, bindings, bindingConflicts, defaultsFor: id => [...(registry[id]?.keys || [])], setBinding, setBindings, reset, resetAll, load, captureNext, cancelCapture, isCapturing, markToolJumps, comboOf,
+  return { register, syncActions, bindings, bindingConflicts, effectiveKeys, defaultsFor: id => [...(registry[id]?.keys || [])], setBinding, setBindings, reset, resetAll, load, captureNext, cancelCapture, isCapturing, markToolJumps, comboOf,
     context, availability, commands, execute, onChanged, describe, invalidateContext };
 })();
 window.Shortcuts = Shortcuts;
@@ -294,8 +307,8 @@ function copyActivePath() {
   MI.toast('📋 已复制完整路径\n' + t.path, 'ok');
 }
 
-Shortcuts.register('toggle-sidebar', { desc: '收起 / 展开侧栏', keys: ['ctrl+`'], run: () => App.toggleSidebar() });
-Shortcuts.register('toggle-sidebar-right', { desc: '收起 / 展开右侧栏（AI 面板所在右栏）', keys: ['alt+`'], run: () => App.toggleRightSidebar() });
+Shortcuts.register('toggle-sidebar', { desc: '收起 / 展开侧栏', keys: ['ctrl+`'], panelToggle: true, run: () => App.toggleSidebar() });
+Shortcuts.register('toggle-sidebar-right', { desc: '收起 / 展开右侧栏（AI 面板所在右栏）', keys: ['alt+`'], panelToggle: true, run: () => App.toggleRightSidebar() });
 Shortcuts.register('open-folder', { desc: '打开项目', keys: ['ctrl+o'], run: () => App.openFolder() });
 Shortcuts.register('quick-open', { desc: '快速打开文件', keys: ['ctrl+p', 'ctrl+shift+n'], run: () => QuickOpen.open() });
 Shortcuts.register('search', { desc: '搜索内容', keys: ['ctrl+shift+f'], run: () => Search.open() });

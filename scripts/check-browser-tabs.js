@@ -1,7 +1,9 @@
 // 真实网页与生产 IPC 走查；独立 home/profile，隐藏窗口不会抢用户桌面焦点。
 const fs = require('fs'), path = require('path'), os = require('os'), http = require('http'), assert = require('assert/strict');
 const { app, BrowserWindow, webContents } = require('electron');
-const root = path.resolve(__dirname, '..'), output = path.join(root, '.ui-check-trash', 'browser-tabs-check');
+const root = path.resolve(__dirname, '..');
+const panelShortcutsOnly = process.argv.includes('--panel-shortcuts-only');
+const output = path.join(root, '.ui-check-trash', panelShortcutsOnly ? 'panel-shortcuts-' + process.pid : 'browser-tabs-check');
 fs.mkdirSync(output, { recursive: true });
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myide-tabs-')); os.homedir = () => home; process.env.HOME = home; process.env.USERPROFILE = home;
 app.setPath('userData', path.join(home, 'profile')); process.argv.push('--headless');
@@ -42,6 +44,37 @@ const timer = setTimeout(() => { console.error('浏览器标签验证超时'); a
     for(let i=0;i<3;i++){const shot=await b.capturePage(undefined,{stayHidden:true,stayAwake:true});if(!shot.isEmpty()){fs.writeFileSync(path.join(output,'page.png'),shot.toPNG());break;}await sleep(100);}
     await capture('tabs');
   });
+  await test('网页原生按键路由可切换三个面板，长按不反复切换', async () => {
+    await js('App.toggleSidebar(false);App.setAiOpen(false);true');
+    const press = (control, alt, isAutoRepeat = false) => {
+      let consumed = false;
+      b.emit('before-input-event', { preventDefault() { consumed = true; } },
+        { type: 'keyDown', key: 'Dead', code: 'Backquote', control, alt, isAutoRepeat });
+      assert(consumed);
+    };
+    press(true, false);
+    await until(() => js('document.body.classList.contains("sidebar-collapsed")'));
+    press(true, false, true);
+    await sleep(100);
+    assert(await js('document.body.classList.contains("sidebar-collapsed")'));
+    press(true, false);
+    await until(() => js('!document.body.classList.contains("sidebar-collapsed")'));
+    press(false, true);
+    await until(() => js('!document.getElementById("ai-panel").classList.contains("hidden")'));
+    press(true, true);
+    await until(() => win.contentView.children.length === 0 && js('document.body.classList.contains("editor-collapsed")'));
+    await js('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Dead",code:"Backquote",ctrlKey:true,altKey:true,bubbles:true,cancelable:true}));true');
+    await until(() => win.contentView.children[0]?.webContents.id === b.id);
+    assert.equal(await b.executeJavaScript('document.getElementById("draft").value'), '标签B未提交内容');
+    await js('App.setAiOpen(false);true');
+  });
+  if (panelShortcutsOnly) {
+    console.log('PANEL_SHORTCUTS_REPORT ' + output);
+    clearTimeout(timer);
+    server.close();
+    app.exit(0);
+    return;
+  }
   await test('保存组的弹窗位于网页上方，打开整组追加并跳过重复网址', async () => {
     await js('BrowserPanel.saveTabGroup();true'); await until(() => win.contentView.children.length === 0); assert(await js('!!document.getElementById("bw-group-name")'));
     await js('document.getElementById("bw-group-name").value="项目后台联调";true'); await capture('save-group');

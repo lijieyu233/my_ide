@@ -813,7 +813,7 @@ MI.registerRenderer(['html', 'htm'], ({ path, content,htmlDiskPreview }) => {
   frame.previewDispose=()=>{disposed=true;if(lease)window.myIDE.htmlPreview.close(lease);};
   let src=String(content||'').replace(/^\uFEFF/,'').replace(/^\s*< ?!DOCTYPE/i,'<!DOCTYPE');
   // 放在末尾，保留 DOCTYPE 的首 token 位置和页面原有的相对资源基准。
-  src+='<scr'+'ipt>document.addEventListener("keydown",function(e){parent.postMessage({__myideKey:1,key:e.key,ctrlKey:e.ctrlKey,shiftKey:e.shiftKey,altKey:e.altKey,metaKey:e.metaKey},"*");});<\/scr'+'ipt>';
+  src+='<scr'+'ipt>document.addEventListener("keydown",function(e){parent.postMessage({__myideKey:1,key:e.key,code:e.code,repeat:e.repeat,isComposing:e.isComposing,ctrlKey:e.ctrlKey,shiftKey:e.shiftKey,altKey:e.altKey,metaKey:e.metaKey},"*");});<\/scr'+'ipt>';
   frame.previewReady=window.myIDE.htmlPreview.open({path,...(htmlDiskPreview?{disk:true}:{content:src}),root:window.App?.root||''}).then(result=>{
     if(!result?.ok)throw Error(result?.error||'HTML 预览加载失败');
     lease=result.id;

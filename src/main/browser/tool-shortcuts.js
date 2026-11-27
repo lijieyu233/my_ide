@@ -1,5 +1,6 @@
-// 原生网页只接受宿主登记的工具跳转，不把网页传来的动作或脚本作为命令执行。
-const allowed=new Set(['tool-sessions','tool-clipboard','tool-project','tool-outline','search-panel','commit-tool-window','tool-browser','tool-bookshelf','tool-remote','tool-db','tool-tasks','tool-launch','tool-quick-launch','git-log']);
+// 原生网页只接受宿主登记的工具和面板快捷键。
+const panelToggles = new Set(['toggle-sidebar', 'button:btn-editor-collapse', 'toggle-sidebar-right']);
+const allowed=new Set(['tool-sessions','tool-clipboard','tool-project','tool-outline','search-panel','commit-tool-window','tool-browser','tool-bookshelf','tool-remote','tool-db','tool-tasks','tool-launch','tool-quick-launch','git-log',...panelToggles]);
 function createService(){
  let keys=new Map();
  return {
@@ -12,7 +13,15 @@ function createService(){
    }
    keys=next;return {ok:true};
   },
-  match(input){if(input.type!=='keyDown'||input.isComposing)return null;let k=(input.key||'').toLowerCase();if(k===' ')k='space';const combo=[input.control||input.meta?'ctrl':'',input.alt?'alt':'',input.shift?'shift':'',k].filter(Boolean).join('+');return keys.get(combo)||null;}
+  match(input){if(input.type!=='keyDown'||input.isComposing)return null;const modifiers=[input.control||input.meta?'ctrl':'',input.alt?'alt':'',input.shift?'shift':''].filter(Boolean);
+    const key=(input.key||'').toLowerCase();
+    const exact=keys.get([...modifiers,key===' '?'space':key].join('+'));
+    if(exact)return exact;
+    if(input.code==='Backquote'&&(input.control||input.meta||input.alt)){
+      const fallback=keys.get([...modifiers,'`'].join('+'));
+      if(panelToggles.has(fallback))return fallback;
+    }
+    return null;}
  };
 }
 module.exports={createService};

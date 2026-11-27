@@ -44,7 +44,36 @@ async function test(name,fn){const f=fixture();try{await fn(f);passed++;console.
   const generated=w.document.createElement('button');generated.dataset.editorShortcut='md-export';generated.id='fixture-export';
   q('#tab-actions').append(generated);fire('#fixture-export','contextmenu');assert.equal(q('[data-tool-shortcut]').dataset.toolShortcut,'button:md-export');
  });
- await test('拖动跨上下分组保存顺序，移动现有节点、不切换功能，重载恢复',async f=>{
+ await test('三个面板可在输入焦点和原生网页中切换，长按与输入法不会重复切换',async f=>{
+   const {w,d,q,key}=f, pressed=[];
+   w.App.toggleSidebar=()=>pressed.push('left');
+   w.App.toggleRightSidebar=()=>pressed.push('right');
+   q('#btn-editor-collapse').onclick=()=>pressed.push('editor');
+   const input=d.createElement('textarea');
+   d.body.append(input);input.focus();
+   input.addEventListener('keydown',event=>event.stopPropagation());
+   const backquote={code:'Backquote',ctrlKey:true};
+   input.dispatchEvent(new w.CompositionEvent('compositionstart',{bubbles:true}));
+   key('Dead',backquote,input);assert.deepEqual(pressed,[]);
+   input.blur();input.focus();
+   assert(key('Dead',backquote,input).defaultPrevented);
+   assert(key('Dead',{...backquote,repeat:true},input).defaultPrevented);
+   assert(key('Dead',{...backquote,altKey:true},input).defaultPrevented);
+   assert(key('Dead',{code:'Backquote',altKey:true},input).defaultPrevented);
+   assert.deepEqual(pressed,['left','editor','right']);
+   const modal=d.createElement('dialog');modal.open=true;d.body.append(modal);
+   key('Dead',backquote,input);assert.equal(pressed.length,3);modal.remove();
+   const editorId='button:btn-editor-collapse';
+   w.Shortcuts.setBinding(editorId,'ctrl+alt+j');
+   const inputForBrowser={type:'keyDown',control:true,alt:true,key:'j'};
+   assert.equal(w.matchBrowserKey(inputForBrowser),editorId);
+   assert.equal(w.matchBrowserKey({...inputForBrowser,key:'Dead',code:'Backquote'}),null);
+   assert.equal(w.matchBrowserKey({type:'keyDown',alt:true,key:'Dead',code:'Backquote'}),'toggle-sidebar-right');
+   w.nativeAction(editorId);
+   assert.deepEqual(pressed,['left','editor','right','editor']);
+   assert(q('#btn-editor-collapse').title.includes('ctrl+alt+j'));
+  });
+  await test('拖动跨上下分组保存顺序，移动现有节点、不切换功能，重载恢复',async f=>{
   const {q,drag,order,calls,w}=f,button=q('#tool-remote');drag('remote','project');assert.equal(order()[0],'tool-sidebar');assert.equal(order()[1],'tool-remote');assert.equal(q('#tool-remote'),button);assert.equal(calls.length,0);
   drag('project','log',true);assert(order().indexOf('tool-project')>order().indexOf('@gap'));button.click();assert.equal(calls.length,0);await new Promise(r=>setTimeout(r,270));button.click();assert.equal(calls.at(-1),'click:remote');
   const restored=fixture({'myide-tool-strip-order':w.localStorage.getItem('myide-tool-strip-order')});try{assert.deepEqual(restored.order(),order());}finally{restored.close();}

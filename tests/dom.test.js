@@ -5662,6 +5662,30 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(!$(dom, '#panel-project').classList.contains('hidden'), '项目面板显示');
   });
 
+  await okAsync('三个面板快捷键恢复单独关闭的侧栏，并切换中间编辑区', async () => {
+    const app = dom.window.App;
+    app.showTool('sessions');
+    app.hideSideTool('sessions');
+    key(dom, '`', { ctrl: true });
+    assert_(!$(dom, '#panel-sessions').classList.contains('hidden'), '左栏快捷键首次按键恢复会话面板');
+    assert_(!dom.window.document.body.classList.contains('sidebar-collapsed'), '左栏应展开');
+    app.setAiOpen(false);
+    key(dom, '`', { alt: true });
+    assert_(!$(dom, '#ai-panel').classList.contains('hidden'), '右栏快捷键首次按键恢复 AI 面板');
+    key(dom, '`', { ctrl: true, alt: true });
+    assert_(dom.window.document.body.classList.contains('editor-collapsed'), '中间编辑区收起');
+    key(dom, '`', { ctrl: true, alt: true });
+    assert_(!dom.window.document.body.classList.contains('editor-collapsed'), '中间编辑区展开');
+    dom.window.Shortcuts.setBinding('toggle-sidebar-right', 'alt+j');
+    key(dom, 'j', { alt: true });
+    assert_($(dom, '#ai-panel').classList.contains('hidden'), '自定义快捷键收起右侧栏');
+    assert_($(dom, '#tool-sidebar-r').title.includes('alt+j'), '面板切换后仍提示自定义键位');
+    dom.window.Shortcuts.reset('toggle-sidebar-right');
+    app.toggleRightSidebar(false);
+    app.setAiOpen(false);
+    app.showTool('project');
+  });
+
   await okAsync('打开文件时浏览器让位（切回编辑区）', async () => {
     await g(dom, 'App.showTool("browser")');
     await tick();

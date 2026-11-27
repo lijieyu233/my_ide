@@ -3,7 +3,7 @@ const fs = require('fs/promises');
 const path = require('path');
 const {randomBytes} = require('crypto');
 const TextFormat=require('../files/text-format');
-const KEY_BRIDGE='<script>document.addEventListener("keydown",function(e){parent.postMessage({__myideKey:1,key:e.key,ctrlKey:e.ctrlKey,shiftKey:e.shiftKey,altKey:e.altKey,metaKey:e.metaKey},"*");});</script>';
+const KEY_BRIDGE='<script>document.addEventListener("keydown",function(e){parent.postMessage({__myideKey:1,key:e.key,code:e.code,repeat:e.repeat,isComposing:e.isComposing,ctrlKey:e.ctrlKey,shiftKey:e.shiftKey,altKey:e.altKey,metaKey:e.metaKey},"*");});</script>';
 const WIDGET_STATE='<script>window.openai={widgetState:null,setWidgetState(state){this.widgetState=state}};</script>';
 const VISUALIZATION_ESCAPE_BRIDGE = `<script>
 window.addEventListener('keydown', event => {
