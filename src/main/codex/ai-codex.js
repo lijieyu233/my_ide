@@ -395,7 +395,7 @@ function createService(options={}){
       const sharedRuntime = await options.sharedRuntime?.();
       const sharedLauncher = valueOf(options.sharedLauncher);
       if (!sharedRuntime && options.requiresSharedRuntime?.()) {
-        throw Object.assign(Error('请在「管理 Codex」中启动共享后台'), { code: 'CODEX_BACKEND_OFF' });
+        throw Object.assign(Error(options.backendOffMessage || '请在「管理 Codex」中启动共享后台'), { code: 'CODEX_BACKEND_OFF' });
       }
       const runtime = sharedRuntime || await (options.resolveRuntime || resolveRuntime)(sharedLauncher || launcher || undefined);
       if(disposed)throw Error('Codex 连接已关闭');
@@ -1469,7 +1469,7 @@ function createService(options={}){
     }
   }
   async function stopSharedBackend(stop) {
-    if (stoppingBackend || starting || runs.size) throw Error('请等待当前 Codex 操作结束，再关闭共享后台');
+    if (stoppingBackend || starting || runs.size) throw Error(options.stopBusyMessage || '请等待当前 Codex 操作结束，再关闭共享后台');
     stoppingBackend = true;
     try {
       await stop();

@@ -52,12 +52,24 @@ const CODEX=require('./src/main/codex/ai-codex').createService({
   },
   desktopOwnsProjectThreads: () => process.platform === 'win32' && !!app.getApplicationNameForProtocol('codex://threads/'),
 });
+const cliCodexHost = require('./src/main/codex/codex-shared-host').createSharedHost({
+  sharedDirectory: () => path.join(process.env.LOCALAPPDATA || app.getPath('userData'), 'MyIDE', 'codex-cli'),
+  dataDirectory: () => UI_CHECK ? path.join(app.getPath('userData'), 'codex-home') : (process.env.CODEX_HOME || path.join(os.homedir(), '.codex')),
+  detectDesktop: async () => null,
+  launcherPath: async () => (await mainWindow?.webContents.executeJavaScript('AiPanel.getConfig().codexPath || ""').catch(() => '')) || '',
+});
+function cliCodexLifecycle() {
+  return process.platform === "win32" && ownsWindow && !UI_CHECK && !LIVE_CHECK && !SMOKE;
+}
 const CODEX_CLI = require('./src/main/codex/ai-codex').createService({
   homeDir: () => UI_CHECK ? path.join(app.getPath('userData'), 'codex-home') : undefined,
   mappingFile: () => path.join(app.getPath('userData'), 'codex-cli-sessions.json'),
-  // 独立 CLI 模式：直接拉起独立 codex.exe app-server --stdio，不依赖共享后台，也不触碰或拉起 Codex 桌面端。
-  requiresSharedRuntime: () => false,
+  // 独立 CLI 模式：手动启停独立 detached codex.exe 后台，不随 MyIDE 关闭，也不触碰或拉起 Codex 桌面端。
+  sharedRuntime: () => cliCodexLifecycle() ? cliCodexHost.runtime() : null,
+  requiresSharedRuntime: cliCodexLifecycle,
   desktopOwnsProjectThreads: () => false,
+  backendOffMessage: '请点击「启动 CLI」启动独立 Codex CLI 后台',
+  stopBusyMessage: '请等待当前 Codex CLI 任务结束，再关闭 CLI',
 });
 const antigravityIpc = require('./src/main/antigravity/antigravity-ipc');
 async function antigravityDesktopPath() {
@@ -1243,6 +1255,16 @@ ipcMain.handle('ai:codex-status',async(event,launcher)=>{
 ipcMain.handle('ai:codex-lifecycle', async (event, action) => {
   try {
     aiSender(event);
+    if (['cli-status', 'start-cli', 'stop-cli'].includes(action)) {
+      if (!cliCodexLifecycle()) return { ok: true, supported: false };
+      switch (action) {
+        case 'cli-status': break;
+        case 'start-cli': await cliCodexHost.start(); break;
+        case 'stop-cli': await CODEX_CLI.stopSharedBackend(() => cliCodexHost.stop()); break;
+      }
+      const st = await cliCodexHost.status();
+      return { ok: true, supported: true, cliRunning: st.backendRunning };
+    }
     if (!manualCodexLifecycle()) return { ok: true, supported: false };
     switch (action) {
       case 'status': break;

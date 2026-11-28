@@ -173,8 +173,28 @@ function runtimeFor(state) {
   };
 }
 
-async function startBackend(directory, codexDir) {
-  const native = await resolveRuntime();
+async function resolveNativeExecutable(launcher) {
+  const runtime = await resolveRuntime(launcher || undefined);
+  if (runtime.source === 'native') return runtime;
+  if (process.platform === 'win32' && runtime.source === 'npm' && runtime.args?.[0]) {
+    const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+    const triple = process.arch === 'arm64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc';
+    const vendored = path.join(path.dirname(runtime.args[0]), '..', 'node_modules', '@openai', 'codex-win32-' + arch, 'vendor', triple, 'codex', 'codex.exe');
+    try {
+      if ((await fs.stat(vendored)).isFile()) {
+        return { executable: await fs.realpath(vendored), args: [], launcher: vendored, source: 'native', env: {} };
+      }
+    } catch {}
+    try {
+      const fallback = await resolveRuntime(undefined, { env: { ...process.env, PATH: '', Path: '', APPDATA: '' } });
+      if (fallback.source === 'native') return fallback;
+    } catch {}
+  }
+  throw Error('需要 Windows 版 Codex 原生运行程序');
+}
+
+async function startBackend(directory, codexDir, launcher) {
+  const native = await resolveNativeExecutable(launcher);
   if (native.source !== 'native') throw Error('需要 Windows 版 Codex 原生运行程序');
   const runDirectory = await fs.mkdtemp(path.join(directory, 'run-'));
   const state = {
@@ -287,6 +307,7 @@ function createSharedHost({ detectDesktop = installedDesktop, startProcess = lau
   sharedDirectory = () => path.join(process.env.LOCALAPPDATA, 'MyIDE', 'codex-shared'),
   dataDirectory = () => process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
   desktopPath = () => '',
+  launcherPath = () => '',
 } = {}) {
   const codexDir = () => path.resolve(dataDirectory());
   const stateFile = () => path.join(sharedDirectory(), 'host.json');
@@ -345,7 +366,8 @@ function createSharedHost({ detectDesktop = installedDesktop, startProcess = lau
       if (desktop?.pids.length) throw Error('请先关闭已打开的 Codex 桌面端，再启动共享后台');
       if (state && processAlive(state.hostPid)) throw Error('原 Codex 共享后台尚未就绪，请稍后重试');
 
-      const started = await startHost(sharedDirectory(), codexDir());
+      const launcher = await Promise.resolve(launcherPath()).catch(() => '');
+      const started = await startHost(sharedDirectory(), codexDir(), launcher || undefined);
       try { await saveState(stateFile(), started.state); }
       catch (error) { started.host.kill(); throw error; }
     });

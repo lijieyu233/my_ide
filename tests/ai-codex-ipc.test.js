@@ -30,13 +30,20 @@ const desktopHost = {
   },
 };
 const cliCalls = [];
+let cliHostRunning = false;
+const cliHost = {
+  async start() { cliHostRunning = true; },
+  async stop() { cliHostRunning = false; },
+  async status() { return { backendRunning: cliHostRunning }; },
+};
 const codexCli = {
   ...codex,
   inspect: async (cfg, context, tools, apply) => { cliCalls.push({ kind: 'inspect', cfg, context }); return { ok: true, configOptions: [] }; },
   listHistory: async (_cfg, rootDir) => { cliCalls.push({ kind: 'listHistory', rootDir }); return { items: [], projects: [] }; },
+  stopSharedBackend: async stop => { cliCalls.push({ kind: 'stopCli' }); await stop(); },
   chat: async (cfg, _m, _t, context) => { cliCalls.push({ kind: 'chat', cfg, context }); return { ok: true, status: 'queued', threadId: '019caa00-0000-7000-8000-000000000002', wakeDesktop: true, context }; },
 };
-const sandbox={manualCodexLifecycle:()=>true,sharedCodexHost:desktopHost,
+const sandbox={manualCodexLifecycle:()=>true,cliCodexLifecycle:()=>true,sharedCodexHost:desktopHost,cliCodexHost:cliHost,
   shell:{openExternal:async url=>protocolOpens.push(url)},ipcMain:{handle:(name,handler)=>handlers.set(name,handler)},mainWindow:{webContents:sender},
   aiOwners:require('../src/main/ai/ai-owner-router').createRouter(),aiRuns:require('../src/main/ai/ai-runs').createRegistry(),CODEX:codex,CODEX_CLI:codexCli,
   DSH:{abort(){},hasRun:()=>false,chat:async(cfg,messages,tools,context)=>({ok:true,context})},
@@ -137,6 +144,10 @@ const settled=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
     assert.equal((await invoke('ai:finish', cliCtx)).ok, true);
     assert.deepEqual(cliCalls.map(x => x.kind), ['inspect', 'listHistory', 'chat']);
     assert.deepEqual(desktopOpens, [wakeUrl, wakeUrl]);
+    assert.equal((await invoke('ai:codex-lifecycle', 'cli-status')).cliRunning, false);
+    assert.equal((await invoke('ai:codex-lifecycle', 'start-cli')).cliRunning, true);
+    assert.equal((await invoke('ai:codex-lifecycle', 'stop-cli')).cliRunning, false);
+    assert.equal(cliCalls.at(-1).kind, 'stopCli');
     state.engine = 'codex';
     assert(source.includes('beforeQuit: () => Promise.all([DSH.dispose(),CODEX.dispose(),CODEX_CLI.dispose(),ANTIGRAVITY.dispose(),antigravityBridge.dispose?.(),shieldDecrypt.dispose()])'));
     console.log('Codex主进程IPC：来源、四引擎归属、Codex CLI 独立路由、旧轮次、工具拒绝、事件隔离、只读检查与取消通过');

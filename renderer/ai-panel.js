@@ -2013,16 +2013,20 @@ const AiPanel = (() => {
     const group = document.createElement('div');
     group.className = 'ai-codex-lifecycle hidden';
     const targets = [
-      { id: 'backend', state: 'backendRunning', start: '启动后台', stop: '停止后台' },
-      { id: 'desktop', state: 'desktopRunning', start: '打开桌面端', stop: '退出桌面端' },
+      { id: 'backend', engine: 'codex', state: 'backendRunning', start: '启动后台', stop: '停止后台' },
+      { id: 'desktop', engine: 'codex', state: 'desktopRunning', start: '打开桌面端', stop: '退出桌面端' },
+      { id: 'cli', engine: 'codex-cli', state: 'cliRunning', start: '启动 CLI', stop: '关闭 CLI' },
     ];
-    let visible = false, snapshot, statusPending = false;
+    let visible = false, activeEngine = '', snapshot, statusPending = false;
     let revision = 0, commands = Promise.resolve();
 
     function render() {
       group.classList.toggle('hidden', !visible || snapshot?.supported === false);
       for (const target of targets) {
         const { button, text, pending } = target;
+        const match = target.engine === activeEngine;
+        button.classList.toggle('hidden', !match);
+        if (!match) continue;
         const running = snapshot?.[target.state] === true;
         const label = running ? target.stop : target.start;
         const missingDesktop = target.id === 'desktop' && snapshot?.desktopAvailable === false && !running;
@@ -2036,13 +2040,13 @@ const AiPanel = (() => {
     }
 
     async function refreshStatus() {
-      if (!visible || statusPending || targets.some(target => target.pending)) return;
-      const observed = revision;
+      if (!visible || !activeEngine || statusPending || targets.some(target => target.pending)) return;
+      const observed = revision, engine = activeEngine;
       statusPending = true;
       try {
-        const result = await lifecycle('status');
+        const result = await lifecycle(engine === 'codex-cli' ? 'cli-status' : 'status');
         // 同步窗口状态的回执可能比用户刚执行的启停操作更晚到达。
-        if (observed === revision && result?.ok) { snapshot = result; render(); }
+        if (observed === revision && engine === activeEngine && result?.ok) { snapshot = result; render(); }
       } catch {
         // 读取失败时保留已有状态，仍可通过按钮发起操作。
       } finally { statusPending = false; }
@@ -2050,17 +2054,17 @@ const AiPanel = (() => {
 
     function submit(target) {
       if (target.button.disabled || !visible) return;
-      const action = target.button.dataset.action;
+      const action = target.button.dataset.action, engine = activeEngine;
       target.pending = true;
       revision++;
       render();
-      // 两个按钮独立接收点击，按点击顺序执行，避免先打开依赖后台的桌面端。
+      // 按钮按点击顺序执行，避免先打开依赖后台的桌面端。
       commands = commands.then(async () => {
         let failed = false;
         try {
           const result = await lifecycle(action);
           if (!result?.ok || !result.supported) throw Error(result?.error || '当前系统不支持管理 Codex 进程');
-          snapshot = result;
+          if (engine === activeEngine) snapshot = result;
         } catch (error) {
           failed = true;
           MI.toast(error.message || String(error), 'err');
@@ -2071,6 +2075,9 @@ const AiPanel = (() => {
         if (failed) { void refreshStatus(); return; }
         if (target.id === 'backend' && getConfig().engine === 'codex') {
           void refreshCodexOptions().then(() => refreshCodexCatalog()).catch(error => MI.toast(error.message, 'err'));
+        } else if (target.id === 'cli' && getConfig().engine === 'codex-cli') {
+          if (action === 'start-cli') void refreshCodexOptions().then(() => refreshCodexCatalog()).catch(error => MI.toast(error.message, 'err'));
+          else void refreshCodexOptions();
         }
       });
     }
@@ -2089,10 +2096,13 @@ const AiPanel = (() => {
     }
     status.append(group);
     syncCodexLifecycle = (refresh = false) => {
-      const shown = getConfig().engine === 'codex' && !panel?.classList.contains('hidden');
-      const entering = shown && !visible;
-      if (shown !== visible) {
+      const engine = getConfig().engine;
+      const shown = isCodex(engine) && !panel?.classList.contains('hidden');
+      const entering = shown && (!visible || activeEngine !== engine);
+      if (entering) { snapshot = undefined; revision++; }
+      if (shown !== visible || (shown && activeEngine !== engine)) {
         visible = shown;
+        activeEngine = shown ? engine : '';
         render();
       }
       if (entering || refresh && shown) void refreshStatus();
@@ -2112,7 +2122,7 @@ const AiPanel = (() => {
     const needsLogin=result?.ok&&result.requiresOpenaiAuth===true&&result.loggedIn!==true;
     dshOptionsState=result?.ok&&!needsLogin?'ready':'error';dshConfigOptions=result?.ok?result.configOptions||[]:[];
     if(needsLogin)result={...result,ok:false,error:'Codex 尚未登录，请先在官方 Codex 客户端或 CLI 登录，再点击重新连接；MyIDE 不读取、复制或代填登录凭据。'};
-    if(info){info.textContent=needsLogin?name+' 已连接 · 未登录':result?.ok?name+' 已连接':result?.errorCode==='CODEX_BACKEND_OFF'?'后台未启动':name+' 连接失败';info.title=result?.desktopOwned?'此会话由 Codex 桌面端运行':result?.ok?'Codex 权限可在输入框的盾牌菜单设置。'+(result.modelConfirmation==='pending-native-resume'?' 原会话模型将在发送前由原生恢复确认。':''):result?.error||'请检查 Codex 启动器与本机登录状态';}
+    if(info){info.textContent=needsLogin?name+' 已连接 · 未登录':result?.ok?name+' 已连接':result?.errorCode==='CODEX_BACKEND_OFF'?(getConfig().engine==='codex-cli'?'CLI 未启动':'后台未启动'):name+' 连接失败';info.title=result?.desktopOwned?'此会话由 Codex 桌面端运行':result?.ok?'Codex 权限可在输入框的盾牌菜单设置。'+(result.modelConfirmation==='pending-native-resume'?' 原会话模型将在发送前由原生恢复确认。':''):result?.error||'请检查 Codex 启动器与本机登录状态';}
     if(result?.ok)dshSessionAccess={...dshSessionAccess,sessionId,hostId:result.sessionId||'',desktopOwned:result.desktopOwned===true,state:'ready',scope:dshScope(),epoch,error:''};
     refreshModelSel();setBusyUI(busy);
   }
