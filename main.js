@@ -45,6 +45,14 @@ const CODEX=require('./src/main/codex/ai-codex').createService({
   sharedLauncher: () => UI_CHECK ? undefined : process.env.MYIDE_CODEX_SHARED_LAUNCHER,
   sharedRuntime: () => manualCodexLifecycle() ? sharedCodexHost.runtime() : null,
   requiresSharedRuntime: manualCodexLifecycle,
+  openAccountLogin: url => shell.openExternal(url),
+  async checkAccountConnection() {
+    if (!manualCodexLifecycle()) return;
+    const state = await sharedCodexHost.status();
+    if (state.desktopRunning && !state.desktopShared) {
+      throw Error('请关闭单独启动的 Codex 桌面端，再从 MyIDE 打开桌面端');
+    }
+  },
   registerDesktopProject: async rootDir => {
     if (!manualCodexLifecycle() || !(await sharedCodexHost.status()).desktopAvailable) return false;
     await openCodexDesktopProject(rootDir);
@@ -1125,6 +1133,17 @@ async function codexHistoryConfig(event, cfg) {
   if (!isCodexEngine(engine) || cfg?.engine !== engine) throw Error('当前未连接 Codex');
   return codexServiceOf(engine);
 }
+async function sharedAccountService(event, cfg) {
+  const service = await codexHistoryConfig(event, cfg);
+  if (cfg.engine !== 'codex') throw Error('请在 Codex 原生连接中切换账号');
+  return service;
+}
+ipcMain.handle('ai:codex-switch-account', async (event, cfg) => {
+  const service = await sharedAccountService(event, cfg);
+  return service.switchAccount(cfg);
+});
+ipcMain.handle('ai:codex-cancel-account-login', async (event, cfg) =>
+  (await sharedAccountService(event, cfg)).cancelAccountLogin());
 ipcMain.handle('ai:codex-skills', async (event, cfg, target) => {
   try {
     aiSender(event);

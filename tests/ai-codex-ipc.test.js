@@ -8,6 +8,8 @@ const sender={id:31,mainFrame:{processId:3,routingId:1},isDestroyed:()=>false,se
 const event={sender,senderFrame:{...sender.mainFrame}};
 const result=(kind,context,id,value)=>{calls.push({kind,context,id,value});const run=pending.get(context.requestId);return {ok:!!run&&context.page?.id===run.context.page?.id&&context.page?.projectContext===run.context.page?.projectContext};};
 const codex={abort:id=>aborts.push(id),status:async launcher=>({ok:true,launcher}),hasRun:()=>false,
+  switchAccount: async () => { calls.push({kind:'switch-account'}); return {unchanged:false}; },
+  cancelAccountLogin: async () => { calls.push({kind:'cancel-account'}); },
   inspect:async(cfg,context,tools,apply)=>{calls.push({kind:'inspect',cfg,context,tools,apply});return {ok:true,configOptions:[]};},
   listHistory:async(_cfg,rootDir)=>{
     assert.equal(rootDir,root);
@@ -64,6 +66,16 @@ const settled=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
     state.engine='dsh';assert.equal((await invoke('ai:codex-options',cfg,c.sessionId,tools)).ok,false);state.engine='codex';state.page=page;
     assert.equal((await invoke('ai:codex-status','fixture.cmd')).launcher,'fixture.cmd');
     const fake={...event,senderFrame:{processId:3,routingId:99}};
+    for (const operation of ['switch-account', 'cancel-account-login']) {
+      const handler = handlers.get('ai:codex-' + operation);
+      await assert.rejects(() => handler(fake, cfg), /来源无效/);
+      state.engine = 'codex-cli';
+      await assert.rejects(() => handler(event, { ...cfg, engine: state.engine }), /原生连接/);
+      state.engine = 'codex';
+    }
+    assert.equal((await invoke('ai:codex-switch-account', cfg)).unchanged, false);
+    await invoke('ai:codex-cancel-account-login', cfg);
+    assert.equal(calls.at(-1).kind,'cancel-account');
     assert.equal((await handlers.get('ai:codex-status')(fake,'fixture.cmd')).ok,false);
     assert.equal((await handlers.get('ai:codex-history')(fake,cfg,'fixture-thread')).ok,false);
     assert.equal((await handlers.get('ai:codex-fork')(fake,cfg,'fixture-thread')).ok,false);

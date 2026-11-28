@@ -4,6 +4,7 @@ const path=require('path');
 function createServer(){
  const control={resumeRetry:null},threads=new Map(),projects=[],requests=[],receipts=[],children=new Set();let threadSeq=0,turnSeq=0,serverSeq=1000;
  const models=[{id:'offline-codex',model:'offline-codex',displayName:'Codex offline fixture',isDefault:true,defaultReasoningEffort:'medium',supportedReasoningEfforts:[{reasoningEffort:'medium',description:'medium'},{reasoningEffort:'high',description:'high'}]}];
+ let accountEmail='personal@example.test';
  function spawn(){const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();children.add(child);let buffer='',ended=false;const waiting=new Map(), loaded=new Set(), unloading=new Map();
   const send=message=>{if(!ended)child.stdout.write(JSON.stringify(message)+'\n');},reply=(id,result)=>send({id,result}),notice=(method,params)=>send({method,params});
   const ask=(method,params,done)=>{const id=++serverSeq;waiting.set(id,done);send({id,method,params});};
@@ -43,7 +44,15 @@ function createServer(){
   const handle=message=>{if(!message.method){receipts.push({kind:'rpc-response',id:message.id});const done=waiting.get(message.id);waiting.delete(message.id);done?.(message.result||{});return;}requests.push({method:message.method,params:message.params});const p=message.params||{};
    if(message.method==='initialize')return reply(message.id,{userAgent:'codex-offline-fixture/1'});
    if(message.method==='initialized')return;
-   if(message.method==='account/read')return reply(message.id,{account:{type:'apiKey'},requiresOpenaiAuth:false});
+   if(message.method==='account/read')return reply(message.id,{account:{type:'chatgpt',email:accountEmail},requiresOpenaiAuth:false});
+   if(message.method==='account/login/start'){
+     control.completeLogin=email=>{
+       accountEmail=email;
+       notice('account/login/completed',{loginId:'fixture-login',success:true});
+       notice('account/updated',{authMode:'chatgpt'});
+     };
+     return reply(message.id,{type:'chatgpt',loginId:'fixture-login',authUrl:'https://auth.openai.com/oauth/authorize?state=fixture'});
+   }
    if(message.method==='account/gatewayOAuth/read')return reply(message.id,{providerId:'openai',providerName:'OpenAI',required:false,status:null,error:null});
    if(message.method==='model/list')return reply(message.id,{data:models,nextCursor:null});
    if(message.method==='skills/list')return reply(message.id,{data:p.cwds.map(cwd=>({cwd,errors:[],skills:[

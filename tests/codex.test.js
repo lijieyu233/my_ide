@@ -19,12 +19,16 @@ function fixture(config={}){
   notify(c,'item/agentMessage/delta',{threadId,turnId,itemId:'message-'+turnId,delta:text});
   notify(c,'turn/completed',{threadId,turn:{id:turnId,status}});
  };
- service=createService({homeDir:()=>home,registerDesktopProject:config.registerDesktopProject,sharedLauncher:()=>config.sharedLauncher,requiresSharedRuntime:()=>config.managedOnly===true,desktopOwnsProjectThreads:()=>config.desktopInstalled===true,...(map?{mappingFile:()=>map}:{}),turnTimeoutMs:config.turnTimeoutMs||10000,idleWarningMs:config.idleWarningMs,requestTimeoutMs:1000,resolveRuntime:async()=>({executable:'fixture-codex.exe',args:[],env:{},launcher:'fixture-codex.exe'}),spawn:(exe,args,opts)=>{
+ service=createService({homeDir:()=>home,openAccountLogin:config.openAccountLogin,registerDesktopProject:config.registerDesktopProject,sharedLauncher:()=>config.sharedLauncher,requiresSharedRuntime:()=>config.managedOnly===true,desktopOwnsProjectThreads:()=>config.desktopInstalled===true,...(map?{mappingFile:()=>map}:{}),turnTimeoutMs:config.turnTimeoutMs||10000,idleWarningMs:config.idleWarningMs,requestTimeoutMs:1000,resolveRuntime:async()=>({executable:'fixture-codex.exe',args:[],env:{},launcher:'fixture-codex.exe'}),spawn:(exe,args,opts)=>{
   const c=child();children.push(c);invocation={exe,args,opts};
   c.stdin.on('data',data=>{for(const line of data.toString().trim().split('\n')){
    const r=JSON.parse(line);requests.push(r);const p=r.params||{};
    if(r.method==='initialize'){send(c,{id:r.id,result:{userAgent:'codex-fixture/1'}});}
-   else if(r.method==='account/gatewayOAuth/read'){if(config.unsupportedGateway)send(c,{id:r.id,error:{code:-32601,message:'unsupported'}});else send(c,{id:r.id,result:config.gateway||{providerId:'openai',providerName:'OpenAI',required:false,status:null}});}
+   else if(config.accountRpc && ['account/login/start','account/login/cancel'].includes(r.method)){
+      const response=config.accountRpc(r.method,p);
+      if(response)send(c,{id:r.id,...response});
+    }
+    else if(r.method==='account/gatewayOAuth/read'){if(config.unsupportedGateway)send(c,{id:r.id,error:{code:-32601,message:'unsupported'}});else send(c,{id:r.id,result:config.gateway||{providerId:'openai',providerName:'OpenAI',required:false,status:null}});}
     else if(r.method==='account/read')send(c,{id:r.id,result:config.account||{account:{type:'chatgpt',email:'private@example.invalid',planType:'plus',accessToken:'never-expose-token'},requiresOpenaiAuth:true}});
    else if(r.method==='model/list')send(c,{id:r.id,result:{data:config.models||models,nextCursor:null}});
    else if(r.method==='project/list'){
@@ -139,6 +143,33 @@ function fixture(config={}){
 }
 let count=0;async function test(name,fn){await fn();count++;console.log('PASS '+name);}
 (async()=>{try{
+ await test('官方登录切换账号，取消、相同账号和异常地址均不会误报成功',async()=>{
+   const opened=[],config={openAccountLogin:async url=>opened.push(new URL(url))};
+   const auth={type:'chatgpt',loginId:'login',authUrl:'https://auth.openai.com/oauth/authorize?state=fixture'};
+   config.accountRpc=method=>({result:method==='account/login/start'?auth:{status:'canceled'}});
+   const f=fixture(config);
+   try {
+     for(const [index,email] of ['work@example.test','work@example.test','private@example.invalid'].entries()) {
+       const request=f.service.switchAccount({});
+       await until(()=>opened.length===index+1);
+       assert.equal(opened[index].searchParams.get('state'),'fixture');
+       assert.equal(opened[index].searchParams.get('prompt'),'select_account');
+       await assert.rejects(f.service.switchAccount({}),/正在切换/);
+       f.send({method:'account/login/completed',params:{loginId:'other',success:false}});
+       config.account={account:{type:'chatgpt',email}};
+       f.send({method:'account/login/completed',params:{loginId:'login',success:true}});
+       assert.deepEqual(await request,{unchanged:index===1});
+     }
+     const cancelled=f.service.switchAccount({});
+     await until(()=>opened.length===4);
+     f.service.cancelAccountLogin();
+     assert.deepEqual(await cancelled,{cancelled:true});
+     auth.authUrl='https://auth.openai.com.invalid/?private=fixture';
+     await assert.rejects(f.service.switchAccount({}),/账号切换未完成/);
+     assert.equal(opened.length,4);
+     assert(!f.requests.some(r=>/^(account\/logout|thread\/|project\/)/.test(r.method)));
+   } finally {await f.service.dispose();}
+ });
  if(process.platform==='win32') await test('共享桌面启动优先兼容现有安装，Windows 启动错误时保留原链接和后台连接',async()=>{
   const directory=path.join(temp,'desktop-launch');
   fs.mkdirSync(directory);

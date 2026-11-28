@@ -6,7 +6,15 @@ const openedDirectories=[];
 shell.openPath=async target=>{openedDirectories.push(target);return '';};
 clipboard.writeText=value=>clipboardWrites.push(value);
 clipboard.write=value=>richClipboardWrites.push(value);
-shell.openExternal=(url,...args)=>url.startsWith('codex:')?(desktopLinks.push(url),Promise.resolve()):openExternal(url,...args);
+let accountPageOpened=false;
+shell.openExternal=(url,...args)=>{
+ if(process.argv.includes('--codex-accounts-only')){
+   assert.equal(new URL(url).origin,'https://auth.openai.com');
+   accountPageOpened=true;
+   return Promise.resolve();
+ }
+ return url.startsWith('codex:')?(desktopLinks.push(url),Promise.resolve()):openExternal(url,...args);
+};
 const repo=path.resolve(__dirname,'..'),temp=fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(),'myide-codex-ui-'))),roots=['A','B'].map(n=>path.join(temp,n)),out=path.join(repo,'.ui-check-trash','codex-ui-'+process.pid);
 fs.mkdirSync(out,{recursive:true});for(const root of roots){fs.mkdirSync(root);fs.writeFileSync(path.join(root,'fixture.txt'),'MYIDE_DYNAMIC_READ_SENTINEL\n');}
 os.homedir=()=>temp;process.env.HOME=process.env.USERPROFILE=temp;process.env.CODEX_HOME=path.join(temp,'codex-home');app.setPath('userData',path.join(temp,'profile'));process.argv.push('--headless');
@@ -148,6 +156,27 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
  let releaseStatus;
  if (lifecycleOnly) statusGate = new Promise(resolve => { releaseStatus = resolve; });
  await js(async root=>{Object.defineProperty(document,'hidden',{value:false,configurable:true});await App.setRoot(root);App.showAi();await AiPanel.setConfig({engine:'codex',autoIdeContext:false,injectMyideRules:false});return true;},roots[0]);await until(()=>js(()=>AiPanel.aiState().dshState==='ready'),'Codex options');check('Codex connects in existing mode selector and shows native model',await js(()=>document.getElementById('ai-engine').value==='codex'&&document.getElementById('ai-model').textContent.includes('Codex offline fixture')));check('inspect never creates a thread or starts a turn',!fixture.requests.some(r=>['thread/start','turn/start'].includes(r.method)));
+ if (process.argv.includes('--codex-accounts-only')) {
+   const selector='#ai-codex-account';
+   const original=await js(()=>{
+     document.querySelector('#ai-input').value='未发送的草稿';
+     return { root:App.root,current:AiPanel.aiState().current };
+   });
+   await capture('codex-account-switch');
+   for (const email of ['work@example.test','personal@example.test']) {
+     accountPageOpened=false;
+     await js(selector=>document.querySelector(selector).click(),selector);
+     await until(()=>accountPageOpened,'official account chooser opened');
+     fixture.control.completeLogin(email);
+     await until(()=>js(selector=>document.querySelector(selector).textContent==='切换账号',selector),'switch completed');
+   }
+   check('Shared login A to B and back keeps project, conversation and draft',await js(before=>
+     App.root===before.root && AiPanel.aiState().current===before.current &&
+     document.querySelector('#ai-input').value==='未发送的草稿',original));
+   check('No logout or new thread on account switch',!fixture.requests.some(r=>
+     ['account/logout','thread/start','turn/start'].includes(r.method)));
+   await finish(0);return;
+ }
  if (process.argv.includes('--codex-background-only')) {
    const longRoot = path.join(temp, '这是一个适合验证提醒省略的超长项目目录名称'.repeat(3));
    fs.mkdirSync(longRoot);

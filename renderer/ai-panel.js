@@ -2010,6 +2010,36 @@ const AiPanel = (() => {
     const lifecycle = window.myIDE.ai.codexLifecycle;
     if (!status || !lifecycle) return;
 
+    const account = document.createElement('button');
+    account.id = 'ai-codex-account';
+    account.type = 'button';
+    account.className = 'vt-btn hidden';
+    account.textContent = '切换账号';
+    status.append(account);
+    let switching = false;
+    account.onclick = async () => {
+      const cfg = getConfig();
+      if (cfg.engine !== 'codex') return;
+      if (switching) {
+        try { await window.myIDE.ai.codexCancelAccountLogin(cfg); }
+        catch (error) { MI.toast(error.message, 'err'); }
+        return;
+      }
+      switching = true;
+      try {
+        account.textContent = '取消切换';
+        const result = await window.myIDE.ai.codexSwitchAccount(cfg);
+        if (getConfig().engine !== 'codex' || result.cancelled) return;
+        await refreshCodexOptions();
+        await refreshCodexCatalog({ background: true });
+        MI.toast(result.unchanged ? '仍是原账号' : '账号已切换');
+      } catch (error) {
+        MI.toast(error.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, ''), 'err');
+      } finally {
+        switching = false;
+        account.textContent = '切换账号';
+      }
+    };
     const group = document.createElement('div');
     group.className = 'ai-codex-lifecycle hidden';
     const targets = [
@@ -2098,6 +2128,7 @@ const AiPanel = (() => {
     syncCodexLifecycle = (refresh = false) => {
       const engine = getConfig().engine;
       const shown = isCodex(engine) && !panel?.classList.contains('hidden');
+      account.classList.toggle('hidden', !shown || engine !== 'codex');
       const entering = shown && (!visible || activeEngine !== engine);
       if (entering) { snapshot = undefined; revision++; }
       if (shown !== visible || (shown && activeEngine !== engine)) {
@@ -2121,7 +2152,7 @@ const AiPanel = (() => {
     if(ticket!==dshOptionsTicket||!isCodex()||root!==sessionRoot()||sessionId!==curSessionId||epoch!==pageEpoch)return;
     const needsLogin=result?.ok&&result.requiresOpenaiAuth===true&&result.loggedIn!==true;
     dshOptionsState=result?.ok&&!needsLogin?'ready':'error';dshConfigOptions=result?.ok?result.configOptions||[]:[];
-    if(needsLogin)result={...result,ok:false,error:'Codex 尚未登录，请先在官方 Codex 客户端或 CLI 登录，再点击重新连接；MyIDE 不读取、复制或代填登录凭据。'};
+    if(needsLogin)result={...result,ok:false,error:getConfig().engine === 'codex' ? '请点击「切换账号」登录 Codex' : '请在官方 Codex CLI 登录后重新连接'};
     if(info){info.textContent=needsLogin?name+' 已连接 · 未登录':result?.ok?name+' 已连接':result?.errorCode==='CODEX_BACKEND_OFF'?(getConfig().engine==='codex-cli'?'CLI 未启动':'后台未启动'):name+' 连接失败';info.title=result?.desktopOwned?'此会话由 Codex 桌面端运行':result?.ok?'Codex 权限可在输入框的盾牌菜单设置。'+(result.modelConfirmation==='pending-native-resume'?' 原会话模型将在发送前由原生恢复确认。':''):result?.error||'请检查 Codex 启动器与本机登录状态';}
     if(result?.ok)dshSessionAccess={...dshSessionAccess,sessionId,hostId:result.sessionId||'',desktopOwned:result.desktopOwned===true,state:'ready',scope:dshScope(),epoch,error:''};
     refreshModelSel();setBusyUI(busy);

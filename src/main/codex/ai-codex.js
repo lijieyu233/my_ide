@@ -53,6 +53,7 @@ function createService(options={}){
   const questionWatches = new Map(), asyncAnswers = new Map();
   let connection=null,starting=null,loaded=false,loading=null,disposed=false,saving=Promise.resolve();
   let stoppingBackend = false;
+  let accountLogin = null;
   let workspaceBindings;
   const mapping=()=>valueOf(options.mappingFile),explicitHome=()=>valueOf(options.homeDir)||options.home;
   const observeDesktop=desktopState.createDesktopStatusReader();
@@ -408,6 +409,74 @@ function createService(options={}){
       try{const initialized=await conn.rpc.request('initialize',{clientInfo:{name:'myide',title:'MyIDE',version:'0.8.5'},capabilities:{experimentalApi:true,requiredHumanApproval:true,explicitGatewayOauth:true}},options.requestTimeoutMs||45000);if(!initialized||typeof initialized.userAgent!=='string')throw Error('本机 Codex 不支持 app-server initialize');conn.rpc.notify('initialized');return conn;}
       catch(error){conn.rpc.close();child.kill();throw error;}
     })().finally(()=>{starting=null;});return starting;
+  }
+  async function switchAccount(cfg) {
+    if (accountLogin) throw Error('正在切换 Codex 账号');
+    const controller = new AbortController();
+    accountLogin = controller;
+    let rpc, loginId, timer, onNotification, onClose;
+    let resolveCompletion;
+    const completed = new Promise(resolve => { resolveCompletion = resolve; });
+    controller.signal.addEventListener('abort', () => resolveCompletion('cancelled'), { once: true });
+    try {
+      await options.checkAccountConnection?.();
+    } catch (error) {
+      accountLogin = null;
+      throw error;
+    }
+    try {
+      if (controller.signal.aborted) return { cancelled: true };
+      rpc = (await connect(cfg)).rpc;
+      const read = async () => {
+        const { account, userId } = await rpc.request('account/read', { refreshToken: false });
+        return { chatgpt: account?.type === 'chatgpt', key: userId || account?.email || null };
+      };
+      const previous = await read();
+      if (controller.signal.aborted) return { cancelled: true };
+      // A completion can arrive before the login/start response is handled.
+      const early = new Map();
+      onNotification = ({ method, params }) => {
+        if (method !== 'account/login/completed' || typeof params?.loginId !== 'string') return;
+        if (params.loginId === loginId) resolveCompletion(params.success === true);
+        else if (!loginId && early.size < 8) early.set(params.loginId, params.success === true);
+      };
+      onClose = () => resolveCompletion('disconnected');
+      rpc.on('notification', onNotification);
+      rpc.once('closed', onClose);
+      const result = await rpc.request('account/login/start', { type: 'chatgpt' });
+      loginId = result?.loginId;
+      if (result?.type !== 'chatgpt' || typeof loginId !== 'string' || !loginId) throw Error('login');
+      if (early.has(loginId)) resolveCompletion(early.get(loginId));
+      else if (!controller.signal.aborted) {
+        const url = new URL(result.authUrl);
+        if (!['https://auth.openai.com', 'https://chatgpt.com'].includes(url.origin) || url.username || url.password) throw Error('url');
+        // Ask the identity provider to let the user choose an account, keeping Codex's callback and state.
+        url.searchParams.set('prompt', 'select_account');
+        await options.openAccountLogin(url.href);
+      }
+      timer = setTimeout(() => resolveCompletion('timeout'), options.loginTimeoutMs || 10 * 60 * 1000);
+      timer.unref?.();
+      const status = await completed;
+      if (status === 'cancelled') return { cancelled: true };
+      if (status !== true) throw Error('login');
+      const current = await read();
+      if (!current.chatgpt) throw Error('login');
+      loginId = null;
+      return { unchanged: !!previous.key && previous.key === current.key };
+    } catch (error) {
+      if (controller.signal.aborted) return { cancelled: true };
+      if (error.code === 'CODEX_BACKEND_OFF') throw error;
+      throw Error('Codex 账号切换未完成，请重试');
+    } finally {
+      clearTimeout(timer);
+      if (onNotification) rpc.off('notification', onNotification);
+      if (onClose) rpc.off('closed', onClose);
+      if (loginId && !rpc.closed) await rpc.request('account/login/cancel', { loginId }, 2500).catch(() => {});
+      accountLogin = null;
+    }
+  }
+  function cancelAccountLogin() {
+    accountLogin?.abort();
   }
   async function catalog(conn){
     let gateway;try{gateway=await conn.rpc.request('account/gatewayOAuth/read',{},options.requestTimeoutMs||45000);}catch(error){throw Error(error.code===-32601||error.code===-32602?'本机 Codex app-server 不支持安全网关探测，请更新兼容版本；未自动登录或打开浏览器':'Codex 安全网关状态读取失败，未自动登录或打开浏览器');}
@@ -1477,7 +1546,7 @@ function createService(options={}){
     } finally { stoppingBackend = false; }
   }
   function hasRun(context){return [...runs.values()].some(run=>run.context.sessionId===context?.sessionId&&run.context.rootId===context?.rootId);}
-  async function dispose(){if(disposed)return;disposed=true;for(const run of runs.values()){run.aborted=true;run.detached=run.conn?.shared;discardPending(run);resolveRun(run,{status:'interrupted'});}const conn=connection;conn?.rpc.close();conn?.child.kill();if(starting)try{const own=await starting;own.rpc.close();own.child.kill();}catch{}await saving;}
-  return {chat,inspect,listSkills,listHistory,getHistoryProjectRoot,renameProject,openHistory,openInDesktop,forkHistory,renameHistory,setHistoryArchived,changeInput,changeGoal,status,abort,detach,toolResult,permissionResult,questionResult,dispose,hasRun,stopSharedBackend};
+  async function dispose(){if(disposed)return;disposed=true;cancelAccountLogin();for(const run of runs.values()){run.aborted=true;run.detached=run.conn?.shared;discardPending(run);resolveRun(run,{status:'interrupted'});}const conn=connection;conn?.rpc.close();conn?.child.kill();if(starting)try{const own=await starting;own.rpc.close();own.child.kill();}catch{}await saving;}
+  return {chat,inspect,switchAccount,cancelAccountLogin,listSkills,listHistory,getHistoryProjectRoot,renameProject,openHistory,openInDesktop,forkHistory,renameHistory,setHistoryArchived,changeInput,changeGoal,status,abort,detach,toolResult,permissionResult,questionResult,dispose,hasRun,stopSharedBackend};
 }
 module.exports={createService,promptContent,toolSpecs,configOptions};
