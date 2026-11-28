@@ -50,7 +50,7 @@ contextBridge.exposeInMainWorld('myIDE', {
     exportCopy: (project, id, target) => ipcRenderer.invoke('tasks:exportCopy', project, id, target),
   },
   fs: {
-    openFolder: () => ipcRenderer.invoke('fs:openFolder'),
+    openFolder: (purpose) => ipcRenderer.invoke('fs:openFolder', purpose),
     pickImage: () => ipcRenderer.invoke('fs:pickImage'),
     pickFile: (title, filters) => ipcRenderer.invoke('fs:pickFile', title, filters),
     pickSave: (title, defaultName, filters) => ipcRenderer.invoke('fs:pickSave', title, defaultName, filters),

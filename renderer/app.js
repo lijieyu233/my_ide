@@ -806,6 +806,7 @@ const App = (() => {
       action('复制项目路径', async () => { try { await navigator.clipboard.writeText(currentPath); if (projectMenuCurrent(state)) status.textContent = '路径已复制'; } catch { if (projectMenuCurrent(state)) MI.toast('复制项目路径失败：' + currentPath, 'err'); } });
       action('在资源管理器中显示', () => window.myIDE.shell.showInFolder(currentPath));
     }
+    action('新建项目…', async () => { closeProjMenuNow(true); if (await createProject()) onOpened?.(); });
     function markSelection() {
       for (const button of list.querySelectorAll('[data-project-open]')) button.classList.toggle('sel', button.dataset.projectOpen === state.selected);
     }
@@ -1146,6 +1147,36 @@ const App = (() => {
     catch (error) { MI.toast('未打开项目：' + error.message + '；当前内容已保留', 'err'); }
     return false;
   }
+  let creatingProject = false;
+  async function createProject() {
+    if (creatingProject) return false;
+    creatingProject = true;
+    try {
+      const parent = await window.myIDE.fs.openFolder('new-project-parent');
+      if (!parent) return false;
+      const name = (await Modal.prompt('新建项目', '项目名称', ''))?.trim();
+      if (!name) return false;
+
+      const create = () => window.myIDE.fs.createItem(parent, parent, name, 'dir');
+      const result = await (window.PathProgress ? PathProgress.track(create) : create());
+      if (!result?.ok) {
+        throw Error((result?.error || '无法创建目录') +
+          (result?.pendingPath ? '；临时项已保留：' + result.pendingPath : ''));
+      }
+      try {
+        if (await openProject(result.path)) return true;
+      } catch {
+        // 切换队列已显示失败原因，目录仍可从「打开项目」进入。
+      }
+      MI.toast('项目已创建于 ' + result.path + '，仍停留在当前项目', 'ok');
+    } catch (error) {
+      MI.toast('新建项目失败：' + (error?.message || error), 'err');
+    } finally {
+      creatingProject = false;
+    }
+    return false;
+  }
+
   async function rememberActiveProject(p) {
     try { const result = await window.myIDE.fs.setRecent(p); if (!result?.ok) throw Error(result?.error || '上次项目记录未保存'); }
     catch (error) { MI.toast(error.message + '；下次启动的项目可能未更新', 'err'); }
@@ -1315,7 +1346,7 @@ const App = (() => {
         bubbles: true, cancelable: true,
       }));
     });
-    const actionButtons = { 'btn-open': 'open-folder', 'btn-open2': 'open-folder', 'btn-commands': 'command-palette',
+    const actionButtons = { 'btn-open': 'open-folder', 'btn-open2': 'open-folder', 'btn-create-project': 'new-project', 'btn-commands': 'command-palette',
       'btn-search': 'search', 'btn-settings': 'settings', 'btn-help': 'help' };
     const syncActionButtons = () => {
       const bindings = new Map(Shortcuts.bindings().map(binding => [binding.id, binding]));
@@ -1401,7 +1432,7 @@ const App = (() => {
   }
 
   return {
-    init, openFolder, setRoot, openProject, removeProject, refreshAll, refreshGit, refreshOutline,
+    init, openFolder, createProject, setRoot, openProject, removeProject, refreshAll, refreshGit, refreshOutline,
     switchTool, showTool, hideSideTool, closeBrowser, getTool, getPageContext, setTool, backToEditor, setEditorCollapsed, updateStatusbar, getProjects, knownProjects, toggleSidebar, toggleRightSidebar, showAi, toggleAi, setAiOpen, renderToolStrip, showProjMenu, openProject, LAYOUT, resizeColumn, saveColumnWidths,
     get root() { return root; },
     fitName, ftIcon, dirIcon,

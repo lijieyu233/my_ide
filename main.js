@@ -644,8 +644,9 @@ ipcMain.handle('win:zoom', (_e, dir) => {
 ipcMain.handle('app:getVersion', () => app.getVersion());
 
 // ---------- IPC：文件系统 ----------
-ipcMain.handle('fs:openFolder', async () => {
-  const r = await dialog.showOpenDialog(mainWindow, { title: '打开文件夹', properties: ['openDirectory'] });
+ipcMain.handle('fs:openFolder', async (_event, purpose) => {
+  const title = purpose === 'new-project-parent' ? '选择新项目的上级文件夹' : '打开文件夹';
+  const r = await dialog.showOpenDialog(mainWindow, { title, properties: ['openDirectory'] });
   if (r.canceled || !r.filePaths.length) return null;
   const p = path.normalize(r.filePaths[0]);
   return p;

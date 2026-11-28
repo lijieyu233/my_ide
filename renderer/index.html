@@ -17,7 +17,8 @@
 </head>
 <body>
 <header id="toolbar">
-  <button id="btn-open" class="tb-btn tb-ic" title="打开项目 (Ctrl+O)"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 4h4l1.2 1.6h7.2v6.9a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z"/><path d="M8 8.2v3.4M6.3 9.9h3.4"/></svg></button>
+  <button id="btn-open" class="tb-btn tb-ic" title="打开项目 (Ctrl+O)" aria-label="打开项目"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 12.5V4h4l1.2 1.6H13V8M2 12.5l2.3-5h10l-2.1 5z"/></svg></button>
+  <button id="btn-create-project" class="tb-btn tb-ic" title="新建项目" aria-label="新建项目"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 4h4l1.2 1.6h7.2v6.9a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z"/><path d="M8 8.2v3.4M6.3 9.9h3.4"/></svg></button>
   <span class="tb-sep" aria-hidden="true"></span>
   <div id="project-bar-wrap">
     <!-- 「全部项目」入口由 app.js 注入到此层（在横向滚动容器之外 → 结构上不可能压住项目按钮） -->
@@ -297,7 +298,7 @@
           <span class="kbd-chip"><kbd>Ctrl+P</kbd>快速打开</span>
           <span class="kbd-chip"><kbd>Ctrl+Shift+C</kbd>复制路径</span>
         </div>
-        <button id="btn-open2" class="empty-cta"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 4h4l1.2 1.6h7.2v6.9a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z"/></svg>打开项目</button>
+        <button id="btn-open2" class="empty-cta"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 12.5V4h4l1.2 1.6H13V8M2 12.5l2.3-5h10l-2.1 5z"/></svg>打开项目</button>
         <div id="empty-recent"></div>
       </div>
     </div>

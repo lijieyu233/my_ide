@@ -10,7 +10,11 @@ fs.mkdirSync(path.join(home, 'profile'), { recursive: true });
 fs.writeFileSync(path.join(home, 'profile/my-ide-state.json'), JSON.stringify({ lastFolder: B, other: '保留旧字段' }));
 process.argv.push('--open', missing);
 if (process.argv.includes('--inspect')) app.commandLine.appendSwitch('remote-debugging-port', '9471');
-let choice = B; dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [choice] });
+let choice = B, pickerTitle;
+dialog.showOpenDialog = async (_window, options) => {
+  pickerTitle = options.title;
+  return { canceled: !choice, filePaths: choice ? [choice] : [] };
+};
 const output = path.join(__dirname, '..', '.ui-check-trash', '128a1-native-' + process.pid); fs.mkdirSync(output, { recursive: true });
 require('../main');
 let win, passed = 0;
@@ -49,6 +53,42 @@ app.whenReady().then(async () => {
     check('成功切换后主进程/渲染历史一致', await run('App.openProject(' + JSON.stringify(B) + ')') && state().lastFolder === B && await run('JSON.parse(localStorage.getItem("myide-recent-projects"))[0]===' + JSON.stringify(B)));
     check('成功返回可再次读取原正文', await run('App.openProject(' + JSON.stringify(A) + ')') && await run('Viewer.openFile(' + JSON.stringify(path.join(A, '阅读.txt')) + ').then(()=>Viewer.cm.getValue()===' + JSON.stringify(original.toString()) + ')'));
     check('返回阅读没有改变原字节', fs.readFileSync(path.join(A, '阅读.txt')).equals(original));
+
+    const created = path.join(home, '新项目 示例');
+    const pickerEntries = () => fs.readdirSync(home).sort();
+    const beforeCreate = pickerEntries();
+    choice = null;
+    check('取消选择新建位置不改变当前项目或磁盘', await run('App.createProject()') === false &&
+      await run('App.root===' + JSON.stringify(A)) && JSON.stringify(pickerEntries()) === JSON.stringify(beforeCreate));
+    choice = home;
+    const clickCreate = async () => {
+      await run('document.getElementById("btn-create-project").click()');
+      await wait('!!document.getElementById("pf-input")');
+    };
+    const enterName = name => run('document.getElementById("pf-input").value=' + JSON.stringify(name) +
+      ';document.getElementById("pf-yes").click()');
+    await clickCreate();
+    check('标题栏的新建项目要求选择上级文件夹并输入名称', pickerTitle === '选择新项目的上级文件夹' &&
+      await run('document.querySelector("label[for=pf-input]").textContent==="项目名称"'));
+    await snapshot('new-project-name');
+    await enterName('  新项目 示例  ');
+    await wait('App.root===' + JSON.stringify(created));
+    await wait('JSON.parse(localStorage.getItem("myide-recent-projects"))[0]===' + JSON.stringify(created));
+    check('新目录、项目栏与打开记录都指向新建项目', fs.statSync(created).isDirectory() &&
+      await run('document.querySelector("#project-bar .proj-btn.active").dataset.path===' + JSON.stringify(created)));
+    await run('App.openProject(' + JSON.stringify(A) + ')');
+    fs.writeFileSync(path.join(created, '保留.txt'), '保留');
+    await clickCreate();
+    await enterName('新项目 示例');
+    await wait('document.getElementById("toast-wrap").textContent.includes("同名")');
+    check('同名目录提示冲突，当前项目和已有内容均保留', await run('App.root===' + JSON.stringify(A)) &&
+      fs.readFileSync(path.join(created, '保留.txt'), 'utf8') === '保留');
+    await clickCreate();
+    await run('document.getElementById("pf-no").click()');
+    await wait('!document.getElementById("pf-input")');
+    check('取消输入项目名称不新增目录', pickerEntries().filter(name => !beforeCreate.includes(name)).join() === '新项目 示例');
+    choice = B;
+
     const stateFile = path.join(home, 'profile/my-ide-state.json'), stateBytes = fs.readFileSync(stateFile), open = fs.openSync, write = fs.writeSync;
     let faultFd, injected = false;
     fs.openSync = function(p, ...args) { const fd = open.call(fs, p, ...args); if (typeof p === 'string' && path.dirname(p) === path.dirname(stateFile) && path.basename(p).startsWith('.myide-write-')) faultFd = fd; return fd; };

@@ -310,6 +310,7 @@ function copyActivePath() {
 Shortcuts.register('toggle-sidebar', { desc: '收起 / 展开侧栏', keys: ['ctrl+`'], panelToggle: true, run: () => App.toggleSidebar() });
 Shortcuts.register('toggle-sidebar-right', { desc: '收起 / 展开右侧栏（AI 面板所在右栏）', keys: ['alt+`'], panelToggle: true, run: () => App.toggleRightSidebar() });
 Shortcuts.register('open-folder', { desc: '打开项目', keys: ['ctrl+o'], run: () => App.openFolder() });
+Shortcuts.register('new-project', { desc: '新建项目', run: () => App.createProject() });
 Shortcuts.register('quick-open', { desc: '快速打开文件', keys: ['ctrl+p', 'ctrl+shift+n'], run: () => QuickOpen.open() });
 Shortcuts.register('search', { desc: '搜索内容', keys: ['ctrl+shift+f'], run: () => Search.open() });
 Shortcuts.register('copy-path', { desc: '复制当前文件完整路径', keys: ['ctrl+shift+c'], run: copyActivePath });
@@ -445,6 +446,7 @@ Shortcuts.load();
 // 首包接可核对的既有动作；复制/粘贴/外部执行等依赖其他选择身份的动作另按各自合同接入。
 const paletteActions = {
   'open-folder': { category: '项目', aliases: ['open project', '打开文件夹'] },
+  'new-project': { category: '项目', aliases: ['new project', 'create project'] },
   'quick-open': { category: '项目', aliases: ['go to file', '查找文件'], requiresProject: true },
   search: { category: '项目', aliases: ['search', 'find in files', '项目搜索'], requiresProject: true },
   'git-log': { category: '项目', aliases: ['git log', '提交历史'], requiresProject: true },
