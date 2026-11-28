@@ -71,9 +71,9 @@ const AiPanel = (() => {
     return null;
   }
 
-  const isAgyDesktop = engine => (engine ?? getConfig().engine) === 'antigravity-desktop';
-  const isCodex = engine => ['codex','codex-cli'].includes(engine ?? getConfig().engine);
-  const nativeEngine = engine => ['dsh','codex','codex-cli','antigravity','antigravity-desktop'].includes(engine ?? getConfig().engine);
+  const isAgyDesktop = (...args) => (args.length ? args[0] : getConfig().engine) === 'antigravity-desktop';
+  const isCodex = (...args) => ['codex','codex-cli'].includes(args.length ? args[0] : getConfig().engine);
+  const nativeEngine = (...args) => ['dsh','codex','codex-cli','antigravity','antigravity-desktop'].includes(args.length ? args[0] : getConfig().engine);
   const nativeLabel = engine => ({codex:'Codex','codex-cli':'Codex CLI',dsh:'DSH',antigravity:'Antigravity','antigravity-desktop':'Antigravity 桌面端'})[engine ?? getConfig().engine] || '原生代理';
   const nativeModelKey = () => ({codex:'codexModel','codex-cli':'codexModel',antigravity:'antigravityModel'})[getConfig().engine] || 'dshModel';
   const nativeReasoningKey = () => ({codex:'codexReasoning','codex-cli':'codexReasoning',antigravity:'antigravityReasoning'})[getConfig().engine] || 'dshReasoning';
@@ -4958,7 +4958,7 @@ const AiPanel = (() => {
     const next = new Set(codexArchivedProjects);
     if (archived) next.add(projectId);
     else next.delete(projectId);
-    localStorage.setItem(codexProjectArchiveKey, JSON.stringify([...next]));
+    try { localStorage.setItem(codexProjectArchiveKey, JSON.stringify([...next])); } catch {}
     codexArchivedProjects = next;
     refreshHistInPlace();
   }
@@ -4985,7 +4985,7 @@ const AiPanel = (() => {
 
   function saveCodexOrders(changes) {
     for (const [scope, ids] of changes) codexOrders.set(scope, ids);
-    localStorage.setItem(codexOrderKey, JSON.stringify(Object.fromEntries(codexOrders)));
+    try { localStorage.setItem(codexOrderKey, JSON.stringify(Object.fromEntries(codexOrders))); } catch {}
   }
 
   function applyCodexOrder(items, scope, idOf, additions, localIdOf) {
@@ -5992,7 +5992,7 @@ const AiPanel = (() => {
     }
     const action = (key, label) => ({ key, label, run: anchor => actOnHistorySession(target, key, anchor) });
     const runningInMyide = [currentRun, parkedRecordOf(target.id)?.record.run].some(run =>
-      isCodex(run?.engine) && run.identity.sessionId === target.id &&
+      run && isCodex(run.engine) && run.identity.sessionId === target.id &&
       pathKey(run.identity.rootId) === pathKey(target.rootDir) && ['active', 'stopping'].includes(run.status));
     const actions = target.codexThreadId ? [
       action('open', '打开会话'),
@@ -6889,7 +6889,7 @@ const AiPanel = (() => {
       button.onclick=async()=>{
         if(getConfig().engine!==record.run.engine)await setConfig({engine:record.run.engine});
         const access = record.view.dshSessionAccess;
-        if (record.isCodex(run.engine) && /:codex(?:-cli)?$/.test(record.scope)) {
+        if (isCodex(record.run.engine) && /:codex(?:-cli)?$/.test(record.scope)) {
           const { sessionId, rootId } = record.run.identity;
           const item = currentCodexCatalog()?.items.find(entry => entry.localId === sessionId && pathKey(entry.rootDir) === pathKey(rootId));
           const threadId = item?.threadId || access?.hostId || record.run.nativeState?.threadId;
