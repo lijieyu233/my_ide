@@ -28,8 +28,13 @@ const js = async source => {
 const target = 'http://myide-proxy-check.invalid/from-proxy';
 const bypass = 'https://mh.slradio.cn/org/bsoverview';
 const requests = [];
+let pendingResponse;
 const proxy = http.createServer((request, response) => {
   requests.push(request.url);
+  if (request.url === '/still-loading') {
+    pendingResponse = response;
+    return;
+  }
   response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   response.end('<title>MyIDE test proxy</title><h1>Proxy route verified</h1>');
 });
@@ -42,6 +47,7 @@ async function until(check) {
 }
 function cleanup(code) {
   clearTimeout(watchdog);
+  pendingResponse?.end();
   proxy.close();
   app.exit(code);
 }
@@ -62,6 +68,32 @@ require('../main');
   const originalDefault = await session.defaultSession.resolveProxy(bypass);
   assert.equal((await js('myIDE.browser.getProxy()')).config.mode, 'direct');
   assert.equal(await browser.resolveProxy(bypass), 'DIRECT');
+
+  const slowUrl = 'http://127.0.0.1:' + proxy.address().port + '/still-loading';
+  await js('BrowserPanel.open(' + JSON.stringify(slowUrl) + ');true');
+  await until(() => pendingResponse && win.contentView.children[0]?.webContents.isLoading());
+  const loadingView = win.contentView.children[0];
+  const capturePage = loadingView.webContents.capturePage;
+  let captureStarted = false;
+  loadingView.webContents.capturePage = () => {
+    captureStarted = true;
+    return new Promise(() => {});
+  };
+  try {
+    await js('document.getElementById("bw-proxy").click();true');
+    await until(() => captureStarted || win.contentView.children.length === 0);
+    assert.equal(captureStarted, false, '代理面板不能等待尚未加载的网页截图');
+    assert.equal(await js('document.activeElement.id'), 'bw-proxy-mode');
+    assert.equal(loadingView.webContents.isLoading(), true);
+
+    await js('document.getElementById("bw-proxy-cancel").click();true');
+    await until(() => win.contentView.children[0] === loadingView);
+    assert.equal(loadingView.webContents.isLoading(), true, '关闭面板后继续原页面请求');
+  } finally {
+    loadingView.webContents.capturePage = capturePage;
+    pendingResponse.end('<title>Slow page</title>');
+  }
+  await until(() => !loadingView.webContents.isLoading());
 
   await js('BrowserPanel.open(' + JSON.stringify(target) + ');true');
   await until(() => js('!document.getElementById("browser-error").classList.contains("hidden")'));

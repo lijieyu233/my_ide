@@ -543,7 +543,8 @@ ipcMain.handle('browser:view-hide', async (event, options) => {
   const revision = ++bwVisibilityRevision, view = bwView;
   let image = null, timer;
   // 原生网页总在宿主HTML上方；弹窗期间以当前帧承接背景，实例和页面脚本继续保留。
-  if (options?.snapshot && view && !view.webContents.isDestroyed()) {
+  // 加载中的页面可能还没有可截取的帧，直接让位，避免原生视图挡住弹窗。
+  if (options?.snapshot && view && !view.webContents.isDestroyed() && !view.webContents.isLoading()) {
     try {
       const capture = async () => {
         // 隐藏窗口首次请求会唤醒合成器，却可能拿到空帧；下一帧才有实际画面。
