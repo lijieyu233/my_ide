@@ -1332,8 +1332,10 @@ const BrowserPanel = (() => {
     let saved = null;
     try { saved = localStorage.getItem(DARK_KEY); } catch {}
     if (DARK_ORDER.includes(saved)) { applyDarkMode(saved, false); return; }
+    // 走 Theme.isLight()：原来写死 current() !== 'light'，新加的浅色主题
+    // （雾白/樱雾/纸墨）首次打开网页时会被当成深色底，白底网页反而更刺眼。
     let ideDark = true;
-    try { ideDark = Theme.current() !== 'light'; } catch {}
+    try { ideDark = !(window.Theme && Theme.isLight && Theme.isLight()); } catch {}
     applyDarkMode(ideDark ? 'dark' : 'light', false);
   }
 

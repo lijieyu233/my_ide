@@ -1,0 +1,74 @@
+/* code-theme.css —— 把预览侧 hljs（vendor/atom-one-dark）的 token 色接到主题变量上
+ *
+ * 为什么需要这一层：vendor/atom-one-dark.min.css 是**固定深色**的第三方主题，
+ * 里面 12 组 token 全是写死的 hex。原浅色主题下代码块一直是深灰底 + One Dark 彩字，
+ * 和界面主题两张皮（用户提过「纯白的 md 样式很难看」，代码块是同一批问题）。
+ *
+ * 现在的做法：vendor 只管结构（padding / display），颜色一律由这里按 --syn-* 重写。
+ * --syn-* 的默认值就是 One Dark 原色（见 styles.css 的 :root），所以**原有 5 套主题观感不变**；
+ * 新主题在自己的 body.theme-* 里覆盖 --syn-* 即可。
+ *
+ * ⚠ 加载顺序：必须排在 vendor/atom-one-dark.min.css **之后**（index.html 里已调整）。
+ *   两边选择器特异性一样（.hljs-keyword 都是 0,1,0），靠顺序决定胜负。
+ * ⚠ 编辑器的 token 映射（code-editor.js / md-editor.js 的 HighlightStyle）与这里必须同源，
+ *   否则同一段代码在编辑区和预览区颜色不一样。
+ */
+
+.hljs { color: var(--syn-punct); }
+
+/* 注释 / 引用 */
+.hljs-comment,
+.hljs-quote { color: var(--syn-com); font-style: italic; }
+
+/* 关键字 / 元信息关键字 */
+.hljs-doctag,
+.hljs-keyword,
+.hljs-formula { color: var(--syn-kw); }
+
+/* 标签 / 选择器 / 删除行 / 章节标题 */
+.hljs-section,
+.hljs-name,
+.hljs-selector-tag,
+.hljs-deletion,
+.hljs-subst { color: var(--syn-tag); }
+
+/* 字面量（true / false / null） */
+.hljs-literal { color: var(--syn-num); }
+
+/* 字符串 / 正则 / 新增行 / 属性值 */
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attribute,
+.hljs-meta .hljs-string { color: var(--syn-str); }
+
+/* 属性名 / 变量 / 类型 / 数字 */
+.hljs-attr,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-type,
+.hljs-selector-class,
+.hljs-selector-attr,
+.hljs-selector-pseudo,
+.hljs-number { color: var(--syn-num); }
+
+/* 函数名 / 标题 / 链接 / 符号 */
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link,
+.hljs-meta,
+.hljs-selector-id,
+.hljs-title { color: var(--syn-fn); }
+
+/* 内置类型 / 类名 */
+.hljs-built_in,
+.hljs-title.class_,
+.hljs-class .hljs-title { color: var(--syn-type); }
+
+/* 属性名单独一档（编辑区里 variableName 与 propertyName 是两个 token） */
+.hljs-property,
+.hljs-params { color: var(--syn-prop); }
+
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: bold; }
+.hljs-link { text-decoration: underline; }

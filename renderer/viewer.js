@@ -1084,6 +1084,8 @@ const Viewer = (() => {
     json: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 2.6c-1.4 0-1.8.7-1.8 1.6v1.7c0 .9-.5 1.3-1.3 1.5.8.2 1.3.6 1.3 1.5v1.7c0 .9.4 1.6 1.8 1.6M9.8 2.6c1.4 0 1.8.7 1.8 1.6v1.7c0 .9.5 1.3 1.3 1.5-.8.2-1.3.6-1.3 1.5v1.7c0 .9-.4 1.6-1.8 1.6"/></svg>',
     img: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="1.5"/><circle cx="5.8" cy="6.4" r="1.1"/><path d="M3 11.4l3.2-3 2.4 2.2 1.8-1.6 2.4 2.4"/></svg>',
     csv: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="3" width="11.2" height="10" rx="1.4"/><path d="M2.4 6.4h11.2M6.6 6.4V13"/></svg>',
+    video: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.6" width="8.6" height="8.8" rx="1.4"/><path d="M10.8 7.1l3-1.7v5.2l-3-1.7"/></svg>',
+    audio: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 11.4V4.8l5.6-1.2v6.4"/><circle cx="4.6" cy="11.8" r="1.7"/><circle cx="10.2" cy="10.4" r="1.7"/></svg>',
     file: '<svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 2.3h4.1l3 3v8.4H4.4z"/><path d="M8.5 2.3v3h3"/></svg>',
   };
   function ftIcon(name) {
@@ -1091,6 +1093,8 @@ const Viewer = (() => {
     if (['md', 'markdown'].includes(ext)) return FT_IC.md;
     if (ext === 'json') return FT_IC.json;
     if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico'].includes(ext)) return FT_IC.img;
+    if (['mp4', 'webm', 'ogv', 'm4v', 'mkv', 'mov', 'avi', 'wmv', 'flv'].includes(ext)) return FT_IC.video;
+    if (['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'opus', 'wma'].includes(ext)) return FT_IC.audio;
     if (['csv', 'xlsx', 'xls'].includes(ext)) return FT_IC.csv;
     if (['js', 'mjs', 'cjs', 'ts', 'jsx', 'tsx', 'css', 'py', 'java', 'c', 'cpp', 'go', 'rs', 'sh'].includes(ext)) return FT_IC.code;
     return FT_IC.file;

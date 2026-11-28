@@ -1631,6 +1631,8 @@ const Tree = (() => {
     if (['md', 'markdown'].includes(ext)) return '📝';
     if (['html', 'htm'].includes(ext)) return '🌐';
     if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico'].includes(ext)) return '🖼';
+    if (['mp4', 'webm', 'ogv', 'm4v', 'mkv', 'mov', 'avi', 'wmv', 'flv'].includes(ext)) return '🎬';
+    if (['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'opus', 'wma'].includes(ext)) return '🎵';
     if (['js', 'ts', 'json', 'css', 'py', 'java', 'c', 'cpp', 'go', 'rs'].includes(ext)) return '📄';
     if (['csv', 'xlsx', 'xls'].includes(ext)) return '📊';
     if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return '🗜';

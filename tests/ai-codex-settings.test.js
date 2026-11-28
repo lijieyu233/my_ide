@@ -26,6 +26,7 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
     statusResult={ok:false,error:'fixture unavailable'};q('#ai-cfg-test').click();await tick();assert.equal(q('#ai-codex-status').textContent,'fixture unavailable');assert.equal(calls.at(-1).kind,'status');
     q('#ai-cfg-save').click();await tick();assert.equal(config.codexPath,'selected-codex.cmd');assert.equal(config.codexModel,'native-model');assert.equal(config.codexReasoning,'high');assert.equal(config.dshModel,'harness-model');assert.equal(config.apiKey,'fixture-only');assert.equal(config.baseUrl,'https://gateway.invalid/v1');
     assert.equal(config.codexDesktopPath,desktopPath);
+    select('codex-cli');assert(!q('#ai-cfg-codex-wrap').classList.contains('hidden'));assert(q('#ai-cfg-dsh-wrap').classList.contains('hidden'));statusResult={ok:true,version:'cli-fixture'};q('#ai-cfg-test').click();await tick();assert.equal(calls.at(-1).kind,'status');assert.match(q('#ai-codex-status').textContent,/cli-fixture/);
     select('dsh');assert(q('#ai-cfg-codex-wrap').classList.contains('hidden'));assert(!q('#ai-cfg-dsh-wrap').classList.contains('hidden'));q('#ai-cfg-test').click();await tick();assert.equal(calls.at(-1).kind,'dsh');
     select('standard');assert(q('#ai-cfg-dsh-wrap').classList.contains('hidden'));assert(q('#ai-cfg-codex-wrap').classList.contains('hidden'));
     q('#ai-cfg-save').click();await tick();assert.equal(config.engine,'standard');assert.equal(config.codexModel,'native-model');assert.equal(config.codexReasoning,'high');assert.equal(config.codexPath,'selected-codex.cmd');

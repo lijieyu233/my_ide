@@ -29,9 +29,16 @@ const desktopHost = {
     return { opened: true };
   },
 };
+const cliCalls = [];
+const codexCli = {
+  ...codex,
+  inspect: async (cfg, context, tools, apply) => { cliCalls.push({ kind: 'inspect', cfg, context }); return { ok: true, configOptions: [] }; },
+  listHistory: async (_cfg, rootDir) => { cliCalls.push({ kind: 'listHistory', rootDir }); return { items: [], projects: [] }; },
+  chat: async (cfg, _m, _t, context) => { cliCalls.push({ kind: 'chat', cfg, context }); return { ok: true, status: 'queued', threadId: '019caa00-0000-7000-8000-000000000002', wakeDesktop: true, context }; },
+};
 const sandbox={manualCodexLifecycle:()=>true,sharedCodexHost:desktopHost,
   shell:{openExternal:async url=>protocolOpens.push(url)},ipcMain:{handle:(name,handler)=>handlers.set(name,handler)},mainWindow:{webContents:sender},
-  aiOwners:require('../src/main/ai/ai-owner-router').createRouter(),aiRuns:require('../src/main/ai/ai-runs').createRegistry(),CODEX:codex,
+  aiOwners:require('../src/main/ai/ai-owner-router').createRouter(),aiRuns:require('../src/main/ai/ai-runs').createRegistry(),CODEX:codex,CODEX_CLI:codexCli,
   DSH:{abort(){},hasRun:()=>false,chat:async(cfg,messages,tools,context)=>({ok:true,context})},
   AI:{abortChat(){},chatStream:async(cfg,messages,onChunk,tools,context)=>({ok:true,context})},aiTools:{bind(){}},
   aiPermissionsBridge:{initialize:async()=>{},codexPermission:()=> 'read-only',cancel(){},newSession(){},authority:{revoke(){}}},cancelAiSearch(){},require:createRequire(path.join(__dirname,'../main.js')),AbortController,console};
@@ -120,7 +127,18 @@ const settled=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
     }
     assert.deepEqual(desktopOpens, [wakeUrl, wakeUrl]);
     assert.deepEqual(protocolOpens, []);
-    assert(source.includes('beforeQuit: () => Promise.all([DSH.dispose(),CODEX.dispose(),ANTIGRAVITY.dispose(),shieldDecrypt.dispose()])'));
-    console.log('Codex主进程IPC：来源、三引擎归属、旧轮次、工具拒绝、事件隔离、只读检查与取消通过');
+    // 独立 Codex（CLI）模式走 CODEX_CLI，不混用共享 CODEX，也绝不拉起或唤醒 Codex 桌面端
+    const cliCfg = { codexPermission: 'workspace-write', engine: 'codex-cli', codexPath: 'fixture.cmd' };
+    state.engine = 'codex-cli';
+    assert.equal((await invoke('ai:codex-options', cliCfg, c.sessionId, tools, false)).ok, true);
+    assert.equal((await invoke('ai:codex-sessions', cliCfg)).ok, true);
+    const cliCtx = context('codex-cli-run', 6);
+    assert.equal((await invoke('ai:chat', cliCfg, [{ role: 'user', content: 'cli' }], tools, cliCtx)).ok, true);
+    assert.equal((await invoke('ai:finish', cliCtx)).ok, true);
+    assert.deepEqual(cliCalls.map(x => x.kind), ['inspect', 'listHistory', 'chat']);
+    assert.deepEqual(desktopOpens, [wakeUrl, wakeUrl]);
+    state.engine = 'codex';
+    assert(source.includes('beforeQuit: () => Promise.all([DSH.dispose(),CODEX.dispose(),CODEX_CLI.dispose(),ANTIGRAVITY.dispose(),antigravityBridge.dispose?.(),shieldDecrypt.dispose()])'));
+    console.log('Codex主进程IPC：来源、四引擎归属、Codex CLI 独立路由、旧轮次、工具拒绝、事件隔离、只读检查与取消通过');
   }finally{for(const item of pending.values())item.resolve({ok:false,aborted:true});await Promise.all([first,second]);}
 })().catch(error=>{console.error(error.stack);process.exitCode=1;});

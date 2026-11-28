@@ -263,11 +263,20 @@ contextBridge.exposeInMainWorld('myIDE', {
       antigravitySessions: 'sessions', antigravityHistory: 'history', antigravityInput: 'input',
       antigravityQueue: 'queue', antigravityReview: 'review', antigravityQuestionResult: 'question-result',
       antigravityOpenApp: 'open-app',
+      antigravityDesktopList: 'desktop-list', antigravityDesktopRead: 'desktop-read',
+      antigravityDesktopArtifact: 'desktop-artifact', antigravityDesktopWatch: 'desktop-watch',
+      antigravityDesktopBridgeStatus: 'desktop-bridge-status', antigravityDesktopBridgeInstall: 'desktop-bridge-install',
+      antigravityDesktopBridgeUninstall: 'desktop-bridge-uninstall', antigravityDesktopNew: 'desktop-new',
     }).map(([method, operation]) => [method, (...args) => ipcRenderer.invoke('ai:antigravity-' + operation, ...args)])),
     onAntigravityEvent: callback => {
       const listener = (_event, value) => callback(value);
       ipcRenderer.on('ai:antigravity-event', listener);
       return () => ipcRenderer.removeListener('ai:antigravity-event', listener);
+    },
+    onAntigravityDesktopEvent: callback => {
+      const listener = (_event, value) => callback(value);
+      ipcRenderer.on('ai:antigravity-desktop-event', listener);
+      return () => ipcRenderer.removeListener('ai:antigravity-desktop-event', listener);
     },
     codexToolResult:(context,id,result)=>ipcRenderer.invoke('ai:codex-tool-result',context,id,result),
     codexPermissionResult:(context,id,optionId)=>ipcRenderer.invoke('ai:codex-permission-result',context,id,optionId),

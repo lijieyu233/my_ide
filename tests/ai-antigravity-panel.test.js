@@ -5,16 +5,17 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 async function until(fn){for(let i=0;i<100;i++){if(fn())return;await new Promise(resolve=>setTimeout(resolve,5));}throw Error('condition timeout');}
 function fixture(){
   const dom=new JSDOM(html,{runScripts:'outside-only',pretendToBeVisual:true,url:'http://fixture.test'}),w=dom.window;
-  const f={w,calls:[],aborts:[],inputs:[],reviews:[],answers:[],options:[],history:[],items:[],queue:[],notices:[],capabilities:{send:true,config:true,queue:true,image:false,steer:false},executionAllowed:true};
+  const f={w,calls:[],aborts:[],inputs:[],reviews:[],answers:[],options:[],history:[],items:[],queue:[],notices:[],openAppCalls:0,settingsOpens:[],capabilities:{send:true,config:true,queue:true,image:false,steer:false},executionAllowed:true};
   let model='gemini-test',reasoning='high';
   const configOptions=()=>[{id:'model-selector',category:'model',currentValue:model,options:[{value:'gemini-test',name:'Gemini 测试'},{value:'gemini-next',name:'Gemini 另一个'}]},{id:'thinking-level',category:'thought_level',currentValue:reasoning,options:[{value:'high',name:'高'},{value:'low',name:'低'}]}];
   w.App={root:'C:/fixture/A',getPageContext:()=>({id:'project',name:'项目',projectContext:true}),showAi:()=>w.document.getElementById('ai-panel').classList.remove('hidden'),getProjects:()=>[],knownProjects:()=>[],showTool(){},refreshAll(){}};
-  w.Viewer={activeTab:null};w.MI={toast:(text,type)=>f.notices.push({text,type}),log(){}};w.Settings={open(){}};w.Modal={show(){},hide(){},confirm:async()=>true};
-  const config=()=>({ok:true,executionAllowed:f.executionAllowed,capabilities:f.capabilities,permission:{label:'逐次确认'},sandbox:{state:'unavailable',label:'沙箱不可用'},configOptions:configOptions(),unknown:!!f.unknown});
+  w.Viewer={activeTab:null};w.MI={toast:(text,type)=>f.notices.push({text,type}),log(){}};w.Settings={open:tab=>f.settingsOpens.push(tab)};w.Modal={show(){},hide(){},confirm:async()=>true};
+  const config=()=>({ok:true,executionAllowed:f.executionAllowed,capabilities:f.capabilities,permission:{label:'逐次确认'},sandbox:{state:'unavailable',label:'沙箱不可用',reason:'windows_build_unsupported'},configOptions:configOptions(),unknown:!!f.unknown});
   w.myIDE={fs:{readFile:async()=>({error:'missing'}),readDir:async()=>[]},ai:{
     permissions:async root=>({ok:true,root,config:{permWrite:'ask',permRun:'ask'},revision:0}),onPermissionsChanged(){},onStopped(){},
     onChunk:fn=>f.chunk=fn,onDone:fn=>f.done=fn,onAntigravityEvent:fn=>f.event=fn,
     antigravityConnect:async()=>config(),
+    antigravityOpenApp:async()=>{f.openAppCalls++;return {ok:true,launchRequested:true};},
     antigravityOptions:async(cfg,id,apply)=>{f.options.push({cfg,id,apply});if(f.optionGate)return f.optionGate(cfg,id,apply);if(apply?.configId==='model-selector')model=apply.value;if(apply?.configId==='thinking-level')reasoning=apply.value;return config();},
     antigravitySessions:async()=>({ok:true,items:f.items,projects:[{id:'project-A',title:'A',roots:['C:/fixture/A']}]}),
     antigravityHistory:async(cfg,target)=>{f.history.push({cfg,target});return f.historyResult || {ok:true,rootDir:target.rootId,nativeSessionId:target.nativeSessionId,readOnly:false,messages:[{role:'user',content:'原会话问题'},{role:'assistant',content:'原会话正文'}]};},
@@ -117,6 +118,17 @@ async function test(name,fn){const f=fixture();fixtures.push(f);await fn(f);pass
  });
  await test('跨项目的迟到入队回执只消费原草稿，原生队列不会在重启草稿中重复',async f=>{
   await f.enable();f.type('A 执行');f.enter();await until(()=>f.calls.length===1);let accept;f.inputGate=()=>new Promise(resolve=>accept=resolve);f.type('A 入队');f.enter();await until(()=>!!accept);await f.root('C:/fixture/B');f.type('B 新草稿');accept({ok:true,accepted:true});await tick();assert.equal(f.w.document.getElementById('ai-input').value,'B 新草稿');await f.root('C:/fixture/A');assert.equal(f.w.document.getElementById('ai-input').value,'');assert.equal(f.calls.length,1);
+ });
+ await test('权限弹层展示中文沙箱原因、白名单指引与快捷操作按钮',async f=>{
+  await f.enable();
+  assert.match(f.w.document.getElementById('ai-dsh-info').title,/24H2/);
+  f.w.document.getElementById('ai-perm').click();
+  const pop=f.w.document.querySelector('.ai-perm-pop');assert(pop);
+  assert.match(pop.textContent,/24H2/);assert.match(pop.textContent,/\/permissions/);
+  pop.querySelector('[data-antigravity-perm-action="open-app"]').click();await until(()=>f.openAppCalls===1);
+  f.w.document.getElementById('ai-perm').click();
+  f.w.document.querySelector('.ai-perm-pop [data-antigravity-perm-action="settings"]').click();
+  assert.deepEqual(f.settingsOpens,['ai']);
  });
  console.log('Antigravity renderer: '+passed+' passed');
 })().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>fixtures.forEach(f=>f.close()));

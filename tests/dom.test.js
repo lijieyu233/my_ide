@@ -1769,17 +1769,27 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     await tick();
   });
 
-  await okAsync('主题切换：包含反重力深色并依次循环', async () => {
+  await okAsync('主题切换：包含反重力深色并依次循环，浅色族带 theme-light-family', async () => {
     const T = 'myide-theme';
     const cls = () => $(dom, 'body').className;
-    const isDark = () => !/theme-(codex|antigravity|light|pink|crimson|graphite)/.test(cls());
+    const isDark = () => !/theme-(codex|antigravity|light|pink|crimson|graphite|abyss|dune|neon|mist|sakura|paper)\b/.test(cls());
+    // 与 Theme.ORDER 同序：深色族先走完，再进浅色族。
+    // theme-light-family 是「浅色族」标记，原生控件配色 / AI 面板 / mermaid 图都靠它分支 ——
+    // 每套浅色都断言一次，避免以后加浅色主题时只加变量块、忘了进 LIGHT 名单。
+    const LIGHT = new Set(['light', 'mist', 'sakura', 'paper', 'pink']);
     const chain = [
       ['toggle', 'codex', 'theme-codex'],
       ['toggle', 'antigravity', 'theme-antigravity'],
-      ['toggle', 'light', 'theme-light'],
-      ['key', 'pink', 'theme-pink'],
+      ['toggle', 'abyss', 'theme-abyss'],
+      ['toggle', 'dune', 'theme-dune'],
+      ['toggle', 'neon', 'theme-neon'],
       ['toggle', 'crimson', 'theme-crimson'],
       ['toggle', 'graphite', 'theme-graphite'],
+      ['toggle', 'light', 'theme-light'],
+      ['toggle', 'mist', 'theme-mist'],
+      ['key', 'sakura', 'theme-sakura'],
+      ['toggle', 'paper', 'theme-paper'],
+      ['toggle', 'pink', 'theme-pink'],
       ['toggle', 'dark', null],
     ];
     // 初始态：Theme.init 只设 activeId，不会写 KEY（只有 set 才写）-> 允许 null
@@ -1791,6 +1801,9 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
       const ok = klass ? $(dom, 'body').classList.contains(klass) : isDark();
       assert_(ok, '切到 ' + id + ', got: ' + cls());
       assert_(dom.window.localStorage.getItem(T) === id, 'localStorage = ' + id + ', got ' + dom.window.localStorage.getItem(T));
+      const family = $(dom, 'body').classList.contains('theme-light-family');
+      assert_(family === LIGHT.has(id), id + ' 的 theme-light-family 标记不对: ' + family);
+      assert_(g(dom, 'Theme.isLight()') === LIGHT.has(id), id + ' 的 Theme.isLight() 不对');
     }
   });
 
@@ -2109,6 +2122,21 @@ function assert_(cond, msg) { if (!cond) throw new Error(msg || 'assertion faile
     key(dom, 'c', { ctrl: true });
     await tick();
     assert_(fakeCopied.length === before, 'CM6 编辑器中 Ctrl+C 未触发文件复制');
+  });
+
+  await okAsync('文件类型图标：视频与音频用专门图标，不再落进通用文档图标', async () => {
+    // 用户指出 .mp4 行显示的是文档图标（与「能直接播放」的事实不符）。
+    const video = await g(dom, 'App.ftIcon("clip.mp4")');
+    const audio = await g(dom, 'App.ftIcon("voice.mp3")');
+    const plain = await g(dom, 'App.ftIcon("notes.txt")');
+    assert_(video.includes('<svg') && audio.includes('<svg'), '视频/音频都返回 SVG 图标');
+    assert_(video !== plain, '视频图标与通用文档图标不同');
+    assert_(audio !== plain && audio !== video, '音频图标与文档、视频都不同');
+    assert_(video.includes('color:#e08fb0'), '视频图标用专属色: ' + video);
+    // 扩展名大小写与更多容器格式同样识别
+    for (const name of ['A.MP4', 'b.webm', 'c.mkv', 'd.mov', 'e.avi']) {
+      assert_((await g(dom, 'App.ftIcon(' + JSON.stringify(name) + ')')) === video, name + ' 使用视频图标');
+    }
   });
 
   await okAsync('文件树图标列：目录三角与文件图标同列（SVG，不再是 emoji / 字符）', async () => {
@@ -3518,7 +3546,15 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(!$(dom, '.set-cat[data-cat=theme]') && $(dom, '#set-title').textContent === '外观', '外观为唯一侧栏入口');
     const fontSize = $(dom, '#font-size-range');
     assert_(fontSize && $(dom, '#bg-pick') && $(dom, '#pet-enable'), '同页包含字号、背景和玩偶');
-    assert_($allIn(dom.window.document, '.theme-opt').find((b) => b.classList.contains('sel')).textContent.includes('深色'), '当前主题高亮');
+    // 第二批主题加了「深色加选 / 浅色加选」两个分组，深色仍在第一组，
+    // 所以这里按 data-th 定位当前项，别再用「取第一个 sel」的写法（顺序一变就误报）。
+    const sel = $allIn(dom.window.document, '.theme-opt').find((b) => b.classList.contains('sel'));
+    assert_(sel && sel.dataset.th === 'dark', '当前主题高亮: ' + (sel && sel.dataset.th));
+    // 11 套主题都要有卡片（新增主题忘了加卡片时，这里会直接报数不对）
+    const ids = $allIn(dom.window.document, '.theme-opt').filter((b) => b.dataset.th).map((b) => b.dataset.th);
+    for (const id of ['dark', 'light', 'pink', 'crimson', 'graphite', 'abyss', 'dune', 'neon', 'mist', 'sakura', 'paper']) {
+      assert_(ids.includes(id), '主题卡片缺失: ' + id + '，实有 ' + ids.join(','));
+    }
     click($allIn(dom.window.document, '.theme-opt').find((b) => b.dataset.th === 'light'));
     await tick();
     assert_($(dom, 'body').classList.contains('theme-light'), '浅色即时生效');
@@ -8695,6 +8731,8 @@ assert_(panel, 'CM6 搜索面板出现');
   await okAsync('AI 面板：自动知道「你在看哪份文件」（不用每次手动附）', async () => {
     FAKE_FS[P + '/note.md'] = { content: '# 纪要' + '\n' + '本周完成联调。' + '\n' };
     FAKE_FS[P + '/other.md'] = { content: '# 别的' + '\n' };
+    // 2026-11-09 起自动附带改为设置开关（默认关闭，用户要求），本用例验证开启后的跟随语义。
+    await g(dom, 'AiPanel.setConfig({ autoIdeContext: true })');
     // 「正在看」现在是上下文里的一条 chip（.follow），不再独占一整行
     const boxOf = () => $(dom, '.ai-ctx-chip.follow');
     const following = () => !!boxOf();
@@ -8725,7 +8763,7 @@ assert_(panel, 'CM6 搜索面板出现');
     click($(dom, '#ai-new'));
     await tick(); await tick();
     assert_(following() && boxOf().textContent.includes('other.md'), '点「新对话」后仍保持跟随当前文件');
-    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "", autoIdeContext: false })');
   });
 
   await okAsync('AI 面板：改完把改动摆在眼前（可展开、可单独撤销）', async () => {
@@ -9110,7 +9148,8 @@ assert_(panel, 'CM6 搜索面板出现');
   });
 
   await okAsync('AI 面板：项目规则文件注入系统提示', async () => {
-    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    // 项目规则随「附加 MyIDE 操作规则」开关，默认关闭；这里显式开启以验证注入链路本身。
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m", injectMyideRules: true })');
     FAKE_FS[P + '/.myide'] = FAKE_FS[P + '/.myide'] || { type: 'dir', children: [] };
     FAKE_FS[P + '/.myide/ai-rules.md'] = { type: 'file', content: '文档统一用「~」而不是波浪线；术语一律用「变更列表」。\n', mtime: 9, ctime: 9, size: 40 };
     await g(dom, 'App.setRoot(' + JSON.stringify(P) + ')');
@@ -9128,7 +9167,7 @@ assert_(panel, 'CM6 搜索面板出现');
     assert_(sys.includes('ai-rules.md'), '并标明规则来自哪个文件');
     delete FAKE_FS[P + '/.myide/ai-rules.md'];
     aiScript = [];
-    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "", injectMyideRules: false })');
   });
 
   await okAsync('AI 面板：预先给权限（不用每个修改都确认）', async () => {
@@ -9185,7 +9224,8 @@ assert_(panel, 'CM6 搜索面板出现');
   });
 
   await okAsync('AI 面板：底部只有一条上下文线（不再堆三层）', async () => {
-    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m" })');
+    // 自动跟随需显式开启（默认关闭），本用例验证的是「只有一条上下文线」的排版。
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "http://x/v1", model: "m", autoIdeContext: true })');
     click($(dom, '#ai-new'));
     await tick();
     assert_(!$(dom, '#ai-file-chip'), '去掉功能重复的回形针按钮（@ 已能引用一切）');
@@ -9204,7 +9244,7 @@ assert_(panel, 'CM6 搜索面板出现');
     click(chips[0].querySelector('.ai-ctx-x'));
     await tick();
     assert_(!$(dom, '#ai-chips .ai-ctx-chip.follow'), '点 ✕ 后移除跟随项');
-    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "" })');
+    await g(dom, 'AiPanel.setConfig({ baseUrl: "", model: "", autoIdeContext: false })');
     aiScript = [];
   });
 
@@ -9437,6 +9477,8 @@ assert_(panel, 'CM6 搜索面板出现');
       const restoreSession=isolated.window.Session.restore;
       isolated.window.Session.restore = async () => {};
       await isolated.window.App.setRoot(P);
+      // 自动附带默认关闭；本组用例验证路径迁移时「跟随项」也要同步，故显式开启。
+      await isolated.window.AiPanel.setConfig({ autoIdeContext: true });
       await isolated.window.Viewer.openFile(P + '/notes.txt');
       await fn(isolated, isolated.window.Viewer, isolated.window.myIDE.fs, fakeFsCbs.slice(cbStart), restoreSession);
     } finally {
@@ -10821,8 +10863,6 @@ assert_(panel, 'CM6 搜索面板出现');
       assert_(created.length===4,'空白名称不创建任何项');
     }finally{d.window.myIDE.fs.createItem=bridge;}
   });
-
-  console.log('');
   await saveCase('文件重命名预选名称并独立编辑后缀，文件夹保留单输入框',async(d)=>{
     const {Tree, Modal, document: doc} = d.window;
     const start = (name, type) => Tree.renameItem({path:P+'/'+name, name, type});
@@ -10865,7 +10905,6 @@ assert_(panel, 'CM6 搜索面板出现');
     }finally{d.window.Modal.prompt=prompt;d.window.Viewer.openTabs.pop();}
   });
   console.log('');
- console.log('');
   await saveCase('同名文件/非空目录新建拒绝不产生误删undo',async(d,_viewer,bridge)=>{
     const originalChild=FAKE_FS[P+'/src/app.js'].content,originalFile=FAKE_FS[P+'/notes.txt'].content;
     const tree=d.window.Tree;d.window.Modal.prompt=async()=> 'src';

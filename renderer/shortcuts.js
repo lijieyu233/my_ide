@@ -392,7 +392,7 @@ Shortcuts.register('task-redo', { desc: '任务：重做', keys: ['ctrl+shift+z'
   if (r && window.MI) MI.toast('已重做：' + r, 'ok');
 } });
 Shortcuts.register('refresh', { desc: '刷新项目', keys: ['ctrl+r'], run: () => App.refreshAll() });
-Shortcuts.register('theme', { desc: '切换主题（深色/浅色/粉红/深红）', keys: ['ctrl+shift+t'], run: () => { Theme.toggle(); MI.toast('已切换为' + Theme.name(Theme.current()) + '主题', 'ok'); } });
+Shortcuts.register('theme', { desc: '切换主题（深色族 → 浅色族依次循环）', keys: ['ctrl+shift+t'], run: () => { Theme.toggle(); MI.toast('已切换为' + Theme.name(Theme.current()) + '主题', 'ok'); } });
 Shortcuts.register('settings', { desc: '打开设置', keys: ['ctrl+alt+s'], run: () => Settings.open() });
 Shortcuts.register('help', { desc: '帮助与快捷键速查', keys: ['f1'], run: () => Help.open() });
 Shortcuts.register('find', { desc: '编辑器查找', keys: ['ctrl+f'], run: () => Viewer.openFind(false) });

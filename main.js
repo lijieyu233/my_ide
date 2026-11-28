@@ -52,6 +52,13 @@ const CODEX=require('./src/main/codex/ai-codex').createService({
   },
   desktopOwnsProjectThreads: () => process.platform === 'win32' && !!app.getApplicationNameForProtocol('codex://threads/'),
 });
+const CODEX_CLI = require('./src/main/codex/ai-codex').createService({
+  homeDir: () => UI_CHECK ? path.join(app.getPath('userData'), 'codex-home') : undefined,
+  mappingFile: () => path.join(app.getPath('userData'), 'codex-cli-sessions.json'),
+  // 独立 CLI 模式：直接拉起独立 codex.exe app-server --stdio，不依赖共享后台，也不触碰或拉起 Codex 桌面端。
+  requiresSharedRuntime: () => false,
+  desktopOwnsProjectThreads: () => false,
+});
 const antigravityIpc = require('./src/main/antigravity/antigravity-ipc');
 async function antigravityDesktopPath() {
   if (process.platform !== 'win32' || !process.env.LOCALAPPDATA) return null;
@@ -211,7 +218,7 @@ const ownsWindow = !HIDDEN_WINDOW && require('./src/main/app/app-instance').clai
 const aiPermissionsBridge = require('./src/main/ai/ai-permission-bridge').createBridge({ ipcMain, WebContentsView, tools: aiTools,
   ownerOf: (event,context) => aiSender(event,context), windowFor: owner => mainWindow && mainWindow.webContents.id === aiOwners.host(owner) ? mainWindow : null,
   policyFile: () => path.join(UI_CHECK ? app.getPath('userData') : path.join(os.homedir(), '.myide'), 'ai-permissions.json'),
-  stopRequest: (owner,context)=>{const result=aiRuns.finish(owner,context,'cancelled');if(result.ok){AI.abortChat(context.requestId);DSH.abort(context.requestId);CODEX.abort(context.requestId);cancelAiSearch(context.requestId);mainWindow?.webContents.send('ai:stopped',context);}},
+  stopRequest: (owner,context)=>{const result=aiRuns.finish(owner,context,'cancelled');if(result.ok){AI.abortChat(context.requestId);DSH.abort(context.requestId);CODEX.abort(context.requestId);CODEX_CLI.abort(context.requestId);cancelAiSearch(context.requestId);mainWindow?.webContents.send('ai:stopped',context);}},
 });
 
 function loadState() {
@@ -316,7 +323,7 @@ function createWindow() {
   launchExit.bindWindow(mainWindow);
   const aiHost = mainWindow.webContents;
   const aiHostId = aiHost.id;
-  const resetAi = () => { for(const owner of aiOwners.reset(aiHostId)){const context = aiRuns.reset(owner);aiTools.reset(owner);aiPermissionsBridge.reset(owner);if(context){AI.abortChat(context.requestId);DSH.abort(context.requestId);CODEX.detach(context.requestId);ANTIGRAVITY.abort(context.requestId);cancelAiSearch(context.requestId);}} antigravityQueueReady.clear(); };
+  const resetAi = () => { for(const owner of aiOwners.reset(aiHostId)){const context = aiRuns.reset(owner);aiTools.reset(owner);aiPermissionsBridge.reset(owner);if(context){AI.abortChat(context.requestId);DSH.abort(context.requestId);CODEX.detach(context.requestId);CODEX_CLI.detach(context.requestId);ANTIGRAVITY.abort(context.requestId);cancelAiSearch(context.requestId);}} antigravityQueueReady.clear(); };
   // ── 宿主窗口不许被导航走（2026-10-29）────────────────────────────────
   // 事故：用户点击 AI 回复里的普通 <a href="..."> 链接，整个窗口从
   // file:///.../index.html 导航到外网地址 —— 应用界面全消失，只剩一片空白，
@@ -942,9 +949,12 @@ const antigravityBridge = antigravityIpc.createIpc({
   openApproval: (owner, scope, request) => aiPermissionsBridge.reviewAntigravity(owner, scope, request),
   desktopPath: antigravityDesktopPath,
   openDesktop: target => shell.openPath(target),
+  sendDesktopEvent: payload => { try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('ai:antigravity-desktop-event', payload); } catch {} },
 });
 
 // AI 助手：流式对话（chunk 事件推送渲染层）+ 中断；tools = 原生 function calling
+const isCodexEngine = engine => engine === 'codex' || engine === 'codex-cli';
+const codexServiceOf = engine => engine === 'codex-cli' && typeof CODEX_CLI !== 'undefined' ? CODEX_CLI : CODEX;
 const aiSender = (e,context) => {
   if (!mainWindow || e.sender !== mainWindow.webContents || !e.senderFrame
     || e.senderFrame.processId !== e.sender.mainFrame.processId || e.senderFrame.routingId !== e.sender.mainFrame.routingId)
@@ -965,9 +975,9 @@ async function dshForeignView(event, context, hostId, access = 'ready') {
     throw Error('跨工程会话归属已变化');
   return view;
 }
-async function codexSessionView(event, context) {
+async function codexSessionView(event, context, expectedEngine) {
   const view = await event.sender.executeJavaScript('AiPanel.dshView()');
-  if (view.engine !== 'codex' || view.sessionId !== context.sessionId ||
+  if (!isCodexEngine(view.engine) || (expectedEngine && view.engine !== expectedEngine) || view.sessionId !== context.sessionId ||
       context.rootId !== undefined && view.rootId !== context.rootId ||
       context.foreignHostId !== undefined && view.foreignHostId !== context.foreignHostId ||
       view.foreignHostId && (view.access !== 'ready' || view.page?.projectContext !== false)) {
@@ -996,7 +1006,7 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
         nativeStart={page:await dshInputPage(e,context,requestedPage),hostId:slot.state.hostId};
       }
     }
-    if (cfg?.engine === 'codex') codexView = await codexSessionView(e, context);
+    if (isCodexEngine(cfg?.engine)) codexView = await codexSessionView(e, context, cfg.engine);
     if (cfg?.engine === 'antigravity') {
       if (context?.antigravityQueueItemId) {
         const key = JSON.stringify([e.sender.id, context.rootId, context.sessionId, context.antigravityQueueItemId]);
@@ -1019,7 +1029,7 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
       if (start.previous && start.previous.context.requestId !== context.requestId) aiPermissionsBridge.cancel(owner);
       aiPermissionsBridge.newSession(owner, context);
     }
-    if (start.previous) { AI.abortChat(start.previous.context.requestId);DSH.abort(start.previous.context.requestId);CODEX.abort(start.previous.context.requestId); cancelAiSearch(start.previous.context.requestId); }
+    if (start.previous) { AI.abortChat(start.previous.context.requestId);DSH.abort(start.previous.context.requestId);CODEX.abort(start.previous.context.requestId);if(typeof CODEX_CLI!=='undefined')CODEX_CLI.abort(start.previous.context.requestId); cancelAiSearch(start.previous.context.requestId); }
   } catch (error) { if(dshAdmission)dshChatAdmissions.delete(dshAdmission);
     if (antigravityAdmission) antigravityAdmissions.delete(antigravityAdmission);
     return { ...(cfg?.engine === 'antigravity' ? antigravityIpc.failure(error) : { error: error.message, errorCode: error.code }), context }; }
@@ -1036,21 +1046,22 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
       },event=>{try{aiRuns.assert(aiSender(e,context),context);send('ai:dsh-event',{type:'tool',...event,context});}catch{DSH.toolResult(context,event.call.id,{ok:false,text:'请求已停止，未执行工具'});}});
     }catch(error){r={ok:false,status:'failed',complete:false,error:error.message,engine:'dsh',context};}
     finally{if(dshAdmission)dshChatAdmissions.delete(dshAdmission);}
-  }else if(cfg?.engine==='codex'){
+  }else if(isCodexEngine(cfg?.engine)){
+    const codexSvc = codexServiceOf(cfg.engine);
     try{
       const { page, foreignHostId: expectedThreadId, codexProjectId } = codexView;
       assertCodexRun(e,context);
       record.nativePage = page;
       // Codex 回包核验包含页面；aiRuns 的规范化身份不含页面，事件必须保留这份原生身份。
       context = { ...context, page, ...(expectedThreadId ? { expectedThreadId } : {}), ...(codexProjectId ? { codexProjectId } : {}) };
-      r=await CODEX.chat({...cfg,codexPermission:aiPermissionsBridge.codexPermission()},messages,expectedThreadId ? [] : tools||[],context,event=>{
+      r=await codexSvc.chat({...cfg,codexPermission:aiPermissionsBridge.codexPermission()},messages,expectedThreadId ? [] : tools||[],context,event=>{
         try{assertCodexRun(e,context);}catch{return;}
         if(event.type==='text')send('ai:chunk',{delta:event.delta,messageId:event.messageId,context});else send('ai:codex-event',{...event,context});
-      },event=>{try{assertCodexRun(e,context);send('ai:codex-event',{type:'tool',...event,context});}catch{CODEX.toolResult(context,event.call.id,{ok:false,text:'请求已停止，未执行工具'});}});
-      if (r?.ok && r.status === 'queued' && r.wakeDesktop && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(r.threadId)) {
+      },event=>{try{assertCodexRun(e,context);send('ai:codex-event',{type:'tool',...event,context});}catch{codexSvc.toolResult(context,event.call.id,{ok:false,text:'请求已停止，未执行工具'});}});
+      if (cfg.engine === 'codex' && r?.ok && r.status === 'queued' && r.wakeDesktop && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(r.threadId)) {
         void openCodexDesktop('codex://threads/wake/' + r.threadId).catch(() => {});
       }
-    }catch(error){r={ok:false,status:'failed',complete:false,error:error.message,engine:'codex',context};}
+    }catch(error){r={ok:false,status:'failed',complete:false,error:error.message,engine:cfg.engine,context};}
   } else if (cfg?.engine === 'antigravity') {
     const scope = record.antigravityScope;
     context = { ...record.context, engine: 'antigravity', projectId: scope.projectId, page: scope.page };
@@ -1079,34 +1090,36 @@ ipcMain.handle('ai:chat', async (e, cfg, messages, tools, context) => {
 });
 function assertCodexRun(event,context){
   const record=aiRuns.assert(aiSender(event,context),context);
-  if(aiOwners.engine(event.sender.id,context)!=='codex')throw Error('不是当前 Codex 运行');
-  return record;
+  const engine=aiOwners.engine(event.sender.id,context);
+  if(!isCodexEngine(engine))throw Error('不是当前 Codex 运行');
+  return Object.assign(record,{codexEngine:engine,codexService:codexServiceOf(engine)});
 }
-ipcMain.handle('ai:codex-tool-result',(event,context,id,result)=>{try{assertCodexRun(event,context);return CODEX.toolResult(context,id,result);}catch{return {ok:false};}});
-ipcMain.handle('ai:codex-permission-result',(event,context,id,optionId)=>{try{assertCodexRun(event,context);return CODEX.permissionResult(context,id,optionId);}catch{return {ok:false};}});
-ipcMain.handle('ai:codex-question-result',(event,context,id,answers)=>{try{assertCodexRun(event,context);return CODEX.questionResult(context,id,answers);}catch{return {ok:false};}});
+ipcMain.handle('ai:codex-tool-result',(event,context,id,result)=>{try{return assertCodexRun(event,context).codexService.toolResult(context,id,result);}catch{return {ok:false};}});
+ipcMain.handle('ai:codex-permission-result',(event,context,id,optionId)=>{try{return assertCodexRun(event,context).codexService.permissionResult(context,id,optionId);}catch{return {ok:false};}});
+ipcMain.handle('ai:codex-question-result',(event,context,id,answers)=>{try{return assertCodexRun(event,context).codexService.questionResult(context,id,answers);}catch{return {ok:false};}});
 ipcMain.handle('ai:codex-options',async(event,cfg,sessionId,tools,apply)=>{
   try{
     aiSender(event);if(typeof sessionId!=='string'||!sessionId||sessionId.length>200)throw Error('Codex 会话身份无效');
-    if(cfg?.engine!=='codex')throw Error('Codex 会话视图已变化');
-    const state = await codexSessionView(event, { sessionId });
-    aiSender(event,{engine:'codex',rootId:state.rootId,sessionId});
+    if(!isCodexEngine(cfg?.engine))throw Error('Codex 会话视图已变化');
+    const state = await codexSessionView(event, { sessionId }, cfg.engine);
+    aiSender(event,{engine:cfg.engine,rootId:state.rootId,sessionId});
     const allowed=(tools||[]).filter(tool=>tool?.function?.name&&(!['list_files','read_file','search_files','write_file','replace_edit','run_command',...require('./renderer/ai-project-tools').projectOnly].includes(tool.function.name)||state.page.projectContext));
-    return await CODEX.inspect(cfg, {...state, expectedThreadId: state.foreignHostId}, state.foreignHostId ? [] : allowed, apply===true);
+    return await codexServiceOf(cfg.engine).inspect(cfg, {...state, expectedThreadId: state.foreignHostId}, state.foreignHostId ? [] : allowed, apply===true);
   }catch(error){return {ok:false,error:error.message,errorCode:error.code};}
 });
 async function codexHistoryConfig(event, cfg) {
   aiSender(event);
   const engine = await event.sender.executeJavaScript('AiPanel.getConfig().engine');
-  if (engine !== 'codex' || cfg?.engine !== 'codex') throw Error('当前未连接 Codex');
+  if (!isCodexEngine(engine) || cfg?.engine !== engine) throw Error('当前未连接 Codex');
+  return codexServiceOf(engine);
 }
 ipcMain.handle('ai:codex-skills', async (event, cfg, target) => {
   try {
     aiSender(event);
-    if (cfg?.engine !== 'codex') throw Error('当前未连接 Codex');
-    const view = await codexSessionView(event, target);
+    if (!isCodexEngine(cfg?.engine)) throw Error('当前未连接 Codex');
+    const view = await codexSessionView(event, target, cfg.engine);
     aiSender(event, view);
-    return { ok: true, skills: await CODEX.listSkills(cfg, view) };
+    return { ok: true, skills: await codexServiceOf(cfg.engine).listSkills(cfg, view) };
   } catch (error) {
     return { ok: false, error: error.code === -32601 ? '当前 Codex 版本不支持技能列表' : '无法读取 Codex 技能' };
   }
@@ -1114,14 +1127,15 @@ ipcMain.handle('ai:codex-skills', async (event, cfg, target) => {
 ipcMain.handle('ai:codex-goal', async (event, cfg, target, action) => {
   try {
     aiSender(event);
-    if (cfg?.engine !== 'codex' || typeof target?.sessionId !== 'string' || !target.sessionId || target.sessionId.length > 200) {
+    if (!isCodexEngine(cfg?.engine) || typeof target?.sessionId !== 'string' || !target.sessionId || target.sessionId.length > 200) {
       throw Error('Codex 会话视图已变化');
     }
-    const state = await codexSessionView(event, target);
+    const state = await codexSessionView(event, target, cfg.engine);
     aiSender(event, state);
-    const result = await CODEX.changeGoal(cfg, { ...state, expectedThreadId: state.foreignHostId }, action);
-    if (result.wakeDesktop) {
-      await CODEX.openInDesktop(cfg, result.threadId, openCodexDesktopThread).catch(() => { result.wakeFailed = true; });
+    const svc = codexServiceOf(cfg.engine);
+    const result = await svc.changeGoal(cfg, { ...state, expectedThreadId: state.foreignHostId }, action);
+    if (cfg.engine === 'codex' && result.wakeDesktop) {
+      await svc.openInDesktop(cfg, result.threadId, openCodexDesktopThread).catch(() => { result.wakeFailed = true; });
     }
     return { ok: true, ...result };
   } catch (error) {
@@ -1133,10 +1147,10 @@ ipcMain.handle('ai:codex-goal', async (event, cfg, target, action) => {
 ipcMain.handle('ai:codex-input', async (event, cfg, target, action) => {
   try {
     aiSender(event);
-    if (cfg?.engine !== 'codex' || !target?.sessionId) {
+    if (!isCodexEngine(cfg?.engine) || !target?.sessionId) {
       throw Error('Codex 会话视图已变化');
     }
-    const state = await codexSessionView(event, target);
+    const state = await codexSessionView(event, target, cfg.engine);
     aiSender(event, state);
     if (target.run) {
       if (target.run.sessionId !== state.sessionId || target.run.rootId !== state.rootId) throw Error('Codex 当前轮次已切换');
@@ -1144,9 +1158,10 @@ ipcMain.handle('ai:codex-input', async (event, cfg, target, action) => {
       const run = { ...target.run, page: record.nativePage };
       target = { ...target, run };
     }
-    const result = await CODEX.changeInput(cfg, state, target, action);
-    if (action?.kind === 'openDesktop' && result.desktopThreadId) {
-      await CODEX.openInDesktop(cfg, result.desktopThreadId, openCodexDesktopThread);
+    const svc = codexServiceOf(cfg.engine);
+    const result = await svc.changeInput(cfg, state, target, action);
+    if (cfg.engine === 'codex' && action?.kind === 'openDesktop' && result.desktopThreadId) {
+      await svc.openInDesktop(cfg, result.desktopThreadId, openCodexDesktopThread);
     }
     return result;
   } catch (error) {
@@ -1157,23 +1172,23 @@ ipcMain.handle('ai:codex-input', async (event, cfg, target, action) => {
 });
 ipcMain.handle('ai:codex-sessions',async (event, cfg) => {
   try {
-    await codexHistoryConfig(event, cfg);
+    const svc = await codexHistoryConfig(event, cfg);
     const rootDir = await event.sender.executeJavaScript('App.root || ""');
-    return { ok: true, workspaceRoot: rootDir, ...await CODEX.listHistory(cfg, rootDir) };
+    return { ok: true, workspaceRoot: rootDir, ...await svc.listHistory(cfg, rootDir) };
   } catch (error) { return { ok: false, error: error.message }; }
 });
 ipcMain.handle('ai:codex-rename-project', async (event, cfg, projectId, title) => {
   try {
-    await codexHistoryConfig(event, cfg);
-    return { ok: true, ...await CODEX.renameProject(cfg, projectId, title) };
+    const svc = await codexHistoryConfig(event, cfg);
+    return { ok: true, ...await svc.renameProject(cfg, projectId, title) };
   } catch (error) {
     return { ok: false, error: error.code === -32601 ? '当前 Codex 版本暂不支持项目重命名' : error.message };
   }
 });
 ipcMain.handle('ai:codex-desktop-project', async (event, cfg, projectId) => {
   try {
-    await codexHistoryConfig(event, cfg);
-    const root = await CODEX.getHistoryProjectRoot(cfg, projectId);
+    const svc = await codexHistoryConfig(event, cfg);
+    const root = await svc.getHistoryProjectRoot(cfg, projectId);
     await openCodexDesktopProject(root);
     return { ok: true };
   } catch (error) { return { ok: false, error: error.message }; }
@@ -1190,8 +1205,8 @@ async function openCodexDesktop(url) {
 const openCodexDesktopThread = threadId => openCodexDesktop('codex://threads/' + threadId);
 ipcMain.handle('ai:codex-desktop-thread', async (event, cfg, threadId) => {
   try {
-    await codexHistoryConfig(event, cfg);
-    await CODEX.openInDesktop(cfg, threadId, openCodexDesktopThread);
+    const svc = await codexHistoryConfig(event, cfg);
+    await svc.openInDesktop(cfg, threadId, openCodexDesktopThread);
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error.rpcResponseReceived ? 'Codex 未确认会话交接' : error.message };
@@ -1199,27 +1214,27 @@ ipcMain.handle('ai:codex-desktop-thread', async (event, cfg, threadId) => {
 });
 ipcMain.handle('ai:codex-history',async (event, cfg, threadId, archived) => {
   try {
-    await codexHistoryConfig(event, cfg);
-    return { ok: true, ...await CODEX.openHistory(cfg, threadId, archived === true) };
+    const svc = await codexHistoryConfig(event, cfg);
+    return { ok: true, ...await svc.openHistory(cfg, threadId, archived === true) };
   } catch (error) { return { ok: false, error: error.message }; }
 });
 ipcMain.handle('ai:codex-rename', async (event, cfg, threadId, title, archived) => {
   try {
-    await codexHistoryConfig(event, cfg);
-    return { ok: true, ...await CODEX.renameHistory(cfg, threadId, title, archived === true) };
+    const svc = await codexHistoryConfig(event, cfg);
+    return { ok: true, ...await svc.renameHistory(cfg, threadId, title, archived === true) };
   } catch (error) { return { ok: false, error: error.message }; }
 });
 ipcMain.handle('ai:codex-archive',async (event, cfg, threadId, archived) => {
   try {
-    await codexHistoryConfig(event, cfg);
-    await CODEX.setHistoryArchived(cfg, threadId, archived);
+    const svc = await codexHistoryConfig(event, cfg);
+    await svc.setHistoryArchived(cfg, threadId, archived);
     return { ok: true };
   } catch (error) { return { ok: false, error: error.message }; }
 });
 ipcMain.handle('ai:codex-fork',async (event, cfg, threadId) => {
   try {
-    await codexHistoryConfig(event, cfg);
-    return { ok: true, ...await CODEX.forkHistory(cfg, threadId) };
+    const svc = await codexHistoryConfig(event, cfg);
+    return { ok: true, ...await svc.forkHistory(cfg, threadId) };
   } catch (error) { return { ok: false, error: error.message }; }
 });
 ipcMain.handle('ai:codex-status',async(event,launcher)=>{
@@ -1372,7 +1387,7 @@ ipcMain.handle('ai:abort', async (e, context) => {
       const sent = await ANTIGRAVITY.abort(scope.requestId);
       return { ok: !!sent, stopping: !!sent };
     }
-    const result = aiRuns.finish(aiSender(e,context), context, 'cancelled'); if (result.ok) { aiPermissionsBridge.cancel(aiSender(e,context)); AI.abortChat(context.requestId);DSH.abort(context.requestId);CODEX.abort(context.requestId); cancelAiSearch(context.requestId); } return result; }
+    const result = aiRuns.finish(aiSender(e,context), context, 'cancelled'); if (result.ok) { aiPermissionsBridge.cancel(aiSender(e,context)); AI.abortChat(context.requestId);DSH.abort(context.requestId);CODEX.abort(context.requestId);if(typeof CODEX_CLI!=='undefined')CODEX_CLI.abort(context.requestId); cancelAiSearch(context.requestId); } return result; }
   catch (error) { return { error: error.message, errorCode: error.code }; }
 });
 ipcMain.handle('ai:finish', (e, context) => {
@@ -2663,5 +2678,5 @@ app.whenReady().then(async () => {
 });
 
 const launchExit = require('./src/main/launch/launch-exit').createExitCoordinator({ app, service: launchService, dialog,
-  getWindow: () => mainWindow, beforeQuit: () => Promise.all([DSH.dispose(),CODEX.dispose(),ANTIGRAVITY.dispose(),shieldDecrypt.dispose()]), report: result => LOG('退出未确认: ' + JSON.stringify(result)) });
+  getWindow: () => mainWindow, beforeQuit: () => Promise.all([DSH.dispose(),CODEX.dispose(),CODEX_CLI.dispose(),ANTIGRAVITY.dispose(),antigravityBridge.dispose?.(),shieldDecrypt.dispose()]), report: result => LOG('退出未确认: ' + JSON.stringify(result)) });
 process.on('uncaughtException', (e) => { if (e && e.code === 'EPIPE') return; LOG('MAIN CRASH: ' + (e && e.stack || e)); if (SMOKE) app.exit(1); });

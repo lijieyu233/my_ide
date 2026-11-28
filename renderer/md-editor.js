@@ -15,24 +15,24 @@ window.MdEditor = (() => {
   const contextOf=view=>view.state.facet(documentContext);
   const measureView=view=>{if(view.dom.isConnected)try{view.requestMeasure();}catch{}};
 
-  // ---------- 代码语法高亮（One Dark 配色，与预览的 atom-one-dark 同源） ----------
+  // ---------- 代码语法高亮（配色走 CSS 变量，默认值 = One Dark） ----------
   // 覆盖 CM6 defaultHighlightStyle（它给 heading 注入 underline —— 已定位的下划线根因）
   const T = Highlight.tags;
   const oneDarkHighlight = Language.HighlightStyle.define([
-    { tag: T.keyword, color: '#c678dd' },
-    { tag: [T.controlKeyword, T.moduleKeyword], color: '#c678dd' },
-    { tag: [T.string, T.special(T.string)], color: '#98c379' },
-    { tag: [T.number, T.bool, T.null, T.atom], color: '#d19a66' },
-    { tag: T.comment, color: '#7f848e', fontStyle: 'italic' },
-    { tag: T.variableName, color: '#e06c75' },
-    { tag: T.function(T.variableName), color: '#61afef' },
-    { tag: T.definition(T.variableName), color: '#e5c07b' },
-    { tag: [T.typeName, T.className], color: '#e5c07b' },
-    { tag: T.propertyName, color: '#e06c75' },
-    { tag: T.operator, color: '#56b6c2' },
-    { tag: [T.punctuation, T.bracket], color: '#abb2bf' },
-    { tag: T.tagName, color: '#e06c75' },
-    { tag: T.attributeName, color: '#d19a66' },
+    { tag: T.keyword, color: 'var(--syn-kw)' },
+    { tag: [T.controlKeyword, T.moduleKeyword], color: 'var(--syn-kw)' },
+    { tag: [T.string, T.special(T.string)], color: 'var(--syn-str)' },
+    { tag: [T.number, T.bool, T.null, T.atom], color: 'var(--syn-num)' },
+    { tag: T.comment, color: 'var(--syn-com)', fontStyle: 'italic' },
+    { tag: T.variableName, color: 'var(--syn-var)' },
+    { tag: T.function(T.variableName), color: 'var(--syn-fn)' },
+    { tag: T.definition(T.variableName), color: 'var(--syn-def)' },
+    { tag: [T.typeName, T.className], color: 'var(--syn-type)' },
+    { tag: T.propertyName, color: 'var(--syn-prop)' },
+    { tag: T.operator, color: 'var(--syn-op)' },
+    { tag: [T.punctuation, T.bracket], color: 'var(--syn-punct)' },
+    { tag: T.tagName, color: 'var(--syn-tag)' },
+    { tag: T.attributeName, color: 'var(--syn-attr)' },
     // markdown 结构 token —— 必须走 CSS 变量，不能硬编码 One Dark 色。
     // 踩过：heading 写死 #e06c75（One Dark 红）→ 所有主题下标题永远玫瑰红，
     // 既跟 .cm-md-* 的变量染色打架，换主题也不跟随（用户原话："标题不要全用强调色"）。
@@ -1168,7 +1168,10 @@ window.MdEditor = (() => {
   let mmdTheme = null;
   function ensureMermaidTheme() {
     if (!window.mermaid || !mermaid.initialize) return;
-    const want = document.body.classList.contains('theme-light') ? 'default' : 'dark';
+    // 浅色判断统一走 Theme.isLight()（认 theme-light-family）。
+    // 原来这里写死 contains('theme-light')，新加的雾白/樱雾/纸墨会被当成深色 →
+    // mermaid 图渲染成白底白框（这个坑在浅色主题上已经踩过一次）。
+    const want = (window.Theme && Theme.isLight && Theme.isLight()) ? 'default' : 'dark';
     if (mmdTheme === want) return;
     try { mermaid.initialize({ startOnLoad: false, securityLevel: 'loose', theme: want }); } catch {}
     mmdTheme = want;

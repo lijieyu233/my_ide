@@ -713,7 +713,9 @@ MI.registerRenderer(['md', 'markdown'], ({ path, content }) => {
         pre.replaceWith(div);
         try {
           if (window.VendorLoader) await VendorLoader.load('mermaid');
-          mermaid.initialize({ startOnLoad: false, securityLevel: 'loose', theme: document.body.classList.contains('theme-light') ? 'default' : 'dark' });
+          // 浅色判断走 Theme.isLight()：写死 contains('theme-light') 时，
+          // 新加的浅色主题（雾白/樱雾/纸墨）会被当成深色，mermaid 出白底白框。
+          mermaid.initialize({ startOnLoad: false, securityLevel: 'loose', theme: (window.Theme && Theme.isLight && Theme.isLight()) ? 'default' : 'dark' });
           const id = 'mmd-' + Math.random().toString(36).slice(2);
           const { svg } = await mermaid.render(id, code);
           div.innerHTML = svg;

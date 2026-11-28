@@ -741,7 +741,7 @@ const Settings = (() => {
       <div class="set-form">
         <h3 class="set-section-title">运行方式</h3>
         <label class="m-label">执行模式</label>
-        <select id="ai-cfg-engine"><option value="standard">普通助手</option><option value="dsh">DeepSeek Harness（侧栏连接）</option><option value="codex">Codex（原生连接）</option><option value="antigravity">Antigravity（原生连接）</option></select>
+        <select id="ai-cfg-engine"><option value="standard">普通助手</option><option value="dsh">DeepSeek Harness（侧栏连接）</option><option value="codex">Codex（原生连接）</option><option value="codex-cli">Codex（CLI）</option><option value="antigravity">Antigravity（原生连接）</option></select>
         <div id="ai-cfg-antigravity-wrap" class="hidden">
           <label class="m-label" for="ai-cfg-antigravity">Antigravity 启动器（留空自动查找）</label>
           <input id="ai-cfg-antigravity" type="text" value="${esc(cfg.antigravityPath||'')}" placeholder="agy.exe 的绝对路径" spellcheck="false">
@@ -828,8 +828,8 @@ const Settings = (() => {
           <button class="tb-btn" id="ai-cfg-test">测试连接</button>
         </div>`;
     const provSel = document.getElementById('ai-cfg-prov');
-    const engineSel=document.getElementById('ai-cfg-engine');engineSel.value=['dsh','codex','antigravity'].includes(cfg.engine)?cfg.engine:'standard';
-    const syncEngine=()=>{for(const engine of ['dsh','codex','antigravity'])document.getElementById('ai-cfg-'+engine+'-wrap').classList.toggle('hidden',engineSel.value!==engine);};engineSel.onchange=syncEngine;syncEngine();
+    const engineSel=document.getElementById('ai-cfg-engine');engineSel.value=['dsh','codex','codex-cli','antigravity'].includes(cfg.engine)?cfg.engine:'standard';
+    const syncEngine=()=>{const v=engineSel.value;for(const engine of ['dsh','codex','antigravity'])document.getElementById('ai-cfg-'+engine+'-wrap').classList.toggle('hidden',engine==='codex'?!(v==='codex'||v==='codex-cli'):v!==engine);};engineSel.onchange=syncEngine;syncEngine();
     const antigravityConfig=()=>({...AiPanel.getConfig(),engine:'antigravity',antigravityProjectMcpEnabled:document.getElementById('ai-cfg-antigravity-project-mcp').checked,antigravityPath:document.getElementById('ai-cfg-antigravity').value.trim()});
     document.getElementById('ai-antigravity-pick').onclick=async()=>{const file=await window.myIDE.fs.pickFile('选择 Antigravity 启动器',[{name:'Antigravity 启动器',extensions:['exe']}]);if(file)document.getElementById('ai-cfg-antigravity').value=file;};
     let antigravityConnectedKey=null;
@@ -938,7 +938,7 @@ const Settings = (() => {
     renderPerms();
     document.getElementById('ai-cfg-test').onclick = async () => {
       if(engineSel.value==='antigravity'){await checkAntigravity(true);return;}
-      if(engineSel.value==='codex'){await checkCodex();return;}
+      if(engineSel.value==='codex'||engineSel.value==='codex-cli'){await checkCodex();return;}
       if(engineSel.value==='dsh'){document.getElementById('ai-dsh-detect').click();return;}
       const c = { baseUrl: urlInput.value.trim(), apiKey: document.getElementById('ai-cfg-key').value.trim(), model: modelInput.value.trim() };
       if (!c.baseUrl || !c.model) { MI.toast('请先填写服务地址和模型名称', 'err'); return; }

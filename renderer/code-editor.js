@@ -11,23 +11,27 @@ window.CodeEditor = (() => {
   const { EditorState } = State;
   const readOnlyComp = new State.Compartment();
 
-  // ---------- 语法高亮配色（One Dark，与 md-editor.js / 预览 atom-one-dark 同源） ----------
+  // ---------- 语法高亮配色 ----------
+  // 颜色走 CSS 变量（默认值 = One Dark，见 styles.css 的 :root），主题里覆盖 --syn-* 即可。
+  // 迁移原因：原来这 14 行写死 hex，换主题时编辑器里的代码色一动不动，跟界面两张皮；
+  // 而且预览侧（code-theme.css）已经改成读同一组变量，两边必须同源，否则同一段代码
+  // 在编辑区和预览区颜色不一样（原来「变量名」「类型名」就已经对不上了）。
   const T = Highlight.tags;
   const oneDarkHighlight = Language.HighlightStyle.define([
-    { tag: T.keyword, color: '#c678dd' },
-    { tag: [T.controlKeyword, T.moduleKeyword], color: '#c678dd' },
-    { tag: [T.string, T.special(T.string)], color: '#98c379' },
-    { tag: [T.number, T.bool, T.null, T.atom], color: '#d19a66' },
-    { tag: T.comment, color: '#7f848e', fontStyle: 'italic' },
-    { tag: T.variableName, color: '#e06c75' },
-    { tag: T.function(T.variableName), color: '#61afef' },
-    { tag: T.definition(T.variableName), color: '#e5c07b' },
-    { tag: [T.typeName, T.className], color: '#e5c07b' },
-    { tag: T.propertyName, color: '#e06c75' },
-    { tag: T.operator, color: '#56b6c2' },
-    { tag: [T.punctuation, T.bracket], color: '#abb2bf' },
-    { tag: T.tagName, color: '#e06c75' },
-    { tag: T.attributeName, color: '#d19a66' },
+    { tag: T.keyword, color: 'var(--syn-kw)' },
+    { tag: [T.controlKeyword, T.moduleKeyword], color: 'var(--syn-kw)' },
+    { tag: [T.string, T.special(T.string)], color: 'var(--syn-str)' },
+    { tag: [T.number, T.bool, T.null, T.atom], color: 'var(--syn-num)' },
+    { tag: T.comment, color: 'var(--syn-com)', fontStyle: 'italic' },
+    { tag: T.variableName, color: 'var(--syn-var)' },
+    { tag: T.function(T.variableName), color: 'var(--syn-fn)' },
+    { tag: T.definition(T.variableName), color: 'var(--syn-def)' },
+    { tag: [T.typeName, T.className], color: 'var(--syn-type)' },
+    { tag: T.propertyName, color: 'var(--syn-prop)' },
+    { tag: T.operator, color: 'var(--syn-op)' },
+    { tag: [T.punctuation, T.bracket], color: 'var(--syn-punct)' },
+    { tag: T.tagName, color: 'var(--syn-tag)' },
+    { tag: T.attributeName, color: 'var(--syn-attr)' },
   ]);
 
   // ---------- 语言映射（扩展名 → CM6 语言扩展，与围栏代码块 codeLanguages 同源） ----------

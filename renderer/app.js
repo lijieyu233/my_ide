@@ -501,6 +501,8 @@ const App = (() => {
     css: ['#61afef', '<path d="M6.6 3.2L4.8 12.8M11.2 3.2L9.4 12.8M3.4 6.4h9.2M3 9.6h9.2"/>'],
     html: ['#e06c75', '<path d="M4.6 4.4L2 8l2.6 3.6M11.4 4.4L14 8l-2.6 3.6M9.4 3.2L6.6 12.8"/>'],
     img: ['#98c379', '<rect x="2.2" y="3.2" width="11.6" height="9.6" rx="1.4"/><circle cx="5.8" cy="6.4" r="1.1"/><path d="M3 11.6l3.2-3 2.4 2.2 1.8-1.6 2.4 2.4"/>'],
+    video: ['#e08fb0', '<rect x="2.2" y="3.6" width="8.6" height="8.8" rx="1.4"/><path d="M10.8 7.1l3-1.7v5.2l-3-1.7"/>'],
+    audio: ['#c9a227', '<path d="M6.2 11.4V4.8l5.6-1.2v6.4"/><circle cx="4.6" cy="11.8" r="1.7"/><circle cx="10.2" cy="10.4" r="1.7"/>'],
     data: ['#56b6c2', '<rect x="2.4" y="3" width="11.2" height="10" rx="1.3"/><path d="M2.4 6.4h11.2M6.6 6.4V13"/>'],
     zip: ['#c678dd', '<rect x="4.4" y="2.2" width="7.2" height="11.6" rx="1.2"/><path d="M8 3.6v2.2M8 7.2v2.2"/>'],
     file: ['', '<path d="M4.4 2.3h4.2l3 3v8.4H4.4z"/><path d="M8.6 2.3v3h3"/>'],
@@ -514,6 +516,9 @@ const App = (() => {
     else if (['css', 'scss', 'less'].includes(ext)) k = 'css';
     else if (['js', 'mjs', 'cjs', 'ts', 'jsx', 'tsx', 'py', 'java', 'c', 'cpp', 'h', 'go', 'rs', 'sh', 'bat', 'ps1'].includes(ext)) k = 'code';
     else if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp'].includes(ext)) k = 'img';
+    // 音视频原本落进通用文档图标，和 .mp4 能直接播放的事实不符（用户指出「这里应该显示视频的图标」）。
+    else if (['mp4', 'webm', 'ogv', 'm4v', 'mkv', 'mov', 'avi', 'wmv', 'flv'].includes(ext)) k = 'video';
+    else if (['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'opus', 'wma'].includes(ext)) k = 'audio';
     else if (['csv', 'xlsx', 'xls'].includes(ext)) k = 'data';
     else if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) k = 'zip';
     const pair = FT_SVG[k];
@@ -801,12 +806,12 @@ const App = (() => {
     const keyHint = document.createElement('div'); keyHint.className = 'project-picker-key-hint'; keyHint.textContent = '↑ ↓ 选择　Enter 打开'; footer.append(keyHint);
     const action = (label, run) => { const button = document.createElement('button'); button.type = 'button'; button.className = 'ctx-item'; button.textContent = label; button.onclick = run; actions.append(button); };
     action('打开项目…', async () => { closeProjMenuNow(); if (await openFolder()) onOpened?.(); });
+    action('新建项目…', async () => { closeProjMenuNow(true); if (await createProject()) onOpened?.(); });
     if (root) {
       const currentPath = root;
       action('复制项目路径', async () => { try { await navigator.clipboard.writeText(currentPath); if (projectMenuCurrent(state)) status.textContent = '路径已复制'; } catch { if (projectMenuCurrent(state)) MI.toast('复制项目路径失败：' + currentPath, 'err'); } });
       action('在资源管理器中显示', () => window.myIDE.shell.showInFolder(currentPath));
     }
-    action('新建项目…', async () => { closeProjMenuNow(true); if (await createProject()) onOpened?.(); });
     function markSelection() {
       for (const button of list.querySelectorAll('[data-project-open]')) button.classList.toggle('sel', button.dataset.projectOpen === state.selected);
     }
@@ -1142,11 +1147,6 @@ const App = (() => {
     return p ? openProject(p) : false;
   }
 
-  async function projectAvailable(p) {
-    try { const result = await window.myIDE.fs.inspectDirectory(p); if (result?.ok) return true; MI.toast('未打开项目：' + (result?.error || '项目位置不可用') + '；当前内容已保留', 'err'); }
-    catch (error) { MI.toast('未打开项目：' + error.message + '；当前内容已保留', 'err'); }
-    return false;
-  }
   let creatingProject = false;
   async function createProject() {
     if (creatingProject) return false;
@@ -1177,6 +1177,11 @@ const App = (() => {
     return false;
   }
 
+  async function projectAvailable(p) {
+    try { const result = await window.myIDE.fs.inspectDirectory(p); if (result?.ok) return true; MI.toast('未打开项目：' + (result?.error || '项目位置不可用') + '；当前内容已保留', 'err'); }
+    catch (error) { MI.toast('未打开项目：' + error.message + '；当前内容已保留', 'err'); }
+    return false;
+  }
   async function rememberActiveProject(p) {
     try { const result = await window.myIDE.fs.setRecent(p); if (!result?.ok) throw Error(result?.error || '上次项目记录未保存'); }
     catch (error) { MI.toast(error.message + '；下次启动的项目可能未更新', 'err'); }

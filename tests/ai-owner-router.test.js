@@ -44,4 +44,7 @@ assert.throws(()=>isolation.owner(10,{engine:'codex',rootId:'relative',sessionId
 const reset=isolation.reset(10);assert.equal(new Set(reset).size,5);assert(reset.includes(codexOwner));
 assert.equal(isolation.engine(10,codex),undefined);assert.equal(isolation.host(codexOwner),codexOwner);
 assert.equal(isolation.owner(11,{requestId:'implicit'}),11);
+const cliOwner=isolation.register(12,{...a,requestId:'cli-a'},'codex-cli');
+assert.equal(cliOwner,JSON.stringify([12,'codex-cli',a.rootId,a.sessionId]));
+assert.notEqual(cliOwner,isolation.owner(12,{engine:'codex',rootId:a.rootId,sessionId:a.sessionId}));
 console.log('AI项目运行归属：三引擎、双项目、无请求授权、旧轮次拒绝与宿主清理通过');

@@ -4,14 +4,32 @@ const Theme = (() => {
   const A_KEY = 'myide-accent';        // 旧版单独强调色键（首次加载迁移后删除）
   const C_KEY = 'myide-custom-theme';  // 当前覆盖层颜色 JSON（用户主题激活时含其配色）
   const UT_KEY = 'myide-user-themes';  // 用户自定义主题列表 [{id, name, base, colors}]
-  const ORDER = ['dark', 'codex', 'antigravity', 'light', 'pink', 'crimson', 'graphite']; // toggle 循环顺序
-  const NAMES = { dark: '深色', codex: 'Codex', antigravity: '反重力深色', light: '浅色', pink: '粉红', crimson: '深红', graphite: '石墨' };
-  const CLS = { codex: 'theme-codex', antigravity: 'theme-antigravity', light: 'theme-light', pink: 'theme-pink', crimson: 'theme-crimson', graphite: 'theme-graphite' };
+  // toggle 循环顺序：先走完深色族，再进入浅色族
+  // （light/mist/sakura/paper/pink）。这么排是让「再按一次」在观感上是连续的一段，
+  // 不是深-浅-深-浅地来回跳。
+  const ORDER = ['dark', 'codex', 'antigravity', 'abyss', 'dune', 'neon', 'crimson', 'graphite', 'light', 'mist', 'sakura', 'paper', 'pink'];
+  const NAMES = {
+    dark: '深色', codex: 'Codex', antigravity: '反重力深色', abyss: '夜航', dune: '暖砂', neon: '霓虹', crimson: '深红', graphite: '石墨',
+    light: '浅色', mist: '雾白', sakura: '樱雾', paper: '纸墨', pink: '粉红',
+  };
+  const CLS = {
+    codex: 'theme-codex', antigravity: 'theme-antigravity', light: 'theme-light', pink: 'theme-pink', crimson: 'theme-crimson', graphite: 'theme-graphite',
+    abyss: 'theme-abyss', dune: 'theme-dune', neon: 'theme-neon',
+    mist: 'theme-mist', sakura: 'theme-sakura', paper: 'theme-paper',
+  };
+  // 浅色族：底色是浅的，需要把原生控件（color-scheme）、AI 面板配色、mermaid 图主题
+  // 整体切到浅色那一套。写一个名单而不是每处都列选择器 —— 上次加主题漏改一处，
+  // 表现是「浅色主题下滚动条/下拉框还是黑的」，很难查。
+  const LIGHT = ['light', 'mist', 'sakura', 'paper', 'pink'];
+  const isLightBase = (b) => LIGHT.includes(b);
 
   // UI 可动态调整的变量（字段名 → CSS 变量 + 分组）
   // 注意：主题变量定义在 body.theme-* 选择器上，覆盖层必须写 body inline style 才能赢过它
   const FIELDS = {
     accent:     { css: '--accent',      label: '强调色（按钮/链接/光标）', group: '基础配色' },
+    // 铺满强调色的控件上的字色。深色主题的强调色是亮的，必须配深字；
+    // 不给这一项的话，用户把强调色调亮后按钮上的白字就糊了（只能改代码）。
+    onAccent:   { css: '--on-accent',   label: '强调色上的文字',           group: '基础配色' },
     green:      { css: '--green',       label: '成功 / 新增',              group: '基础配色' },
     red:        { css: '--red',         label: '危险 / 删除',              group: '基础配色' },
     bg:         { css: '--bg',          label: '编辑区背景',               group: '背景' },
@@ -51,6 +69,9 @@ const Theme = (() => {
   }
   function applyBase(b) {
     for (const k in CLS) document.body.classList.toggle(CLS[k], b === k);
+    // 浅色族标记：CSS 里凡是「浅色主题要反向」的地方（原生控件配色、AI 面板文字、
+    // 快捷打开选中行）统一挂这一个类，新增浅色主题时不用再去补 5 个选择器。
+    document.body.classList.toggle('theme-light-family', isLightBase(b));
   }
 
   // ---------- 覆盖层（当前生效的自定义颜色） ----------
@@ -125,6 +146,9 @@ const Theme = (() => {
     return b;
   }
   function current() { return activeId; }
+  // 当前主题是否为浅色族。mermaid 图主题、原生控件配色都按这个分支走 ——
+  // 不要再各自写 classList.contains('theme-light')，那样新加的浅色主题会被当成深色。
+  function isLight() { return document.body.classList.contains('theme-light-family'); }
   function name(t) {
     if (isUserId(t)) { const ut = findUser(t.slice(5)); return ut ? ut.name : '自定义'; }
     return NAMES[t] || t;
@@ -254,9 +278,11 @@ const Theme = (() => {
     Bg.init();
   }
   return {
-    toggle, set, current, name, init,
+    toggle, set, current, name, init, isLight,
     setAccent, getAccent, pick, clearCustom, getCustom, getFields,
     addUserTheme, removeUserTheme, getUserThemes, choices, makeSwatch, initPicker,
+    // 供设置页 / 自检脚本枚举主题（别在别处再抄一份主题名，抄了就会漂）
+    ORDER, NAMES, isLightBase,
   };
 })();
 

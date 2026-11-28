@@ -48,9 +48,34 @@
   --code-text: #e8c98a;
   --editor-text: #c8c8c8;
   --num-dim: #5f5f5f;
+  /* 铺满 accent 的控件上该用什么字色。
+     深色主题的 accent 是**亮色**（夜航 #56b3ea / 霓虹 #5af2c8），上面压白字对比度只有 1.4~2.3，
+     整块糊成一片。以前这些地方一律写死 #fff，只有默认蓝 accent 恰好能读；换亮强调色就废了。
+     所以：亮 accent 用深字，暗 accent 用白字，各主题自己给。 */
+  --on-accent: #ffffff;
   --badge-m-bg: #3a3a2d; --badge-m-tx: #d8c97a;
   --badge-a-bg: #2d3a2d; --badge-a-tx: #6aab73;
   --badge-d-bg: #3a2d2d; --badge-d-tx: #d16969;
+
+  /* ---- 代码语法 token 配色 ----
+     默认值就是 One Dark（原有 5 套主题沿用，观感一行不变）；新增主题按自己的色板覆盖。
+     为什么搬进变量：code-editor.js / md-editor.js 里那套 HighlightStyle 原先写死 14 个 hex，
+     换主题时编辑器里的代码色一动不动，跟界面主题永远是两张皮。
+     同时预览侧（vendor/atom-one-dark）也改读同一组变量 —— 原来编辑器和预览对
+     「变量名」「类型名」的取色还不一致（#e06c75 vs #d19a66），现在两边终于同源。 */
+  --syn-kw: #c678dd;      /* 关键字 */
+  --syn-str: #98c379;     /* 字符串 */
+  --syn-num: #d19a66;     /* 数字 / 布尔 / null */
+  --syn-com: #7f848e;     /* 注释 */
+  --syn-var: #e06c75;     /* 变量名 */
+  --syn-fn: #61afef;      /* 函数名 */
+  --syn-def: #e5c07b;     /* 定义（函数/类声明处） */
+  --syn-type: #e5c07b;    /* 类型 / 类名 */
+  --syn-prop: #e06c75;    /* 属性名 */
+  --syn-op: #56b6c2;      /* 运算符 */
+  --syn-punct: #abb2bf;   /* 标点 / 括号 */
+  --syn-tag: #e06c75;     /* 标签名（HTML） */
+  --syn-attr: #d19a66;    /* 属性名（HTML） */
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 .hidden { display: none !important; }
@@ -791,7 +816,7 @@ body.rsb-collapsed #ai-panel { display: none !important; }
   width: 100%; height: 34px; margin-bottom: 16px;
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   font-size: 13px; font-weight: 500; cursor: pointer;
-  color: #fff; background: var(--accent);
+  color: var(--on-accent); background: var(--accent);
   border: 1px solid var(--accent); border-radius: 6px;
 }
 .empty-cta:hover { filter: brightness(1.08); }
@@ -1089,6 +1114,12 @@ textarea.editor {
 .img-lightbox, .svg-fullscreen {
   position: fixed; inset: 0; z-index: 9999; background: rgba(0, 0, 0, .88);
   display: flex;
+}
+/* Mermaid / SVG 图表本身背景透明，全屏必须用不透明主题画布完全遮住底层编辑器与侧栏 */
+.svg-fullscreen { background: var(--bg, #171717); }
+.svg-fullscreen .img-lightbox-tip {
+  background: var(--bg-panel, #171717); color: var(--text, #b8b8b8);
+  border: 1px solid var(--border-mid, #3a3a3a);
 }
 .img-lightbox {
   width: 100%; height: 100%; max-width: none; max-height: none;
@@ -1761,7 +1792,7 @@ body.gl-ew-resizing #gl-splitter { background: var(--accent); opacity: .5; }
   color: var(--bc, var(--accent));
   border: 1px solid var(--bc, var(--accent));
 }
-.gl-branch.cur { background: var(--accent); color: #fff; font-weight: 600; }
+.gl-branch.cur { background: var(--accent); color: var(--on-accent); font-weight: 600; }
 .gl-head {
   font-size: .69em; padding: 0 5px; border-radius: 8px; flex-shrink: 0;
   background: var(--green); color: #fff;
@@ -2089,7 +2120,7 @@ body.has-bg #empty-state { background: color-mix(in srgb, var(--bg) 94%, transpa
 }
 #ctx-menu.hidden { display: none; }
 .ctx-item { padding: 6px 14px; font-size: 12px; cursor: pointer; }
-.ctx-item:hover { background: var(--accent); color: #fff; }
+.ctx-item:hover { background: var(--accent); color: var(--on-accent); }
 /* 带图标的菜单项：左图标 + 右文字。图标列固定 15px，所有项的文字才能对齐一条竖线。
    用 flex + gap 而不是给每项写死 padding —— 有图标/没图标的项混在一列里时，
    前者靠图标占位、后者直接文字起排，两种情况都能对齐。 */
@@ -2542,6 +2573,13 @@ body.theme-light #set-box, body.theme-pink #set-box { color-scheme: light; }
 .set-theme-swatch[data-theme-base="pink"] { --swatch-bg: #fff0f5; --swatch-accent: #d66b93; }
 .set-theme-swatch[data-theme-base="crimson"] { --swatch-bg: #2a171d; --swatch-accent: #f06292; }
 .set-theme-swatch[data-theme-base="graphite"] { --swatch-bg: #212121; --swatch-accent: #d9687d; }
+/* 第二批主题的色卡：底 = 工具窗口色，底部那条 = 强调色，一眼能看出「底色多深 + 强调色什么调」 */
+.set-theme-swatch[data-theme-base="abyss"] { --swatch-bg: #1c2229; --swatch-accent: #56b3ea; }
+.set-theme-swatch[data-theme-base="dune"] { --swatch-bg: #24201b; --swatch-accent: #e3a55c; }
+.set-theme-swatch[data-theme-base="neon"] { --swatch-bg: #12141c; --swatch-accent: #5af2c8; }
+.set-theme-swatch[data-theme-base="mist"] { --swatch-bg: #fafbfc; --swatch-accent: #2e6ca4; }
+.set-theme-swatch[data-theme-base="sakura"] { --swatch-bg: #fffbfc; --swatch-accent: #c13f68; }
+.set-theme-swatch[data-theme-base="paper"] { --swatch-bg: #faf6ee; --swatch-accent: #8f6134; }
 .set-appearance-links:not([hidden]) { display: flex; flex-wrap: wrap; gap: 6px; }
 .set-appearance-links .tb-btn { padding: 4px 8px; }
 #set-list .set-section-title[id^="set-appearance-"] { scroll-margin-top: 12px; }
@@ -2933,6 +2971,304 @@ body.theme-crimson {
 body.theme-crimson .tb-btn:hover { color: var(--text-bright); }
 body.theme-crimson .win-btns .win-close:hover { background: #e81123; color: #fff; border-color: #e81123; }
 
+/* ============================================================
+   第二批内置主题（夜航 / 暖砂 / 霓虹 / 雾白 / 樱雾 / 纸墨）
+   ------------------------------------------------------------
+   加这六套之前先定的两条规矩，后面加主题也照这个来：
+
+   1）**必须走四级明度阶梯**（内容 > 标签栏 > 工具窗口 > 外框），相邻至少差 3 级。
+      区域之间靠"明度 + 4px 深色缝"分开，不靠 1px 浅线画格子（见 :root 开头那段说明）。
+      六套的 --bg/--bg-tabbar/--bg-panel/--bg-title 都是照这个阶梯排的，不是随手取色。
+
+   2）**强调色只做强调，不做环境光**（深红主题当初踩过的坑：整屏泛红 → 层级被拉平）。
+      大面积底色一律中性，品牌感只由 --accent 承载。
+
+   另外每个值都跑过对比度核算：正文对底色 ≥ 7:1（远超 AA 的 4.5），
+   浅色主题的 --text-dim（状态栏小字）也压到 ≥ 4.5:1 —— 实测原粉红主题那一档只有 3.2，小字糊。 */
+
+/* ---------- 夜航：冷调深蓝灰 + 青蓝强调 ---------- */
+/* 解决「默认深色偏灰发闷」：底色的蓝味比默认深色重一档，明度整体抬高，
+   光标和选中块是唯一发亮的地方。 */
+body.theme-abyss {
+  --md-title: #9ecbe8;
+  --bg: #1c2229;
+  --bg-tabbar: #181d23;
+  --bg-panel: #15191e;
+  --bg-title: #111418;
+  --bg-hover: #232b34;
+  --bg-selected: #24405a;
+  --bg-input: #1f262e;
+  --border: #0e1116;
+  --border-mid: #333d49;
+  --text: #b5bfca;
+  --text-bright: #e8eef5;
+  --text-dim: #7b8794;
+  --accent: #56b3ea;
+  --on-accent: #08131c;   /* 亮蓝上必须深字，白字对比度只有 2.3 */
+  --green: #6cb98a;
+  --red: #e1788f;
+  --yellow: #d3ab5c;
+  --btn-bg: #1e252d;
+  --btn-border: #2f3945;
+  --btn-hover: #273039;
+  --panel-strong: #191e24;
+  --menu-border: #38434f;
+  --code-bg: #12161a;
+  --code-text: #9fd2f2;
+  --editor-text: #c9d4de;
+  --num-dim: #5a6572;
+  --add-bg: rgba(108, 185, 138, 0.18);
+  --del-bg: rgba(225, 120, 143, 0.18);
+  --add-text: #9fd8b5;
+  --del-text: #f0b3c0;
+  --badge-m-bg: #3a3226; --badge-m-tx: #e0c17a;
+  --badge-a-bg: #1f3226; --badge-a-tx: #6cb98a;
+  --badge-d-bg: #3a242c; --badge-d-tx: #e1788f;
+  --syn-kw: #b083e0; --syn-str: #7ec699; --syn-num: #e0a86a; --syn-com: #5f6b78;
+  --syn-var: #d98ba8; --syn-fn: #5fb4e8; --syn-def: #e0c17a; --syn-type: #e0c17a;
+  --syn-prop: #d98ba8; --syn-op: #6fc3d8; --syn-punct: #a8b6c4;
+  --syn-tag: #d98ba8; --syn-attr: #e0a86a;
+}
+
+/* ---------- 暖砂：暖中性灰 + 铜橙强调 ---------- */
+/* 底色偏暖但**刻意不发红** —— 深红主题的教训是整屏暖色会把层级拉平；
+   这里暖味只在灰里带一点点，品牌感交给铜橙。 */
+body.theme-dune {
+  --md-title: #e6c9a0;
+  --bg: #24201b;
+  --bg-tabbar: #1f1c17;
+  --bg-panel: #1a1713;
+  --bg-title: #15120f;
+  --bg-hover: #2b2620;
+  --bg-selected: #4a3b28;
+  --bg-input: #272320;
+  --border: #100e0b;
+  --border-mid: #3a342c;
+  --text: #cec4b6;
+  --text-bright: #f2e9dc;
+  --text-dim: #8d8272;
+  --accent: #e3a55c;
+  --on-accent: #1d1409;
+  --green: #8db878;
+  --red: #e08268;
+  --yellow: #d9c05c;
+  --btn-bg: #292420;
+  --btn-border: #3d362c;
+  --btn-hover: #332d26;
+  --panel-strong: #1e1a15;
+  --menu-border: #443c31;
+  --code-bg: #16130f;
+  --code-text: #e8c79a;
+  --editor-text: #d7cdbe;
+  --num-dim: #6b6252;
+  --add-bg: rgba(141, 184, 120, 0.18);
+  --del-bg: rgba(224, 130, 104, 0.18);
+  --add-text: #b7d9a2;
+  --del-text: #f0b6a4;
+  --badge-m-bg: #3a3323; --badge-m-tx: #d9c05c;
+  --badge-a-bg: #242f1f; --badge-a-tx: #8db878;
+  --badge-d-bg: #3a2620; --badge-d-tx: #e08268;
+  --syn-kw: #d79a6a; --syn-str: #9cc08a; --syn-num: #e6c078; --syn-com: #7a7264;
+  --syn-var: #d98878; --syn-fn: #e8b87a; --syn-def: #d9c05c; --syn-type: #d9c05c;
+  --syn-prop: #d98878; --syn-op: #c9a24a; --syn-punct: #b5a996;
+  --syn-tag: #d98878; --syn-attr: #e6c078;
+}
+
+/* ---------- 霓虹：近黑 + 霓虹青强调 ---------- */
+/* 六套里最硬核的一版。霓虹色面积必须小（只用在按钮/状态点/光标），
+   大面积铺开就是视觉疲劳；发光也不做 —— 低端屏和录屏会溢色。 */
+body.theme-neon {
+  --md-title: #7ef0d4;
+  --bg: #12141c;
+  --bg-tabbar: #0e1017;
+  --bg-panel: #0b0d13;
+  --bg-title: #07080d;
+  --bg-hover: #1b1e2a;
+  --bg-selected: #1e3b3a;
+  --bg-input: #12141f;
+  --border: #05060a;
+  --border-mid: #262a38;
+  --text: #d5dbe8;
+  --text-bright: #eef2fb;
+  --text-dim: #7a8296;
+  --accent: #5af2c8;
+  --on-accent: #04120f;
+  --green: #34f5a3;
+  --red: #ff5c8a;
+  --yellow: #ffd166;
+  --btn-bg: #14161f;
+  --btn-border: #2b3040;
+  --btn-hover: #1c2030;
+  --panel-strong: #101219;
+  --menu-border: #2e3342;
+  --code-bg: #0a0b12;
+  --code-text: #7ef0d4;
+  --editor-text: #dfe6f2;
+  --num-dim: #4b5265;
+  --add-bg: rgba(52, 245, 163, 0.16);
+  --del-bg: rgba(255, 92, 138, 0.18);
+  --add-text: #8dffcf;
+  --del-text: #ffa8c0;
+  --badge-m-bg: #2e2a17; --badge-m-tx: #ffd166;
+  --badge-a-bg: #122b22; --badge-a-tx: #34f5a3;
+  --badge-d-bg: #2f1620; --badge-d-tx: #ff5c8a;
+  --syn-kw: #ff7ab6; --syn-str: #7dffc4; --syn-num: #ffd166; --syn-com: #4e5a72;
+  --syn-var: #9db3ff; --syn-fn: #5af2c8; --syn-def: #ffd166; --syn-type: #ffd166;
+  --syn-prop: #9db3ff; --syn-op: #5af2c8; --syn-punct: #8b95ad;
+  --syn-tag: #ff7ab6; --syn-attr: #ffd166;
+}
+
+/* ---------- 雾白：冷调浅灰 + 靛蓝强调 ---------- */
+/* 替代纯白：白天连续用 8 小时，纯白底（原浅色主题 #ffffff）的眩光很累。
+   底色降到 #fafbfc，靠 1px 边框分层而不是靠白度差。 */
+body.theme-mist {
+  --md-title: #24547f;
+  --bg: #fafbfc;
+  --bg-tabbar: #eff2f5;
+  --bg-panel: #e9edf1;
+  --bg-title: #e2e7ec;
+  --bg-hover: #e3edf9;
+  --bg-selected: #cfe0f2;
+  --bg-input: #ffffff;
+  --border: #d6dde4;
+  --border-mid: #c3ccd5;
+  --text: #313a45;
+  --text-bright: #12171d;
+  --text-dim: #5a6673;
+  --accent: #2e6ca4;
+  --on-accent: #ffffff;
+  --green: #2e7d47;
+  --red: #c2403a;
+  --yellow: #a97a15;
+  --btn-bg: #f2f5f8;
+  --btn-border: #cfd8e0;
+  --btn-hover: #e8eef4;
+  --panel-strong: #f7f9fb;
+  --menu-border: #cfd8e0;
+  --code-bg: #f1f4f7;
+  --code-text: #a2601a;
+  --editor-text: #232a33;
+  --num-dim: #9aa5b1;
+  --add-bg: rgba(46, 125, 71, 0.12);
+  --del-bg: rgba(194, 64, 58, 0.12);
+  --add-text: #1f6b3a;
+  --del-text: #a5312c;
+  --badge-m-bg: #f6efdb; --badge-m-tx: #8a6512;
+  --badge-a-bg: #daf2e2; --badge-a-tx: #1f6b3a;
+  --badge-d-bg: #fbe4e2; --badge-d-tx: #a5312c;
+  --syn-kw: #8b4bbd; --syn-str: #1f7a45; --syn-num: #b06a12; --syn-com: #8a99a8;
+  --syn-var: #b03a54; --syn-fn: #2b62a8; --syn-def: #8a6512; --syn-type: #8a6512;
+  --syn-prop: #b03a54; --syn-op: #2b62a8; --syn-punct: #5a6672;
+  --syn-tag: #b03a54; --syn-attr: #b06a12;
+}
+
+/* ---------- 樱雾：柔粉 + 玫红强调 ---------- */
+/* 「把原来的粉红主题去荧光」：粉只留在表面层，动作色从 #e91e63 降到玫瑰红 ——
+   原主题的强调色在浅粉底上对比度只有 3.9，白字按钮是糊的。 */
+body.theme-sakura {
+  --md-title: #9c3a5c;
+  --bg: #fffbfc;
+  --bg-tabbar: #fbeef3;
+  --bg-panel: #f6e6ec;
+  --bg-title: #f0dde5;
+  --bg-hover: #fbe8f0;
+  --bg-selected: #f8cfe0;
+  --bg-input: #ffffff;
+  --border: #ecd3dd;
+  --border-mid: #e0bfcc;
+  --text: #4a3540;
+  --text-bright: #2b1a22;
+  --text-dim: #7d6270;
+  --accent: #c13f68;
+  --on-accent: #ffffff;
+  --green: #2e7d47;
+  --red: #b83b35;
+  --yellow: #9a6d10;
+  --btn-bg: #f9ebf1;
+  --btn-border: #e6c6d3;
+  --btn-hover: #f6dde8;
+  --panel-strong: #fdf4f7;
+  --menu-border: #e6c6d3;
+  --code-bg: #fbeef4;
+  --code-text: #b04a72;
+  --editor-text: #43303a;
+  --num-dim: #b9a0aa;
+  --add-bg: rgba(46, 125, 71, 0.12);
+  --del-bg: rgba(194, 64, 58, 0.12);
+  --add-text: #1f6b3a;
+  --del-text: #a5312c;
+  --badge-m-bg: #f8efdb; --badge-m-tx: #8a6512;
+  --badge-a-bg: #daf2e2; --badge-a-tx: #1f6b3a;
+  --badge-d-bg: #fbe4e2; --badge-d-tx: #a5312c;
+  --syn-kw: #9c4b8f; --syn-str: #2f7a4a; --syn-num: #a5651a; --syn-com: #a08a95;
+  --syn-var: #b03a54; --syn-fn: #b04c78; --syn-def: #8a6512; --syn-type: #8a6512;
+  --syn-prop: #b03a54; --syn-op: #9c4b8f; --syn-punct: #6b5760;
+  --syn-tag: #b03a54; --syn-attr: #a5651a;
+}
+
+/* ---------- 纸墨：暖米 + 纸褐强调 ---------- */
+/* 长文 / Markdown 阅读的默认答案：暖米底替代纯白，正文对比度 11:1。
+   注意暖米底上不要再叠暖色描边（会糊成一片），边框统一用中性偏褐。 */
+body.theme-paper {
+  --md-title: #7a5228;
+  --bg: #faf6ee;
+  --bg-tabbar: #f2ece1;
+  --bg-panel: #ece5d8;
+  --bg-title: #e4dccd;
+  --bg-hover: #f0e8da;
+  --bg-selected: #e2d2b8;
+  --bg-input: #fffdf8;
+  --border: #ddd3c2;
+  --border-mid: #cabfa9;
+  --text: #3b352c;
+  --text-bright: #1a1713;
+  --text-dim: #6f6554;
+  --accent: #8f6134;
+  --on-accent: #fffaf0;
+  --green: #4a7c46;
+  --red: #a84437;
+  --yellow: #8a6314;
+  --btn-bg: #f4eee3;
+  --btn-border: #d8cdba;
+  --btn-hover: #ece3d4;
+  --panel-strong: #fbf8f1;
+  --menu-border: #d8cdba;
+  --code-bg: #f4efe5;
+  --code-text: #8a5a1e;
+  --editor-text: #2c2720;
+  --num-dim: #a89c88;
+  --add-bg: rgba(74, 124, 70, 0.12);
+  --del-bg: rgba(176, 74, 60, 0.12);
+  --add-text: #3d6a3a;
+  --del-text: #963d31;
+  --badge-m-bg: #f4ead2; --badge-m-tx: #875f12;
+  --badge-a-bg: #e2eed9; --badge-a-tx: #3d6a3a;
+  --badge-d-bg: #f5e0d9; --badge-d-tx: #963d31;
+  --syn-kw: #8b4e2a; --syn-str: #4a7c46; --syn-num: #9a6f18; --syn-com: #9a907c;
+  --syn-var: #a8503c; --syn-fn: #a2703f; --syn-def: #875f12; --syn-type: #875f12;
+  --syn-prop: #a8503c; --syn-op: #8b4e2e; --syn-punct: #6a6153;
+  --syn-tag: #a8503c; --syn-attr: #9a6f18;
+}
+
+/* ---------- 浅色族统一处理 ---------- */
+/* theme.js 的 applyBase 会给浅色主题（含原来的浅色/粉红）挂上 theme-light-family。
+   这里把「浅色要反向」的三处收到一起 —— 原来每加一个浅色主题就要去补 5 个选择器，
+   漏一处就是「浅色主题下滚动条/下拉框还是黑的/选中行白字看不见」，很难查。 */
+body.theme-light-family #panel-search,
+body.theme-light-family #set-box { color-scheme: light; }
+body.theme-light-family .qo-item.sel .sr-text { color: #444; }
+body.theme-light-family #ai-panel {
+  color-scheme: light;
+  --ai-body-text: #384152; --ai-strong-text: #111827; --ai-process-text: #606977; --ai-header-text: #434954;
+  --ai-link-text: #235da8; --ai-code-text: #855015; --ai-running-text: #235da8;
+  --ai-success-text: #286743; --ai-warning-text: #81591d; --ai-error-text: #a13242;
+}
+/* 暖底的两套（樱雾 / 纸墨）AI 面板文字稍微再暖一点，否则冷灰字浮在粉色上发脏 */
+body.theme-sakura #ai-panel, body.theme-paper #ai-panel {
+  --ai-body-text: #4a3a42; --ai-strong-text: #241820; --ai-process-text: #77656d; --ai-header-text: #52424a;
+  --ai-link-text: #8f3358; --ai-code-text: #8a5220;
+}
+
 /* ---------- 内置浏览器面板 ---------- */
 #browser-panel {
   position: absolute; inset: 0; z-index: 40;
@@ -3061,7 +3397,7 @@ body.browser-immersive #ai-resize { display: none; }
      子菜单没有图标，靠 padding-left 补出同样的文字起点。 */
   padding-left: 14px;
 }
-#ctx-submenu .ctx-item:hover { background: var(--accent); color: #fff; }
+#ctx-submenu .ctx-item:hover { background: var(--accent); color: var(--on-accent); }
 #ctx-submenu .ctx-item:last-child { margin-top: 4px; border-top: 1px solid var(--border-pane); border-radius: 0 0 5px 5px; padding-top: 7px; }
 /* ---------- 新建组浮层（贴边小面板，不是居中模态框） ---------- */
 .bw-new-group-menu {
@@ -3091,7 +3427,7 @@ body.browser-immersive #ai-resize { display: none; }
 }
 .bw-new-group-item:hover { background: var(--bg-hover); color: var(--text-bright); }
 .bw-new-group-item.primary { color: var(--accent); }
-.bw-new-group-item.primary:hover { background: var(--accent); color: #fff; }
+.bw-new-group-item.primary:hover { background: var(--accent); color: var(--on-accent); }
 .bw-new-group-hint { font-size: .82em; color: var(--text-dim); }
 .bw-tab { display: flex; align-items: center; flex: 0 0 176px; width: 176px; min-width: 100px; max-width: 220px; height: 32px; border: 1px solid transparent; border-bottom: 0; border-radius: 7px 7px 0 0; color: var(--text-dim); }
 .bw-tab:hover { background: var(--bg-hover); }
@@ -3987,6 +4323,8 @@ body.has-bg #ai-panel { background: color-mix(in srgb, var(--bg) 88%, transparen
 }
 /* 进行中：图标轻微呼吸，暗示仍在跑（不做整块变色，保持安静） */
 .ai-run-state.running .ai-run-ico { animation: ai-run-pulse 1.6s ease-in-out infinite; }
+#ai-send.running .ai-run-ico { animation: ai-send-spin 1s linear infinite; }
+@keyframes ai-send-spin { to { transform: rotate(360deg); } }
 @keyframes ai-run-pulse {
   0%, 100% { opacity: .45; transform: translateY(0) }
   50%      { opacity: .95; transform: translateY(-1px) }
@@ -3994,7 +4332,7 @@ body.has-bg #ai-panel { background: color-mix(in srgb, var(--bg) 88%, transparen
 /* 终态（已完成/已停止/失败）：再淡一档，读完即走开 */
 .ai-run-state:not(.running) { color: var(--text-dim); opacity: .8; }
 @media (prefers-reduced-motion: reduce) {
-  .ai-run-state.running .ai-run-ico { animation: none; }
+  .ai-run-state.running .ai-run-ico, #ai-send.running .ai-run-ico { animation: none; }
 }
 .ai-tool {
   display: flex; align-items: center; gap: 8px;

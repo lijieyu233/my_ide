@@ -1,6 +1,8 @@
 const path = require('node:path');
 const { realpath, stat } = require('node:fs/promises');
 const { sandboxStatus } = require('./agy-runtime');
+const defaultDesktopReader = require('./antigravity-desktop-reader');
+const defaultDesktopBridge = require('./antigravity-desktop-bridge');
 
 const ENGINE = 'antigravity';
 const MAX_PATH = 4096;
@@ -52,8 +54,15 @@ function runtimeState(result) {
   };
 }
 
-function createIpc({ ipcMain, service, sender, readView, assertRun, openApproval, desktopPath, openDesktop }) {
+function createIpc({ ipcMain, service, sender, readView, assertRun, openApproval, desktopPath, openDesktop, desktopReader = defaultDesktopReader, desktopBridge = defaultDesktopBridge, sendDesktopEvent, geminiDir }) {
   const activeReviews = new Set();
+  const desktopWatcher = typeof desktopReader?.createWatcher === 'function'
+    ? desktopReader.createWatcher({ geminiDir, onUpdate: payload => sendDesktopEvent?.(payload) })
+    : null;
+  const hookTailer = typeof desktopBridge?.createEventTailer === 'function' && typeof sendDesktopEvent === 'function'
+    ? desktopBridge.createEventTailer({ geminiDir, onEvent: payload => sendDesktopEvent?.(payload) })
+    : null;
+  hookTailer?.start();
 
   async function currentTarget(event, cfg, requested = {}, { requireSession = true, allowOtherMode = false, connectionOnly = false } = {}) {
     sender(event);
@@ -193,7 +202,46 @@ function createIpc({ ipcMain, service, sender, readView, assertRun, openApproval
     return service.questionResult(scope, id, answers);
   });
 
-  return { currentTarget };
+  register('desktop-list', async (_event, params = {}) => desktopReader.listConversations({
+    geminiDir,
+    workspaceRoot: typeof params?.workspaceRoot === 'string' ? params.workspaceRoot : '',
+    scope: params?.scope === 'all' ? 'all' : 'project',
+    query: typeof params?.query === 'string' ? params.query.slice(0, 200) : '',
+    includeChildren: params?.includeChildren === true,
+    limit: params?.limit,
+  }));
+  register('desktop-read', async (_event, params = {}) => desktopReader.readConversation({
+    geminiDir,
+    conversationId: params?.conversationId,
+    maxSteps: params?.maxSteps,
+  }));
+  register('desktop-artifact', async (_event, params = {}) => desktopReader.readArtifact({
+    geminiDir,
+    conversationId: params?.conversationId,
+    filename: params?.filename,
+  }));
+  register('desktop-watch', async (_event, conversationId = '') => {
+    if (!desktopWatcher) return { ok: false, errorCode: 'ANTIGRAVITY_WATCH_UNAVAILABLE', error: '桌面监听不可用' };
+    return desktopWatcher.watch(typeof conversationId === 'string' ? conversationId : '');
+  });
+  register('desktop-bridge-status', async () => desktopBridge.status({ geminiDir }));
+  register('desktop-bridge-install', async () => desktopBridge.install({ geminiDir }));
+  register('desktop-bridge-uninstall', async () => desktopBridge.uninstall({ geminiDir }));
+  register('desktop-new', async (_event, params = {}) => desktopBridge.createDesktopConversation({
+    geminiDir,
+    workspaceRoot: typeof params?.workspaceRoot === 'string' ? params.workspaceRoot : '',
+    projectId: typeof params?.projectId === 'string' ? params.projectId : '',
+    prompt: typeof params?.prompt === 'string' ? params.prompt : '',
+    title: typeof params?.title === 'string' ? params.title : '',
+    model: typeof params?.model === 'string' ? params.model : '',
+  }));
+
+  function dispose() {
+    desktopWatcher?.stop();
+    hookTailer?.stop();
+  }
+
+  return { currentTarget, dispose };
 }
 
 module.exports = { ENGINE, createIpc, failure, workspaceDirectory };

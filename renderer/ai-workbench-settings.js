@@ -114,7 +114,7 @@
     // 但它们是常量；真正不能进哈希的是各键的实时值（宽度会被窗口夹回去，
     // 只要哈希含它就必然误报 STATE_CHANGED）。键值统一由 settings_keys 读。
     return {theme:Theme.current(),custom:Theme.getCustom(),
-      themes:['dark','light','pink','crimson','graphite',...Theme.getUserThemes().map(t=>'user:'+t.id)],
+      themes:(Theme.ORDER||['dark','light','pink','crimson','graphite']).concat(Theme.getUserThemes().map(t=>'user:'+t.id)),
       fontSize:parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--editor-font-size'))||13,
       layout:layoutRead(),shortcuts:Shortcuts.bindings(),stored:stored(),
       modules:SettingKeys.modules,
