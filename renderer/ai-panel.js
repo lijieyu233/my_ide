@@ -5607,8 +5607,9 @@ const AiPanel = (() => {
         (manual ? rank(sessionRanks, a.hostId) - rank(sessionRanks, b.hostId) : 0));
       const codexSessionScope = recent ? 'recent' : key;
       const codexSessionId = session => session.codexThreadId || session.id;
+      const desktopRank = id => sessionRanks.has(id) ? sessionRanks.get(id) : -1;
       const desktopItems = codex && sessionRanks.size ? items.slice().sort((a, b) =>
-        rank(sessionRanks, a.codexThreadId) - rank(sessionRanks, b.codexThreadId)) : items;
+        desktopRank(a.codexThreadId) - desktopRank(b.codexThreadId)) : items;
       const orderedItems = codex ? applyCodexOrder(desktopItems, codexSessionScope, codexSessionId, orderAdditions, session => session.id) : desktopItems;
       const groupName = recent ? '最近' : unassigned ? '未分组'
         : isAgyDesktop(config.engine) && !groupRoot ? '会话列表'

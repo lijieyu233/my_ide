@@ -620,7 +620,7 @@ function createService(options={}){
     const desktopOwned = desktopAvailable();
     return { projects: shownProjects, bindings, activeBinding: bindings.find(binding => activeRoot && norm(binding.rootDir) === norm(activeRoot)), items: await Promise.all(visible.map(async item => {
       const desktop = item.archived || locallyRunning.has(item.threadId)
-        ? { running: false } : conn.shared ? { running: item.running } : await observeDesktop(home, item);
+        ? { running: false } : conn.shared && item.running ? { running: true } : await observeDesktop(home, item);
       const completedTurnId = locallyRunning.has(item.threadId)
         ? undefined : await completedDesktopTurn(request, item, desktop.running);
       const { rolloutPath, historyMode, updatedAt, ...summary } = item;
