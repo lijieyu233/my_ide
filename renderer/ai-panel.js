@@ -5016,12 +5016,18 @@ const AiPanel = (() => {
     }
     const ranks = new Map(order.map((id, index) => [id, index]));
     if (additions) {
-      // Remember new entries at the end so later catalog refreshes cannot move them.
+      // Projects append newly discovered roots at the end; new sessions prepend to the top so fresh/dispatched chats are immediately visible.
+      const added = [];
       for (const item of items) {
         const id = idOf(item);
-        if (typeof id === 'string' && !ranks.has(id)) ranks.set(id, ranks.size);
+        if (typeof id === 'string' && !ranks.has(id)) {
+          ranks.set(id, -1);
+          added.push(id);
+        }
       }
-      const next = [...ranks.keys()];
+      const next = scope === 'projects' ? [...order, ...added] : [...added, ...order];
+      ranks.clear();
+      next.forEach((id, index) => ranks.set(id, index));
       if (next.length !== saved.length || next.some((id, index) => id !== saved[index])) additions.set(scope, next);
     }
     const rank = item => ranks.get(idOf(item)) ?? ranks.size;

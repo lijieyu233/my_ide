@@ -942,8 +942,8 @@ const watchdog=setTimeout(()=>finish(2,'watchdog'),150000);
    fixture.threads.set(newest,{ ...fixture.threads.get(implicitId),id:newest,name:'会话排序目标',updatedAt:Date.now()/1000 });
    await js(()=>document.querySelector('#panel-sessions [data-hist-refresh]').click());
    await until(()=>js(selector=>!!document.querySelector(selector),row('desktop-b',newest)),'batch drag target available');
-   check('new conversations append after the stored order',
-     JSON.stringify((await order()).sessions) === JSON.stringify([...sorted.sessions,newest]));
+   check('new conversations prepend before the stored order',
+     JSON.stringify((await order()).sessions) === JSON.stringify([newest,...sorted.sessions]));
    await js(({first,second})=>{
      const toggle=document.querySelector('[data-codex-project="desktop-b"] [data-hist-toggle]');
      if(toggle.getAttribute('aria-expanded')==='false')toggle.click();
